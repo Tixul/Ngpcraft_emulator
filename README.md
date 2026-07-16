@@ -1,3 +1,4 @@
+
 # NgpCraft Emulator
 
 A **Neo Geo Pocket / Neo Geo Pocket Color** emulator: a fast native C++ core
@@ -7,6 +8,8 @@ Its timing is **calibrated against real hardware** — instruction-fetch wait-st
 the cartridge flash, silicon-measured MUL/DIV and LDIR costs — so self-timed games
 (Cool Boarders Pocket, Densha de Go) run at their true 30 fps instead of the ~2× too
 fast that most emulators show.
+
+<img width="1076" height="761" alt="emulateur01" src="https://github.com/user-attachments/assets/24dd060d-5b35-4ef6-83dd-916a618ba244" />
 
 ## Features
 
@@ -20,6 +23,9 @@ fast that most emulators show.
 - **Debug tools** — CPU, disassembly, memory (with poke), palette, tiles, sprites; export.
 - **Crash reports** — a ROM fault writes a detailed `crashes/*.txt` (reason, PC, opcode,
   registers, memory & stack dumps).
+
+<img width="1073" height="768" alt="emulateur02" src="https://github.com/user-attachments/assets/051d5d43-dc43-4001-8964-7e8b757b057d" />
+
 
 ## Run
 
