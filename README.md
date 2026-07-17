@@ -14,6 +14,8 @@ fast that most emulators show.
 ## Features
 
 - **Library** with cover thumbnails (grid / list / compact), live-reflowing.
+- **Console boot** — with a real BIOS, *Boot BIOS* powers the console on for real: the
+  Neo Geo Pocket intro plays and the game then boots on its own, exactly like hardware.
 - **Video**: integer / fit / stretch scaling, scanline / LCD-grid / CRT filters,
   colour profiles, real fullscreen. The canvas follows the window; size presets `Ctrl+1…5`.
 - **Save states** — 8 slots per game (toolbar or `F2` save / `F4` load / `F3` slot).
@@ -75,8 +77,22 @@ No ROMs or BIOS are included — provide your own.
 - A real Neo Geo Pocket **BIOS** — place it as **`bios.bin`** next to the app (or set the
   path in **Settings ▸ BIOS**). **Most homebrew need it**: they call BIOS routines through
   the console's vector table, so without a BIOS they crash on boot (the emulator will tell
-  you when that happens). Commercial games and BIOS-free homebrew run without one. Leave
-  *Boot BIOS* **off** — the BIOS is used automatically; the game still boots straight in.
+  you when that happens). Commercial games and BIOS-free homebrew run without one.
+
+### Two ways to start a game
+
+- **Instant hand-off** *(default — leave "Console boot" OFF)*: the cartridge is handed the
+  exact state the BIOS boot would have left, so the game starts immediately. The BIOS image
+  is still used behind the scenes (saves, system calls); the game just boots straight in.
+- **Console boot** *(Settings ▸ General ▸ "Play the console boot")*: the real BIOS powers on,
+  plays its **NEO·GEO POCKET intro**, and then boots the game on its own — exactly like
+  turning on the hardware. A brand-new console configures itself the first time (the BIOS
+  first-boot setup is auto-completed with defaults and remembered), so you always get
+  *intro → game*, every launch, with no setup screen to click through. Needs a real
+  `bios.bin`.
+
+The **Boot BIOS** button (Library) boots the BIOS by itself, with no cartridge — the
+console's own language/clock screens, one of the NGPC's signature features.
 
 ## Saves
 

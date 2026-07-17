@@ -59,6 +59,10 @@ else:
     REPO = Path(__file__).resolve().parent
     BUNDLE = REPO
 SCREEN_W, SCREEN_H = 160, 152
+# Real-BIOS boot: how many BIOS frames to let run before handing off to the cart, so the
+# whole NEO GEO POCKET intro plays (logo ~frame 300, intro ends ~460) instead of being
+# skipped by the 1-frame boot transient that briefly touches the FF5xxx menu region.
+BIOS_INTRO_FRAMES = 400
 DEFAULT_ROM_DIR = REPO / "roms"          # drop your .ngc/.ngp files here (or pick a folder)
 DEFAULT_BIOS = REPO / "bios.bin"         # optional: a real NGPC BIOS enables "Boot BIOS"
 THUMB_DIR = REPO / "thumbnails"
@@ -1100,6 +1104,9 @@ class PlayPage(QWidget):
         self._vgm = None                   # a VgmRecorder while capturing, else None
         self._song = None                  # a NgpsRecorder while capturing, else None
         self._stall_ticks = 0              # consecutive idle ticks -> unstick audio pacing
+        self._did_handoff = False          # real-BIOS: completed the BIOS->cart hand-off
+        self._bios_frames = 0              # real-BIOS: frames run since power-on (intro gate)
+        self._menu_ticks = 0               # frames the BIOS has idled in its shell loop
         self._slot = 0                     # active save-state slot (0..STATE_SLOTS-1)
         self._speed = 1.0                  # emulation speed multiplier
         self._ff = False                   # fast-forward while a key is held
@@ -1201,11 +1208,11 @@ class PlayPage(QWidget):
 
     def start(self, rom: Path) -> None:
         """Boot a game. Default is the instant hand-off (a running console handed
-        to the cartridge). 'Console boot' runs the real BIOS power-on first -- it
-        now clears the old "SUB BATTERY DEAD" screen and shows the language/date
-        setup, but does NOT yet hand off from the BIOS to the cartridge (the NMI
-        power-manager path is unfinished -- the BIOS-to-cart hand-off is unfinished),
-        so games should be launched with console boot OFF for now."""
+        to the cartridge). 'Console boot' runs the real BIOS power-on first: the NMI
+        power-manager boots the BIOS, it plays its NEO GEO POCKET intro, and once it
+        settles into its pre-boot shell loop `_bios_handoff_assist` hands off to the
+        cartridge -- so the game boots on its own after the intro, like real hardware.
+        A first-boot (unconfigured coin cell) still stops at the language/date setup."""
         self.stop()
         self._rom_path = Path(rom)
         self.watches.load(self._watch_path())   # this ROM's named watches, if any
@@ -1232,6 +1239,7 @@ class PlayPage(QWidget):
         self.watches.rearm()
         self.apply_debug()                 # arm breakpoints + write-log for this ROM
         self._rebuild_rewind_buffer()      # pick up any rewind-length change
+        self._did_handoff = False; self._menu_ticks = 0; self._bios_frames = 0
         self._begin_run()
 
     def start_bios(self) -> None:
@@ -1401,6 +1409,98 @@ class PlayPage(QWidget):
             self.held |= bit
 
     # ---- in-game menu / suspend-resume
+    def _bios_handoff_assist(self) -> None:
+        """Complete the BIOS -> cartridge hand-off the way the console does.
+
+        On real hardware the BIOS boots (our NMI drives that), plays its NEO GEO POCKET
+        intro, validates the cart — it reads the header at 0x200000, including the 24-bit
+        ENTRY VECTOR at 0x20001C — then JUMPS to that entry. Our core runs the whole
+        authentic boot (config, RTC, cart validation AND the intro logo), but the BIOS's
+        own shell loop never issues that final jump.
+
+        So we wait until the intro has actually PLAYED (the console has run a good few
+        seconds of BIOS frames — the NEO GEO POCKET logo shows around frame 300 and the
+        intro ends near 460) and the BIOS has then settled into its pre-boot shell loop
+        (PC parked low in BIOS space, FF11xx), and only THEN perform the jump it would —
+        the game boots exactly where the cartridge's entry point says.
+
+        The frame gate matters: the raw "PC hit FF5xxx" signal fires on a 1-frame boot
+        transient (~frame 4) long before the real intro renders, so keying off it hands
+        off instantly and the user never sees the intro. Counting BIOS frames instead
+        guarantees the whole intro plays. An UNCONFIGURED console never reaches the FF11xx
+        idle — it sits on the setup screen (FF35xx) waiting for input — so this correctly
+        leaves first-boot setup alone.
+        """
+        if (self._did_handoff or self.session is None or not self._real_bios
+                or self.machine is None):
+            return
+        pc = self.machine.cpu().pc
+        # ⚡ FIRST-BOOT SELF-CONFIGURE. A console whose coin cell never went through the
+        # language/date/color wizard drops into that SETUP screen (PC in 0xFF35xx) and would
+        # sit there forever -- the player only wanted to launch a game. So we auto-complete
+        # the wizard with its defaults by writing the exact "setup confirmed" flag its final
+        # screen writes (0x64E5 = 0xFF; found by reversing the BIOS setup loop at 0xFF35E7 /
+        # 0xFF3610). The BIOS then finalizes the config, plays its FULL intro, and -- because
+        # we persist the coin cell at hand-off -- the console is configured from then on and
+        # never shows the wizard again. So even a brand-new console gets: intro -> game.
+        if 0xFF3000 <= pc < 0xFF4000:                 # in the first-boot setup wizard
+            self.machine.write(0x0064E5, b"\xFF")     # its "confirmed" flag -> complete it
+            self._menu_ticks = 0
+            return
+        # Once the BIOS has played its whole intro and parked in its pre-boot idle shell loop
+        # (PC in 0xFF11xx), hand off to the cartridge. Waiting for BIOS_INTRO_FRAMES lets the
+        # entire NEO GEO POCKET intro play first.
+        if not (0xFF1000 <= pc < 0xFF2000 and self._bios_frames >= BIOS_INTRO_FRAMES):
+            self._menu_ticks = 0                      # still booting / in the intro -> wait
+            return
+        need = 6
+        self._menu_ticks += 1              # confirm it has truly settled there
+        if self._menu_ticks < need:
+            return
+        # ⛔ DO NOT pre-read the entry vector from live memory to "sanity check" it. The
+        # BIOS boot leaves the cart FLASH in AUTOSELECT mode (it probed the chip ID), so
+        # 0x200000.. reads back the chip's ID bytes (0x98 0x2C ...) and 0x20001C reads
+        # 0xFFFFFF -- "not sane" -- so we would bail WITHOUT booting: the exact live blank
+        # the head-less test never reproduced, because it reset unconditionally. The
+        # hand-off reset RELOADS the pristine cart image (flash back in read mode) and
+        # takes PC from the ROM's real entry point, so there is nothing to validate first.
+        #
+        # Boot the cart with the exact post-BIOS machine state a game expects -- the SAME
+        # clean slate the instant hand-off gives it: seeded system bytes + ZEROED work RAM.
+        #
+        # ⚡ DETERMINISM. The real BIOS scribbles its own scratch all over work RAM while it
+        # runs, and that scratch keeps changing for a few frames after the intro. Our
+        # hand-off can land on any of those frames (the pacer runs a variable number), so
+        # handing the cart the BIOS's live work RAM makes it inherit DIFFERENT leftover
+        # bytes each launch -- Back To My Fruits then drew doubled/glitched sprites on some
+        # boots and rendered perfectly on others. Booting from a blank slate makes real-BIOS
+        # mode render byte-for-byte identical to the (always-correct) instant mode, every
+        # launch. The coin cell (language/date) is preserved in the battery-RAM BUFFER for a
+        # later reboot and for the save, while the live work RAM the game sees is clean.
+        # (A raw PC jump instead of this reset leaves video/peripherals wrong -> blank cart.)
+        #
+        # ⚡ THE COIN CELL is what the BIOS has in work RAM RIGHT NOW: it booted with the
+        # configured RAM and stamped its "booted" marker (0x6C7A = 0xA5A5), so this holds
+        # the language/date + marker that make the NEXT boot skip first-time setup. We must
+        # capture it HERE, before wiping work RAM for the game -- persisting the game's blank
+        # work RAM instead would drop the marker and the BIOS would run first-boot every
+        # launch. It becomes the session's baseline (what commit_system_ram writes) and goes
+        # back in the buffer so a reboot still boots configured.
+        coin = self.machine.battery_ram()
+        if self.session is not None:
+            self.session.system_ram_baseline = coin
+        self.machine.set_battery_ram(b"")   # the game boots with clean work RAM (instant state)
+        self.machine.reset(bios_handoff=True)
+        self.machine.set_battery_ram(coin)  # coin cell back in the buffer (mem stays clean)
+        self.apply_debug()                  # re-arm breakpoints/write-log after the reset
+        self._did_handoff = True
+        self.overlay.setText("")
+        # Drop the queued BIOS audio so the game's sound is not delayed behind it. We only
+        # clear our own pending buffer -- we do NOT stop/restart the QAudioSink here: it is
+        # already playing (opened in _begin_run), its buffer is a tiny 0.1 s, and tearing it
+        # down mid-tick was killing in-game sound. The sink flows straight from BIOS to game.
+        self._reset_pacing()
+
     def _do_reset(self) -> None:
         if self.session is not None:
             self.session.reboot()
@@ -1410,6 +1510,7 @@ class PlayPage(QWidget):
         self._power_pressed = False
         self._crashed = False
         self._bp_step_off = False
+        self._did_handoff = False; self._menu_ticks = 0; self._bios_frames = 0
         self._rewind.clear(); self._rw_pos = None
         self.watches.rearm()
         self.apply_debug()                 # a reboot clears core breakpoints -> re-arm
@@ -1957,6 +2058,12 @@ class PlayPage(QWidget):
         due = self._frames_due()
         if due == 0:
             self._drain_pending()     # keep feeding the card even when we run no frames,
+            # The BIOS idles in its pre-boot shell loop with the PC frozen: the hand-off
+            # must still count that idle even on a zero-frame tick, or a full audio cushion
+            # (from the intro jingle) would keep the pacer at 0 and the hand-off never fires
+            # -- the game would sit on the BIOS's blank post-intro screen forever.
+            if self._real_bios and not self._did_handoff:
+                self._bios_handoff_assist()
             # SAFETY NET: at 1x the pacer idles between frames (a few ticks), but if it
             # returns 0 for ~0.3 s the audio clock has stalled (a sink stuck underrun after
             # a long rewind pause). Reopen it so the loop can never stay frozen.
@@ -1973,6 +2080,8 @@ class PlayPage(QWidget):
             if wrange is not None:               # fresh per-frame write capture
                 self.machine.set_write_log(wrange[0], wrange[1])
             summ = self.machine.run_frames(1)
+            if self._real_bios and not self._did_handoff:
+                self._bios_frames += 1        # gate the BIOS->cart hand-off on intro length
             if summ.stop_status in _CRASH_STATUSES and not self._crashed:
                 self._on_crash(summ); return
             if summ.stop_status == native.STATUS_BREAKPOINT:
@@ -1993,21 +2102,20 @@ class PlayPage(QWidget):
                 self._rewind.append(self._capture_state())
             if self._song is not None:           # per-frame note capture (.ngps export)
                 self._song.feed(self.machine.apu_state())
-            # THE BIOS HALTS ON PURPOSE: it arms INT0 (the POWER button) and
-            # sleeps. Press it once, on the player's behalf -- they asked for the
-            # console to come on by launching. (Same reason NativeSession and ares
-            # do it.) Only in real-BIOS mode; a hand-off game never halts here.
-            if (self._real_bios and not self._power_pressed
-                    and summ.stop_status == native.STATUS_HALTED):
-                self.machine.raise_irq(8)      # INT0 = power
-                self._power_pressed = True
-                self.machine.run_frames(1)
+            # POWER-ON is handled INSIDE the core now: on the first HALT in BIOS space it
+            # delivers the power NMI (once), which is how the real console boots. We must
+            # NOT also press INT0 here: the BIOS halts AGAIN at the end of its intro (its
+            # pre-boot idle), and pressing power there re-launches the intro in a loop --
+            # exactly the "intro, reboot, intro, blank" the hand-off assist below is
+            # waiting to resolve. Let it idle; _bios_handoff_assist takes it into the cart.
             if self.audio is not None:
                 a = self.machine.audio()          # always drain the core's audio buffer
                 self._last_audio = a              # feed the debug oscilloscope
                 if self._speed == 1.0 and not self._ff:
                     self.pending += a             # ...but only queue it at real speed (mute FF/slow)
         self._drain_pending()
+        if self._real_bios and not self._did_handoff:
+            self._bios_handoff_assist()      # BIOS booted -> jump into the cartridge
         if self._vgm is not None:            # capturing music -> log this tick's PSG writes
             self._vgm.feed(self.machine.apu_write_count(), self.machine.apu_writes())
         self._blit()

@@ -433,12 +433,20 @@ NGPC_API int ngpc_run(ngpc_t* h, uint32_t max_instrs,
 
             /* ⚡ THE BIOS -> CARTRIDGE HAND-OFF. On silicon the console powers into an
              * idle HALT inside the BIOS and waits for the POWER-button NMI to run its
-             * boot handler, which hands off to the cartridge. A halt with PC in BIOS
-             * space (>= 0xFF0000) IS that idle -- a game halts in cart space -- so the
-             * first time we see it we press POWER on the player's behalf, exactly as
-             * ares does. Latched: it fires once, so a game's own HALTs are untouched. */
-            if (pc_before >= 0xFF0000 && m->power_nmi_count < 8) {
-                ++m->power_nmi_count;                  // re-press POWER at each BIOS idle
+             * boot handler. A halt with PC in BIOS space (>= 0xFF0000) IS that idle --
+             * a game halts in cart space -- so the FIRST time we see it we press POWER
+             * on the player's behalf, which kicks the BIOS into playing its intro and
+             * running down to its final pre-boot idle at 0xFF1127.
+             *
+             * ⛔ FIRE EXACTLY ONCE (`== 0`, not `< 8`). A REPEATED press re-enters the
+             * boot handler every ~30 frames, which resets the BIOS's own frame counter
+             * (0x4E01) mid-count and bounces it around its menu forever -- the "going in
+             * circles" the intro showed. One press: the intro plays, the counter reaches
+             * its target, and the BIOS settles at 0xFF1127. The shell completes the final
+             * step from there (PlayPage._bios_handoff_assist), because our BIOS's own
+             * 0xFF1898 boot handler does not carry the last jump to the cart. */
+            if (pc_before >= 0xFF0000 && m->power_nmi_count == 0) {
+                ++m->power_nmi_count;                  // press POWER once
                 deliver_nmi(*m);
                 ++s.executed;
                 continue;                              // resume inside the boot handler

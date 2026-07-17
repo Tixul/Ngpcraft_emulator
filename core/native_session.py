@@ -115,9 +115,16 @@ class NativeSession:
         self.real_bios = real_bios and bios is not None
         self.ram_path = SYSTEM_RAM_PATH
         self._power_pressed = False
+        # The console's configured coin cell (language/date), as loaded. It is the
+        # baseline a game must NOT overwrite: a game fills work RAM with its own state,
+        # and saving that back as the coin cell would wipe the config. Kept here so the
+        # BIOS->cart hand-off can boot the game from a clean slate yet still persist the
+        # real config. `None` = a blank (first-boot) console.
+        self.system_ram_baseline: bytes | None = None
         if self.real_bios:
             if self.ram_path.exists():
-                self.machine.set_battery_ram(self.ram_path.read_bytes())
+                self.system_ram_baseline = self.ram_path.read_bytes()
+                self.machine.set_battery_ram(self.system_ram_baseline)
             self.machine.reset(real_bios=True)
         else:
             self.machine.reset(bios_handoff=True)
@@ -169,12 +176,19 @@ class NativeSession:
 
         Only in real-BIOS mode: in the hand-off the BIOS never ran, so its work RAM holds
         nothing it wrote and saving it would be inventing settings the console never had.
+
+        ⚡ We persist the coin cell AS IT WAS CONFIGURED, not the machine's live work RAM.
+        Once a game boots, work RAM is the GAME's -- its variables, not console settings --
+        and the game-boot hand-off deliberately hands the cart a clean slate anyway. Writing
+        that back would wipe the language/date the player set. A game never reconfigures the
+        console, so the right thing to persist is the baseline we loaded. (The console is
+        (re)configured through Boot BIOS, which saves system.ram on its own path.)
         """
-        if not self.real_bios:
+        if not self.real_bios or self.system_ram_baseline is None:
             return False
         self.ram_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.ram_path.with_suffix(".tmp")
-        tmp.write_bytes(self.machine.battery_ram())
+        tmp.write_bytes(self.system_ram_baseline)
         tmp.replace(self.ram_path)
         return True
 

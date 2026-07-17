@@ -91,11 +91,10 @@ def audio_volume(s: QSettings) -> int:
 
 def real_bios(s: QSettings) -> bool:
     # Default OFF (hand-off): the cartridge gets the state the BIOS boot would
-    # have left, instantly. The real-BIOS boot IS available and now shows the
-    # authentic power-on screens (the "SUB BATTERY DEAD" bug is fixed), but the
-    # BIOS does not yet HAND OFF to the cartridge -- it stops at its own setup
-    # screens. So hand-off stays the default
-    # for launching a game; "Boot BIOS" shows the BIOS by itself.
+    # have left, instantly. Turn it ON for the authentic power-on: the real BIOS
+    # plays its intro and boots the game on its own, exactly like hardware. (An
+    # unconfigured console stops at the first-boot setup once; after that it is
+    # remembered.) Hand-off stays the default because it is instant.
     return bool(s.value("general/real_bios", False, type=bool))
 
 
@@ -276,12 +275,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "browse": "Browse…", "restore": "Restore defaults",
         "view_grid": "Grid", "view_list": "List", "view_compact": "Compact",
         "thumb_size": "Cover size", "boot_bios": "Boot BIOS",
-        "console_boot": "Play the console boot (BIOS) before the game — experimental",
-        "console_boot_hint": "Runs the Neo Geo Pocket's own power-on screens "
-        "(language, clock). ⚠ The BIOS does not yet hand off to the cartridge, so a "
-        "game launched this way stops at the setup screens. Leave OFF to hand the "
-        "cartridge straight to the game (instant). Use \"Boot BIOS\" to see the "
-        "BIOS by itself.",
+        "console_boot": "Play the console boot (BIOS) before the game",
+        "console_boot_hint": "Powers the console on for real: the Neo Geo Pocket BIOS "
+        "plays its intro, then boots the game on its own — just like hardware. A brand-new "
+        "console configures itself the first time (first-boot setup auto-completed with "
+        "defaults and remembered), so you always get intro → game with no setup to click "
+        "through. Leave OFF to hand the cartridge straight to the game (instant).",
         "cart_wait": "Cartridge flash timing (real hardware speed)",
         "cart_wait_hint": "Models the slow cartridge flash bus + block-copy timing. Without "
         "it the CPU runs cart code ~3.4x too fast, so self-timed games (Cool Boarders, Densha "
@@ -335,12 +334,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "browse": "Parcourir…", "restore": "Valeurs par défaut",
         "view_grid": "Grille", "view_list": "Liste", "view_compact": "Compact",
         "thumb_size": "Taille des vignettes", "boot_bios": "Lancer le BIOS",
-        "console_boot": "Jouer le démarrage console (BIOS) avant le jeu — expérimental",
-        "console_boot_hint": "Joue les écrans d'allumage du Neo Geo Pocket (langue, "
-        "horloge). ⚠ Le BIOS ne cède pas encore la main à la cartouche : un jeu lancé "
-        "ainsi s'arrête sur les écrans de réglage. Laissez DÉSACTIVÉ pour donner la "
-        "cartouche directement au jeu (instantané). « Lancer le BIOS » montre le BIOS "
-        "seul.",
+        "console_boot": "Jouer le démarrage console (BIOS) avant le jeu",
+        "console_boot_hint": "Allume vraiment la console : le BIOS du Neo Geo Pocket joue "
+        "son intro, puis lance le jeu tout seul — comme sur le hardware. Une console neuve "
+        "se configure toute seule au premier lancement (premier démarrage auto-complété avec "
+        "les réglages par défaut et mémorisé) : tu as toujours intro → jeu, sans écran de "
+        "réglage à valider. Laissez DÉSACTIVÉ pour donner la cartouche directement au jeu.",
         "cart_wait": "Timing du flash cartouche (vitesse console réelle)",
         "cart_wait_hint": "Modélise le bus flash lent + le timing des copies bloc. Sans lui "
         "le CPU exécute le code cartouche ~3,4× trop vite : les jeux auto-cadencés (Cool "
