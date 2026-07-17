@@ -16,6 +16,7 @@ core for real-time speed and audio (see scripts/play.py for the pacing story).
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import sys
 import time
 from collections import deque
@@ -29,7 +30,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QGridLayout, QScrollArea, QStackedWidget, QListWidget,
     QListWidgetItem, QComboBox, QCheckBox, QSlider, QSpinBox, QLineEdit,
-    QFileDialog, QSizePolicy, QFrame,
+    QFileDialog, QSizePolicy, QFrame, QMessageBox,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -37,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core import native  # noqa: E402
 from core.native_session import NativeSession, SYSTEM_RAM_PATH as _SYSTEM_RAM  # noqa: E402
 from core.frame_pacer import FramePacer  # noqa: E402
+from core.watches import WatchSet  # noqa: E402
+from core.exec_breaks import ExecBreakSet  # noqa: E402
 import ngpc_settings as cfg  # noqa: E402
 import ngpc_video  # noqa: E402
 from ngpc_debug import DebugWindow  # noqa: E402
@@ -61,6 +64,7 @@ DEFAULT_BIOS = REPO / "bios.bin"         # optional: a real NGPC BIOS enables "B
 THUMB_DIR = REPO / "thumbnails"
 APP_ICON = BUNDLE / "assets" / "icone_ngpcraft.ico"
 STATE_DIR = REPO / "savestates"
+WATCH_DIR = REPO / "watches"             # per-ROM named memory watches (debugger)
 STATE_SLOTS = 8
 # Snapshot = the whole working image (I/O + RAM + VRAM, 0x0000..0xBFFF) + the CPU. The
 # internal timing (scanline/timers/z80) re-syncs on the next VBlank, so this restores a
@@ -158,6 +162,14 @@ QPushButton#menuItem[sel="true"] {{ background: {ACCENT}; color: #06121f; font-w
 
 
 # ---------------------------------------------------------------- thumbnails
+def _cover_path(rom: Path) -> Path:
+    """The on-disk cover cache for a ROM -- UNIQUE per full path. Two projects can
+    each hold a `main.ngc`; a stem-only name would make them share one cover (and,
+    with a recursive scan, overwrite each other)."""
+    tag = hashlib.md5(str(rom).encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    return THUMB_DIR / f"{rom.stem}.{tag}.v{THUMB_VERSION}.png"
+
+
 class ThumbWorker(QObject):
     """Renders a small screenshot per ROM on a background thread, once, and
     caches it to disk. Never touches the UI thread except via `ready`."""
@@ -188,7 +200,7 @@ class ThumbWorker(QObject):
         for rom in self._roms:
             if self._stop:
                 break
-            cache = THUMB_DIR / f"{rom.stem}.v{THUMB_VERSION}.png"
+            cache = _cover_path(rom)
             if cache.exists():
                 img = QImage(str(cache))
                 if not img.isNull():
@@ -466,8 +478,14 @@ class LibraryPage(QWidget):
         d = self._rom_dir()
         self._roms = []
         if d:
-            self._roms = sorted(p for p in d.iterdir()
-                                if p.suffix.lower() in (".ngc", ".ngp"))
+            # Recurse: point it at a whole projects tree and it finds every ROM inside.
+            roms: set[Path] = set()
+            for pat in ("*.ngc", "*.ngp", "*.NGC", "*.NGP"):
+                try:
+                    roms.update(d.rglob(pat))
+                except (OSError, ValueError):
+                    pass
+            self._roms = sorted(p for p in roms if p.is_file())
         self._images.clear()
         self._rebuild()
         if self._roms:
@@ -568,11 +586,17 @@ class LibraryPage(QWidget):
         self._thread.start()
 
     def _stop_worker(self) -> None:
+        """Fully stop the thumbnail worker and JOIN it before returning. It renders
+        each cover by booting the ROM in the native core, so it MUST NOT still be
+        running when a game launches its own core -- two cores at once crashes. The
+        stop is cooperative (checked between short frame batches), so the wait is
+        brief; but it is unbounded on purpose -- abandoning the thread (the old 2 s
+        timeout) is exactly what let a second core start on top of it."""
         if self._worker:
             self._worker.stop()
         if self._thread:
             self._thread.quit()
-            self._thread.wait(2000)
+            self._thread.wait()
         self._thread = None
         self._worker = None
 
@@ -595,6 +619,16 @@ class LibraryPage(QWidget):
             self, "Open ROM", cur, "NGPC ROM (*.ngc *.ngp)")
         if path:
             self.play_requested.emit(path)
+
+    def showEvent(self, e) -> None:  # type: ignore[override]
+        # Coming back to the library (e.g. a game just closed) -> resume rendering the
+        # covers we have not made yet. It was stopped on hide so it never shared the
+        # native core with a running game.
+        super().showEvent(e)
+        if self._worker is None and self._roms:
+            todo = [r for r in self._roms if str(r) not in self._images]
+            if todo:
+                self._start_worker(todo)
 
     def hideEvent(self, e) -> None:  # type: ignore[override]
         self._stop_worker()
@@ -720,6 +754,12 @@ class SettingsPage(QWidget):
             cfg.flash_size_setting(self._settings))
         self._lbl_flashsize = QLabel()
 
+        self._rewind = self._combo("debug/rewind_seconds", [
+            ("0", "rewind_off"), ("10", "rewind_10"),
+            ("20", "rewind_20"), ("30", "rewind_30")],
+            str(cfg.rewind_seconds(self._settings)))
+        self._lbl_rewind = QLabel()
+
         self._cartwait = QCheckBox()
         self._cartwait.setChecked(cfg.cart_wait_states(self._settings))
         self._cartwait.toggled.connect(
@@ -738,6 +778,7 @@ class SettingsPage(QWidget):
             _row(self._lbl_shots, shotw),
             _row(self._lbl_savemode, self._savemode),
             _row(self._lbl_flashsize, self._flashsize),
+            _row(self._lbl_rewind, self._rewind),
             _row(self._lbl_realbios, self._realbios),
             _row(self._lbl_cartwait, self._cartwait),
         ]
@@ -925,6 +966,9 @@ class SettingsPage(QWidget):
         self._lbl_flashsize.setText(t("flash_size"))
         for i, key in enumerate(["flash_auto", "flash_4m", "flash_8m", "flash_16m"]):
             self._flashsize.setItemText(i, t(key))
+        self._lbl_rewind.setText(t("rewind"))
+        for i, key in enumerate(["rewind_off", "rewind_10", "rewind_20", "rewind_30"]):
+            self._rewind.setItemText(i, t(key))
         self._realbios_hint.setText(t("console_boot_hint"))
         self._lbl_cartwait.setText(t("cart_wait")); self._cartwait_hint.setText(t("cart_wait_hint"))
         self._lbl_scale.setText(t("lcd_scale")); self._lbl_smooth.setText(t("smoothing"))
@@ -1045,6 +1089,17 @@ class PlayPage(QWidget):
         self.paused = False
         self._rom_path: Path | None = None
         self._crashed = False              # latched when the ROM faults, until next start/reset
+        self._bp_step_off = False          # parked on a breakpoint: step past it on resume
+        self._rewind: deque[bytes] = deque()           # frame-perfect history
+        self._rw_pos: int | None = None    # scrub cursor, or None when live at the tip
+        self._rewind_on = True
+        self._rewinding = False            # held-rewind active (running backward)
+        self._rw_accum = 0                 # tick divider so rewind plays at ~60 fps
+        self._rebuild_rewind_buffer()
+        self._last_audio = b""             # last drained chunk, for the debug oscilloscope
+        self._vgm = None                   # a VgmRecorder while capturing, else None
+        self._song = None                  # a NgpsRecorder while capturing, else None
+        self._stall_ticks = 0              # consecutive idle ticks -> unstick audio pacing
         self._slot = 0                     # active save-state slot (0..STATE_SLOTS-1)
         self._speed = 1.0                  # emulation speed multiplier
         self._ff = False                   # fast-forward while a key is held
@@ -1056,6 +1111,8 @@ class PlayPage(QWidget):
         self._fullscreen = cfg.fullscreen(settings)
         self._bindings: dict[int, int] = {}
         self.pending = bytearray()
+        self.watches = WatchSet()          # named memory watches, loaded per-ROM
+        self.breaks = ExecBreakSet()       # PC execution breakpoints, loaded per-ROM
         self.pacer = FramePacer()
         self.sink = None
         self.audio = None
@@ -1094,6 +1151,48 @@ class PlayPage(QWidget):
         self.timer.timeout.connect(self._tick)
 
     # ---- lifecycle
+    def _watch_path(self) -> Path:
+        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        return WATCH_DIR / f"{stem}.json"
+
+    def _break_path(self) -> Path:
+        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        return WATCH_DIR / f"{stem}.breaks.json"
+
+    def _save_watches(self) -> None:
+        if self._rom_path is not None:
+            try:
+                self.watches.save(self._watch_path())
+            except OSError:
+                pass
+        self.apply_debug()
+
+    def _save_breaks(self) -> None:
+        if self._rom_path is not None:
+            try:
+                self.breaks.save(self._break_path())
+            except OSError:
+                pass
+        self.apply_debug()
+
+    def apply_debug(self) -> None:
+        """Push the current breakpoints and write-log window into the core. Called
+        after any edit from the debug window, and once per game start."""
+        if self.machine is None:
+            return
+        try:
+            self.machine.set_breakpoints(self.breaks.enabled_pcs())
+        except Exception:
+            pass
+        rng = self.watches.write_range()
+        try:
+            if rng is not None:
+                self.machine.set_write_log(rng[0], rng[1])
+            else:
+                self.machine.set_write_log(1, 0)    # lo > hi disarms
+        except Exception:
+            pass
+
     def _bios_path(self) -> Path | None:
         b = cfg.bios_path(self._settings)
         if b and Path(b).is_file():
@@ -1109,6 +1208,8 @@ class PlayPage(QWidget):
         so games should be launched with console boot OFF for now."""
         self.stop()
         self._rom_path = Path(rom)
+        self.watches.load(self._watch_path())   # this ROM's named watches, if any
+        self.breaks.load(self._break_path())    # ...and its execution breakpoints
         self._crashed = False
         self._real_bios = cfg.real_bios(self._settings) and self._bios_path() is not None
         self._power_pressed = False
@@ -1128,6 +1229,9 @@ class PlayPage(QWidget):
             # LDIR block-copy timing: the last, strongly-evidenced but not-yet-ROM-confirmed
             # piece that takes self-timed games (Cool Boarders) to their hardware 30fps.
             self.machine.set_ldir_cost(cfg.CART_LDIR_COST)
+        self.watches.rearm()
+        self.apply_debug()                 # arm breakpoints + write-log for this ROM
+        self._rebuild_rewind_buffer()      # pick up any rewind-length change
         self._begin_run()
 
     def start_bios(self) -> None:
@@ -1160,6 +1264,12 @@ class PlayPage(QWidget):
 
     def stop(self) -> None:
         self.timer.stop()
+        if self._rom_path is not None:    # keep this ROM's watches + breakpoints
+            try:
+                self.watches.save(self._watch_path())
+                self.breaks.save(self._break_path())
+            except OSError:
+                pass
         if self.sink is not None:
             self.sink.stop(); self.sink = None; self.audio = None
         self.pending.clear()
@@ -1199,6 +1309,8 @@ class PlayPage(QWidget):
         self.lcd.setMaximumSize(16777215, 16777215)
         self.lcd.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.osd.setVisible(cfg.show_fps(self._settings)); self.osd.raise_()
+        if cfg.rewind_seconds(self._settings) != (self._rewind.maxlen // 60 if self._rewind_on else 0):
+            self._rebuild_rewind_buffer()      # rewind length changed -> resize the ring
         show_bar = bool(self._settings.value("gfx/toolbar", True, type=bool))
         self.toolbar.setVisible(show_bar); self._bar_show.setVisible(not show_bar)
         if not show_bar:
@@ -1277,6 +1389,13 @@ class PlayPage(QWidget):
             self.cycle_speed(True); return
         if k == int(Qt.Key.Key_BracketLeft):
             self.cycle_speed(False); return
+        # rewind: ',' one frame back, '.' one frame forward ("what did I just see?")
+        if k == int(Qt.Key.Key_Comma):          # HOLD to rewind; release resumes
+            if not e.isAutoRepeat():
+                self.start_rewind()
+            return
+        if k == int(Qt.Key.Key_Period):
+            self.step_forward(); return
         bit = self._bindings.get(k)
         if bit and not e.isAutoRepeat():
             self.held |= bit
@@ -1290,6 +1409,10 @@ class PlayPage(QWidget):
         self.held = 0
         self._power_pressed = False
         self._crashed = False
+        self._bp_step_off = False
+        self._rewind.clear(); self._rw_pos = None
+        self.watches.rearm()
+        self.apply_debug()                 # a reboot clears core breakpoints -> re-arm
 
     def _toggle_fullscreen(self) -> None:
         self._settings.setValue("gfx/fullscreen", not cfg.fullscreen(self._settings))
@@ -1337,6 +1460,12 @@ class PlayPage(QWidget):
         h.addSpacing(10)
         btn("📷", "Screenshot (F12)", self.screenshot)
         h.addSpacing(10)
+        rw = QPushButton("⏪"); rw.setObjectName("barBtn")
+        rw.setToolTip("Hold to rewind ( , )"); rw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        rw.pressed.connect(self.start_rewind); rw.released.connect(self.stop_rewind)
+        h.addWidget(rw)
+        btn("⏵", "Step one frame forward ( . )", self.step_forward)
+        h.addSpacing(10)
         btn("−", "Slower ( [ )", lambda: self.cycle_speed(False))
         self._speed_lbl = QLabel("1×"); self._speed_lbl.setObjectName("barSpeed")
         self._speed_lbl.setFixedWidth(36)
@@ -1370,6 +1499,31 @@ class PlayPage(QWidget):
         self.pending.clear()
         self.wall_last = time.perf_counter(); self.debt = 0.0
 
+    def _drain_pending(self) -> None:
+        """Push whatever queued audio the card can take. Runs EVERY tick (even when we
+        advance no frames), so `pending` can never sit full and stall the pacer."""
+        if self.audio is not None and self.sink is not None and self.pending:
+            free = self.sink.bytesFree()
+            take = min(free, len(self.pending)); take -= take % 4
+            if take > 0:
+                self.audio.write(bytes(self.pending[:take])); del self.pending[:take]
+
+    def _restart_audio(self) -> None:
+        """Reopen the audio sink from scratch. After a long pause (scrubbing the rewind)
+        the sink can sit underrun and stop reporting free space, which stalls the audio-
+        clock pacing forever; a fresh sink guarantees the loop resumes."""
+        if self.audio is None and self.sink is None:
+            return
+        try:
+            if self.sink is not None:
+                self.sink.stop()
+        except Exception:
+            pass
+        self.sink = None; self.audio = None
+        self.pending.clear()
+        if cfg.audio_enabled(self._settings):
+            self._open_audio()
+
     def _set_ff(self, on: bool) -> None:
         self._ff = bool(on)
         self._reset_pacing()
@@ -1393,6 +1547,17 @@ class PlayPage(QWidget):
             self._slot_spin.setValue(self._slot + 1)
         self._flash(cfg.tr(cfg.language(self._settings), "slot").format(n=self._slot + 1))
 
+    # A snapshot is the CPU struct + the whole working image (I/O + RAM + VRAM). The
+    # rewind ring and the save-state slots share it; slots just add a magic + go to disk.
+    def _capture_state(self) -> bytes:
+        return bytes(self.machine.cpu()) + self.machine.read(0, STATE_MEM_LEN)
+
+    def _apply_state(self, body: bytes) -> None:
+        cpu_len = ctypes.sizeof(type(self.machine.cpu()))
+        cpu = type(self.machine.cpu()).from_buffer_copy(body[:cpu_len])
+        self.machine.write(0, body[cpu_len:cpu_len + STATE_MEM_LEN])
+        self.machine.set_cpu(cpu)
+
     def save_state(self, slot: int | None = None) -> None:
         if self.machine is None:
             return
@@ -1400,8 +1565,7 @@ class PlayPage(QWidget):
         path = self._state_path(slot)
         if path is None:
             return
-        blob = STATE_MAGIC + bytes(self.machine.cpu()) + self.machine.read(0, STATE_MEM_LEN)
-        path.write_bytes(blob)
+        path.write_bytes(STATE_MAGIC + self._capture_state())
         self._flash(cfg.tr(cfg.language(self._settings), "state_saved").format(n=slot + 1))
 
     def load_state(self, slot: int | None = None) -> None:
@@ -1415,29 +1579,124 @@ class PlayPage(QWidget):
         blob = path.read_bytes()
         if not blob.startswith(STATE_MAGIC):
             self._flash("bad state"); return
-        body = blob[len(STATE_MAGIC):]
-        cpu_len = ctypes.sizeof(type(self.machine.cpu()))
-        cpu = type(self.machine.cpu()).from_buffer_copy(body[:cpu_len])
-        self.machine.write(0, body[cpu_len:cpu_len + STATE_MEM_LEN])
-        self.machine.set_cpu(cpu)
+        self._apply_state(blob[len(STATE_MAGIC):])
+        self._rewind.clear(); self._rw_pos = None      # a loaded state starts a new timeline
         self._blit()
         self._flash(cfg.tr(cfg.language(self._settings), "state_loaded").format(n=slot + 1))
 
+    # ---- rewind ----------------------------------------------------------
+    def _drain_audio_silently(self) -> None:
+        """Empty the core's audio ring without queuing it. Scrubbing/stepping produces
+        audio we never play; if it piled up, the first live frame would dump a huge
+        backlog into the pacer and freeze the loop (frames_to_run stays 0)."""
+        if self.machine is not None:
+            try:
+                self.machine.audio()
+            except Exception:
+                pass
+
+    def start_rewind(self) -> None:
+        """Begin holding rewind: the game runs BACKWARD through the history for as long
+        as the key/button is held. Release -> resume forward (stop_rewind)."""
+        if self.machine is None:
+            return
+        self.paused = False
+        self._rewinding = True
+        self._rw_accum = 0
+
+    def stop_rewind(self) -> None:
+        """Release rewind -> resume normal forward play, cleanly (fresh pacing + sink so
+        the audio clock never stalls)."""
+        if not self._rewinding:
+            return
+        self._rewinding = False
+        self._rw_pos = None
+        self.overlay.setText("")
+        self._reset_pacing()
+        self._restart_audio()
+
+    def step_back(self) -> None:
+        """Go one frame into the past (pauses). Repeat to scrub further back."""
+        if self.machine is None or not self._rewind:
+            return
+        self.paused = True
+        if self._rw_pos is None:
+            self._rw_pos = len(self._rewind) - 1        # start scrubbing from the tip
+        if self._rw_pos > 0:
+            self._rw_pos -= 1
+        self._apply_state(self._rewind[self._rw_pos])
+        self._drain_audio_silently()
+        self._blit()
+        self._flash(f"⏪ −{len(self._rewind) - 1 - self._rw_pos} f")
+
+    def step_forward(self) -> None:
+        """Go one frame toward the present: replay a buffered frame, or run a fresh one
+        at the tip (pauses)."""
+        if self.machine is None:
+            return
+        self.paused = True
+        if self._rw_pos is not None and self._rw_pos < len(self._rewind) - 1:
+            self._rw_pos += 1
+            self._apply_state(self._rewind[self._rw_pos])
+            self._flash(f"⏩ −{len(self._rewind) - 1 - self._rw_pos} f")
+        else:
+            self._leave_rewind()                        # branch from here if we had scrubbed
+            self.machine.run_frames(1)
+            self._rewind.append(self._capture_state())
+            self._flash("⏩ +1 f")
+        self._drain_audio_silently()
+        self._blit()
+
+    def _leave_rewind(self) -> None:
+        """Return to live play from a scrubbed position: drop the frames we rewound past
+        so the game continues from where we are now, and restart pacing cleanly so the
+        loop does not stall on a stale audio backlog."""
+        if self._rw_pos is not None:
+            while len(self._rewind) > self._rw_pos + 1:
+                self._rewind.pop()
+            self._rw_pos = None
+        self.overlay.setText("")
+        self._drain_audio_silently()
+        self._reset_pacing()
+        self._restart_audio()          # a fresh sink -> pacing can never stay stalled
+
+    def _rebuild_rewind_buffer(self) -> None:
+        """Size the rewind ring from the setting (0 s = off). ~48 KiB per frame."""
+        secs = cfg.rewind_seconds(self._settings)
+        self._rewind_on = secs > 0
+        self._rewind = deque(maxlen=max(1, secs * 60))
+        self._rw_pos = None
+
     # ---- crash reporting --------------------------------------------------
+    def _needs_bios(self, summ) -> bool:
+        """The no-BIOS signature: with no BIOS loaded the game calls a routine through
+        the empty vector table at 0xFFFE00, jumps to 0, and faults down in low memory.
+        Most homebrew do this on boot -- so a fault below the cart with no BIOS almost
+        always means 'this game needs the BIOS', not a real emulation bug."""
+        return self._bios_path() is None and summ.stop_pc < 0x200000
+
     def _on_crash(self, summ) -> None:
         self._crashed = True
         self.paused = True                       # stop re-running the faulting instruction
+        needs_bios = self._needs_bios(summ)
         try:
-            path = self._write_crash_report(summ)
+            path = self._write_crash_report(summ, needs_bios)
         except Exception:
             path = None
-        name, _desc = _STATUS_DESC.get(summ.stop_status, ("STATUS_%d" % summ.stop_status, ""))
-        msg = f"⚠ ROM crashed — {name}"
+        if needs_bios:
+            fr = cfg.language(self._settings) == "fr"
+            msg = ("⚠ Ce jeu a besoin du BIOS Neo Geo Pocket (non chargé).\n"
+                   "Ajoutez un bios.bin — Réglages ▸ BIOS." if fr else
+                   "⚠ This game needs the Neo Geo Pocket BIOS (not loaded).\n"
+                   "Add a bios.bin — Settings ▸ BIOS.")
+        else:
+            name, _desc = _STATUS_DESC.get(summ.stop_status, ("STATUS_%d" % summ.stop_status, ""))
+            msg = f"⚠ ROM crashed — {name}"
         if path is not None:
             msg += f"\nreport: {path.name}"
         self.overlay.setText(msg)
 
-    def _write_crash_report(self, summ) -> Path | None:
+    def _write_crash_report(self, summ, needs_bios: bool = False) -> Path | None:
         m = self.machine
         if m is None or self._rom_path is None:
             return None
@@ -1450,6 +1709,10 @@ class PlayPage(QWidget):
         L.append(f"time      : {datetime.now():%Y-%m-%d %H:%M:%S}")
         L.append(f"rom       : {self._rom_path.name}")
         L.append(f"reason    : {name} (status {summ.stop_status}) — {desc}")
+        if needs_bios:
+            L.append("likely    : NO BIOS LOADED — this game calls the NGPC BIOS through the")
+            L.append("            vector table at 0xFFFE00, which is empty without a bios.bin.")
+            L.append("            Add one in Settings ▸ BIOS. Most homebrew need the BIOS to run.")
         L.append(f"pc        : {pc:06X}")
         L.append(f"opcode    : {summ.stop_opcode:02X}")
         L.append(f"frame     : {summ.frame_count}   scanline: {summ.scanline}"
@@ -1595,6 +1858,8 @@ class PlayPage(QWidget):
             self._ff = self._ff_btn.isChecked()
             self.wall_last = time.perf_counter(); self.debt = 0.0
             return
+        if e.key() == int(Qt.Key.Key_Comma) and not e.isAutoRepeat():
+            self.stop_rewind(); return       # releasing rewind -> resume forward
         bit = self._bindings.get(e.key())
         if bit and not e.isAutoRepeat():
             self.held &= ~bit
@@ -1619,17 +1884,115 @@ class PlayPage(QWidget):
         cap = self.pacer.max_frames_per_tick * (8 if (self._ff or self._speed > 1) else 1)
         return min(due, cap)
 
+    def _on_breakpoint(self, pc: int) -> bool:
+        """A core PC breakpoint fired. Pause if its guard holds; otherwise step past it
+        so the frame can continue. Returns True when we paused (caller must stop)."""
+        bp = self.breaks.at(pc)
+        if bp is not None and bp.cond_true(self.machine):
+            self.paused = True
+            self._bp_step_off = True         # step off it when the user resumes
+            where = f"{pc:06X}" + (f"  [{bp.cond}]" if bp.cond else "")
+            self.overlay.setText(f"⏸ breakpoint — {where}")
+            self._blit()
+            return True
+        self._step_off_breakpoint()          # stale, or guard false -> move past it
+        return False
+
+    def _step_off_breakpoint(self) -> None:
+        """Execute the one instruction we are parked on with breakpoints disabled, so
+        we do not re-trigger the same address immediately."""
+        pcs = self.breaks.enabled_pcs()
+        try:
+            self.machine.set_breakpoints([])
+            self.machine.run(1, record=False)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.machine.set_breakpoints(pcs)
+            except Exception:
+                pass
+
+    def _check_write_break(self) -> bool:
+        """After a frame, see if any 'write' watch's address was written; pause on the
+        first, naming the PC that did it (from the core write-log)."""
+        try:
+            if self.machine.write_log_count() == 0:
+                return False
+            recs = self.machine.write_log()
+        except Exception:
+            return False
+        for rec in recs:
+            w = self.watches.write_hit(rec.addr)
+            if w is not None:
+                self.paused = True
+                who = w.name or f"{w.addr:06X}"
+                self.overlay.setText(
+                    f"⏸ watchpoint W — {who} written ={rec.value:02X} by PC {rec.pc:06X}")
+                self._blit()
+                return True
+        return False
+
     def _tick(self) -> None:
-        if self.machine is None or self.paused:
+        if self.machine is None:
             return
+        if self._rewinding:                  # held rewind: run the game BACKWARD
+            self._rw_accum += 1
+            if self._rw_accum >= 4:          # ~60 fps reverse (the timer ticks ~4 ms)
+                self._rw_accum = 0
+                if len(self._rewind) > 1:
+                    self._rewind.pop()       # drop the current frame...
+                    self._apply_state(self._rewind[-1])   # ...show the one before it
+                self._drain_audio_silently()
+                self.overlay.setText(f"⏪ {len(self._rewind)}")
+                self._blit()
+            return
+        if self.paused:
+            return
+        if self._rw_pos is not None:         # resuming after a frame-step scrub
+            self._leave_rewind()
+        if self._bp_step_off:                # resuming while parked on a breakpoint
+            self._step_off_breakpoint()
+            self._bp_step_off = False
         due = self._frames_due()
         if due == 0:
+            self._drain_pending()     # keep feeding the card even when we run no frames,
+            # SAFETY NET: at 1x the pacer idles between frames (a few ticks), but if it
+            # returns 0 for ~0.3 s the audio clock has stalled (a sink stuck underrun after
+            # a long rewind pause). Reopen it so the loop can never stay frozen.
+            self._stall_ticks += 1
+            if self._stall_ticks > 75:
+                self._stall_ticks = 0
+                self._restart_audio()
             return
+        self._stall_ticks = 0
         self.machine.write(0x00B0, bytes([self.held & 0x7F]))
+        wrange = self.watches.write_range()      # break-on-write window, if any
+        locked = self.watches.locked()
         for _ in range(due):
+            if wrange is not None:               # fresh per-frame write capture
+                self.machine.set_write_log(wrange[0], wrange[1])
             summ = self.machine.run_frames(1)
             if summ.stop_status in _CRASH_STATUSES and not self._crashed:
                 self._on_crash(summ); return
+            if summ.stop_status == native.STATUS_BREAKPOINT:
+                if self._on_breakpoint(summ.stop_pc):
+                    return                        # paused at a breakpoint whose guard held
+            if wrange is not None and self._check_write_break():
+                return
+            if self.watches.has_value_breaks():
+                hit = self.watches.check(self.machine)
+                if hit:
+                    self.paused = True
+                    self.overlay.setText(f"⏸ watchpoint — {hit}")
+                    self._blit()
+                    return
+            for w in locked:                     # freeze: pin each locked value
+                self.machine.write(w.addr, w.lock_bytes())
+            if self._rewind_on:                  # frame-perfect rewind history
+                self._rewind.append(self._capture_state())
+            if self._song is not None:           # per-frame note capture (.ngps export)
+                self._song.feed(self.machine.apu_state())
             # THE BIOS HALTS ON PURPOSE: it arms INT0 (the POWER button) and
             # sleeps. Press it once, on the player's behalf -- they asked for the
             # console to come on by launching. (Same reason NativeSession and ares
@@ -1641,13 +2004,12 @@ class PlayPage(QWidget):
                 self.machine.run_frames(1)
             if self.audio is not None:
                 a = self.machine.audio()          # always drain the core's audio buffer
+                self._last_audio = a              # feed the debug oscilloscope
                 if self._speed == 1.0 and not self._ff:
                     self.pending += a             # ...but only queue it at real speed (mute FF/slow)
-        if self.audio is not None and self.pending:
-            free = self.sink.bytesFree()
-            take = min(free, len(self.pending)); take -= take % 4
-            if take > 0:
-                self.audio.write(bytes(self.pending[:take])); del self.pending[:take]
+        self._drain_pending()
+        if self._vgm is not None:            # capturing music -> log this tick's PSG writes
+            self._vgm.feed(self.machine.apu_write_count(), self.machine.apu_writes())
         self._blit()
         self._update_osd(due)
 
@@ -1799,8 +2161,20 @@ class Shell(QMainWindow):
         self._update_rail(idx)
 
     def _launch(self, rom_str: str) -> None:
+        self.library._stop_worker()          # no thumbnail core alongside the game's core
         self._stack.setCurrentWidget(self.play)
-        self.play.start(Path(rom_str))
+        try:
+            self.play.start(Path(rom_str))
+        except Exception as exc:             # a bad ROM/save must never crash to desktop
+            try:
+                self.play.stop()
+            except Exception:
+                pass
+            self._stack.setCurrentWidget(self.library)
+            self._update_rail(0)
+            QMessageBox.warning(self, "Cannot start game",
+                                f"{Path(rom_str).name}\n\n{type(exc).__name__}: {exc}")
+            return
         self._update_rail(2)
 
     def _launch_bios(self) -> None:

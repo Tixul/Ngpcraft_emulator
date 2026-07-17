@@ -450,6 +450,16 @@ struct Machine {
     /* pending interrupts, keyed by the chip's own hardware vector index */
     uint32_t irq_pending = 0;
 
+    /* POWER = the console's NMI (non-maskable, vector index 8 -> 0xFFFF20). On real
+     * hardware the BIOS boots into an idle HALT and the POWER-button NMI is what runs
+     * its boot handler and hands off to the cartridge. We press it on the user's behalf
+     * each time the BIOS parks at its idle HALT: the FIRST press runs the (first-boot)
+     * setup, and once that finishes the BIOS parks again -- a SECOND press then re-runs
+     * the boot handler, which this time sees the console configured and boots the cart.
+     * The setup itself SPINS (never halts), so no press fires during it. Capped so a
+     * handler that keeps bouncing back to idle cannot loop forever. */
+    uint8_t power_nmi_count = 0;
+
     /* How a family reports a stop that is NOT "not ported yet".
      *
      * Returning false from a family means UNIMPLEMENTED -- an encoding this core

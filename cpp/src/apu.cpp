@@ -97,12 +97,14 @@ void Apu::emit_sample() {
 
     int left = 0, right = 0;
 
-    for (Square& sq : square) {
+    for (int i = 0; i < 3; ++i) {
+        Square& sq = square[i];
         if (sq.period <= kMinAudiblePeriod || (!sq.vol_left && !sq.vol_right)) continue;
         sq.counter += int(step);
         const int toggles = sq.counter / sq.period;
         sq.counter %= sq.period;
         sq.phase ^= (toggles & 1);
+        if (!(channel_mask & (1u << i))) continue;   // muted: advanced, but not mixed
         const int sign = sq.phase ? 1 : -1;
         left  += sign * sq.vol_left;
         right += sign * sq.vol_right;
@@ -120,9 +122,11 @@ void Apu::emit_sample() {
             noise.shifter = (((noise.shifter << 14) ^ (noise.shifter << noise.tap)) & 0x4000)
                           | (noise.shifter >> 1);
         }
-        const int sign = (noise.shifter & 1) ? -1 : 1;
-        left  += sign * noise.vol_left;
-        right += sign * noise.vol_right;
+        if (channel_mask & 0x08) {                   // noise
+            const int sign = (noise.shifter & 1) ? -1 : 1;
+            left  += sign * noise.vol_left;
+            right += sign * noise.vol_right;
+        }
     }
 
     /* ⚡ THE SAMPLED VOICE, SUMMED IN. The DAC bypasses the sound chip entirely -- it is
@@ -130,8 +134,10 @@ void Apu::emit_sample() {
      * the chip's output, not routed through it. Held between writes: the converter keeps
      * driving the last code it was handed. 0x80 is silence, so a game that never touches
      * the DAC contributes exactly nothing here. */
-    left  += (int(dac_left)  - kDacSilence) * kDacGain;
-    right += (int(dac_right) - kDacSilence) * kDacGain;
+    if (channel_mask & 0x10) {                       // DAC (sampled voice)
+        left  += (int(dac_left)  - kDacSilence) * kDacGain;
+        right += (int(dac_right) - kDacSilence) * kDacGain;
+    }
 
     /* Four channels at 64 each = +-256 worst case; scale to a comfortable
      * headroom rather than clipping the one frame where they all align. */

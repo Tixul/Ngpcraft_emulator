@@ -142,6 +142,7 @@ NGPC_API void ngpc_reset(ngpc_t* h, int reset_mode) {
     }
     m->scanline = m->frame_count = m->cycle_residue = 0;
     m->irq_pending = 0;
+    m->power_nmi_count = 0;
     m->adc_busy = false;
     m->adc_cycles_remaining = 0;
     for (unsigned i = 0; i < 4; ++i) { m->timer_count[i] = 0; m->timer_clock[i] = 0; }
@@ -367,6 +368,27 @@ static bool deliver_irq(ngpc::Machine& m) {
     return true;
 }
 
+/* The POWER NMI. Non-maskable: it does NOT consult the level gate (that is the whole
+ * point of an NMI, and the BIOS idle loop sits with INT0 disabled, so a maskable pulse
+ * would be thrown away -- the bug the old INT0 prototype hit). Vector index 8 -> the
+ * table entry at 0xFFFF20, which the BIOS fills with its power/boot handler (0xFF1898).
+ * That handler validates the cartridge and hands off to it. */
+static void deliver_nmi(ngpc::Machine& m) {
+    using namespace ngpc;
+    ngpc_cpu_t& c = m.cpu;
+    const uint16_t sr = uint16_t(c.flags)
+                      | uint16_t((c.rfp & 0x03) << 8)
+                      | uint16_t(1u << 11)
+                      | uint16_t((c.iff_level & 0x07) << 12)
+                      | uint16_t(1u << 15);
+    c.regs[NGPC_XSP] -= 2;
+    store(m, nullptr, c.regs[NGPC_XSP], sr, 2);
+    c.regs[NGPC_XSP] -= 4;
+    store(m, nullptr, c.regs[NGPC_XSP], c.pc, 4);
+    c.iff_level = 7;                                    // NMI runs at the top priority
+    c.pc = m.read32(kIrqVectorTableBase + 4u * 8u);     // idx 8 = 0xFFFF20 -> 0xFF1898
+}
+
 NGPC_API int ngpc_run(ngpc_t* h, uint32_t max_instrs,
                       ngpc_record_t* out_records, uint32_t records_cap,
                       ngpc_summary_t* out_summary) {
@@ -408,6 +430,20 @@ NGPC_API int ngpc_run(ngpc_t* h, uint32_t max_instrs,
              * goes by with nothing -- every source masked, or none enabled -- the
              * halt IS terminal and we say so honestly. PC still points AT the
              * halt, so the machine re-parks if the handler returns. */
+
+            /* ⚡ THE BIOS -> CARTRIDGE HAND-OFF. On silicon the console powers into an
+             * idle HALT inside the BIOS and waits for the POWER-button NMI to run its
+             * boot handler, which hands off to the cartridge. A halt with PC in BIOS
+             * space (>= 0xFF0000) IS that idle -- a game halts in cart space -- so the
+             * first time we see it we press POWER on the player's behalf, exactly as
+             * ares does. Latched: it fires once, so a game's own HALTs are untouched. */
+            if (pc_before >= 0xFF0000 && m->power_nmi_count < 8) {
+                ++m->power_nmi_count;                  // re-press POWER at each BIOS idle
+                deliver_nmi(*m);
+                ++s.executed;
+                continue;                              // resume inside the boot handler
+            }
+
             bool woke = false;
             for (unsigned line = 0; line <= kScanlinesPerFrame; ++line) {
                 advance_raster(*m, kCyclesPerScanline);
@@ -644,6 +680,12 @@ NGPC_API void ngpc_set_flash_size(ngpc_t* h, uint32_t chip, uint32_t bytes) {
 NGPC_API void ngpc_raise_irq(ngpc_t* h, uint32_t vector_index) {
     if (!h || vector_index >= 32) return;
     reinterpret_cast<Machine*>(h)->irq_pending |= (1u << vector_index);
+}
+
+NGPC_API void ngpc_set_apu_channel_mask(ngpc_t* h, uint32_t mask) {
+    if (!h) return;
+    // bit0..2 = squares, bit3 = noise, bit4 = DAC. Debug mute/solo only.
+    reinterpret_cast<Machine*>(h)->apu.channel_mask = uint8_t(mask & 0x1F);
 }
 
 NGPC_API void ngpc_get_apu_state(ngpc_t* h, ngpc_apu_state_t* out) {

@@ -19,6 +19,7 @@ controls.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -27,10 +28,27 @@ from PyQt6.QtGui import QImage, QPixmap, QFont
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QPlainTextEdit, QTabWidget, QComboBox, QLineEdit, QSpinBox, QCheckBox,
-    QScrollArea, QFileDialog,
+    QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+    QAbstractItemView,
 )
 
 from core.decode import decode_instruction_at
+from core.watches import Watch
+from core.exec_breaks import ExecBreak
+from core.ramsearch import RamSearch
+from core.vgm_export import VgmRecorder
+from core.ngps_export import NgpsRecorder
+
+_NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+
+def _freq_to_note(freq: float) -> str:
+    if freq <= 0:
+        return "—"
+    midi = int(round(69 + 12 * math.log2(freq / 440.0)))
+    if not 0 <= midi < 128:
+        return "—"
+    return f"{_NOTE_NAMES[midi % 12]}{midi // 12 - 1}"
 
 # ---- VRAM / palette map (mirrors cpp/src/render.cpp) ----
 CHAR_RAM = 0x00A000
@@ -147,15 +165,25 @@ class DebugWindow(QMainWindow):
         self._frozen = False
         self._tiles_arr = None
         self._pal_arr = None
+        self._watch_building = False       # guards table edits from re-committing
+        self._watch_rom = None             # last ROM stem shown, to reload on change
+        self._breaks_building = False
+        self._breaks_rom = None
+        self._ram = RamSearch()            # RAM-search session (this window's)
+        self._vgm_rec = None               # last VGM capture, kept for saving
+        self._song_rec = None              # last .ngps capture, kept for saving
 
         top = QWidget(); self.setCentralWidget(top)
         v = QVBoxLayout(top); v.setContentsMargins(8, 8, 8, 8); v.setSpacing(6)
 
         bar = QHBoxLayout()
         self._btn_pause = QPushButton("⏸ Pause"); self._btn_pause.clicked.connect(self._toggle_pause)
-        self._btn_step = QPushButton("⏭ Step frame"); self._btn_step.clicked.connect(self._step)
+        self._btn_back = QPushButton("⏪ Back"); self._btn_back.clicked.connect(self._step_back)
+        self._btn_back.setToolTip("Rewind one frame ( , )")
+        self._btn_step = QPushButton("⏭ Step"); self._btn_step.clicked.connect(self._step)
+        self._btn_step.setToolTip("Step one frame forward ( . )")
         self._btn_reset = QPushButton("⟲ Reset"); self._btn_reset.clicked.connect(self._reset)
-        for b in (self._btn_pause, self._btn_step, self._btn_reset):
+        for b in (self._btn_pause, self._btn_back, self._btn_step, self._btn_reset):
             b.setObjectName("ghost"); bar.addWidget(b)
         self._freeze = QCheckBox("❄ Freeze view")
         self._freeze.setToolTip("Stop auto-refresh so the view holds still (the game keeps running).")
@@ -169,6 +197,10 @@ class DebugWindow(QMainWindow):
         self._tabs.addTab(self._cpu_tab(), "CPU")
         self._tabs.addTab(self._disasm_tab(), "Disassembly")
         self._tabs.addTab(self._mem_tab(), "Memory")
+        self._tabs.addTab(self._watch_tab(), "Watch")
+        self._tabs.addTab(self._breaks_tab(), "Breakpoints")
+        self._tabs.addTab(self._ramsearch_tab(), "RAM Search")
+        self._tabs.addTab(self._audio_tab(), "Audio")
         self._tabs.addTab(self._palette_tab(), "Palette")
         self._tabs.addTab(self._tiles_tab(), "Tiles")
         self._tabs.addTab(self._sprites_tab(), "Sprites")
@@ -210,11 +242,15 @@ class DebugWindow(QMainWindow):
         self.refresh()
 
     def _step(self) -> None:
-        if self._m is None:
+        if self._play is None:
             return
-        self._play.paused = True
-        self._m.run_frames(1)
-        self._play._blit()  # noqa: SLF001
+        self._play.step_forward()  # integrates with the rewind ring
+        self.refresh()
+
+    def _step_back(self) -> None:
+        if self._play is None:
+            return
+        self._play.step_back()
         self.refresh()
 
     def _reset(self) -> None:
@@ -424,6 +460,534 @@ class DebugWindow(QMainWindow):
             rows.append(f"{addr:06X}  {hexs:<47}  {ascii_}")
         self._mem_text.setPlainText("\n".join(rows))
 
+    # ---- Watch tab
+    _SIZE_OPTS = [("1", 1), ("2", 2), ("4", 4)]
+    _FMT_OPTS = [("hex", "hex"), ("dec", "u"), ("s.dec", "s")]
+    _BREAK_OPTS = [("—", ""), ("change", "change"), ("write", "write"),
+                   ("=", "="), ("≠", "!="), ("<", "<"), (">", ">"), ("≤", "<="), ("≥", ">=")]
+    _WATCH_COLS = ["Name", "Addr", "Size", "Fmt", "Break", "Value", "Lock", "Live"]
+
+    def _watch_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel(
+            "Name memory addresses and watch them live. Break: 'change' / a comparison "
+            "pauses on value; 'write' pauses and shows which PC wrote it. Lock freezes the "
+            "address to Value. Saved per ROM."))
+        t = QTableWidget(0, len(self._WATCH_COLS))
+        t.setHorizontalHeaderLabels(self._WATCH_COLS)
+        t.verticalHeader().setVisible(False)
+        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for c in range(1, len(self._WATCH_COLS)):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        t.itemChanged.connect(self._on_watch_item)
+        self._watch_table = t
+        lay.addWidget(t, 1)
+        bar = QHBoxLayout()
+        add = QPushButton("＋ Add"); add.setObjectName("ghost"); add.clicked.connect(self._watch_add)
+        rem = QPushButton("－ Remove"); rem.setObjectName("ghost"); rem.clicked.connect(self._watch_remove)
+        bar.addWidget(add); bar.addWidget(rem); bar.addStretch()
+        lay.addLayout(bar)
+        return w
+
+    def _combo_widget(self, options, current) -> QComboBox:
+        cb = QComboBox()
+        for label, data in options:
+            cb.addItem(label, data)
+        i = cb.findData(current)
+        if i >= 0:
+            cb.setCurrentIndex(i)
+        cb.currentIndexChanged.connect(self._commit_watches)
+        return cb
+
+    def _watch_add_row(self, wt: Watch | None = None) -> None:
+        t = self._watch_table
+        r = t.rowCount(); t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem(wt.name if wt else ""))
+        t.setItem(r, 1, QTableWidgetItem(f"{wt.addr:06X}" if wt else ""))
+        t.setCellWidget(r, 2, self._combo_widget(self._SIZE_OPTS, wt.size if wt else 1))
+        t.setCellWidget(r, 3, self._combo_widget(self._FMT_OPTS, wt.fmt if wt else "hex"))
+        t.setCellWidget(r, 4, self._combo_widget(self._BREAK_OPTS, wt.brk if wt else ""))
+        t.setItem(r, 5, QTableWidgetItem(str(wt.value) if wt else ""))
+        lock = QTableWidgetItem()
+        lock.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        lock.setCheckState(Qt.CheckState.Checked if (wt and wt.lock) else Qt.CheckState.Unchecked)
+        lock.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        t.setItem(r, 6, lock)
+        live = QTableWidgetItem("")
+        live.setFlags(Qt.ItemFlag.ItemIsEnabled)              # read-only, not editable
+        live.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        t.setItem(r, 7, live)
+
+    def _watch_add(self) -> None:
+        self._watch_building = True
+        self._watch_add_row()
+        self._watch_building = False
+
+    def _watch_remove(self) -> None:
+        r = self._watch_table.currentRow()
+        if r >= 0:
+            self._watch_table.removeRow(r)
+            self._commit_watches()
+
+    def _on_watch_item(self, _item) -> None:
+        if not self._watch_building:
+            self._commit_watches()
+
+    def _row_to_watch(self, r: int) -> Watch | None:
+        t = self._watch_table
+        cell = t.item(r, 1)
+        addr_txt = cell.text().strip() if cell else ""
+        if not addr_txt:
+            return None
+        try:
+            addr = int(addr_txt, 16)
+        except ValueError:
+            return None
+        name = (t.item(r, 0).text().strip() if t.item(r, 0) else "")
+        size = t.cellWidget(r, 2).currentData()
+        fmt = t.cellWidget(r, 3).currentData()
+        brk = t.cellWidget(r, 4).currentData()
+        vtxt = (t.item(r, 5).text().strip() if t.item(r, 5) else "")
+        try:
+            value = int(vtxt, 0) if vtxt else 0
+        except ValueError:
+            value = 0
+        lock_item = t.item(r, 6)
+        lock = bool(lock_item and lock_item.checkState() == Qt.CheckState.Checked)
+        return Watch(name, addr, size, fmt, brk, value, lock)
+
+    def _commit_watches(self) -> None:
+        if self._play is None or self._watch_building:
+            return
+        ws = [w for r in range(self._watch_table.rowCount())
+              if (w := self._row_to_watch(r)) is not None]
+        self._play.watches.watches = ws
+        self._play._save_watches()  # noqa: SLF001
+
+    def _rebuild_watch_table(self) -> None:
+        """Replace every row from the play's watch list. Structural table edits must
+        NOT run inside a refresh/signal (mutating the widget tree from a tab-change or
+        paint handler can crash Qt) -- this is only ever reached via singleShot(0)."""
+        play = self._play
+        if play is None:
+            return
+        self._watch_building = True
+        try:
+            self._watch_table.setRowCount(0)
+            for wt in play.watches.watches:
+                self._watch_add_row(wt)
+        finally:
+            self._watch_building = False
+
+    def _refresh_watch(self) -> None:
+        play = self._play
+        if play is None or self._watch_building:
+            return
+        stem = play._rom_path.stem if play._rom_path else None  # noqa: SLF001
+        if stem != self._watch_rom:                  # ROM changed -> rebuild, but deferred
+            self._watch_rom = stem
+            QTimer.singleShot(0, self._rebuild_watch_table)
+            return                                   # live values fill in next tick
+        m = self._m                                  # structure stable -> only touch Live
+        self._watch_building = True
+        try:
+            for r in range(self._watch_table.rowCount()):
+                live = self._watch_table.item(r, 7)
+                if live is None:
+                    continue
+                wt = self._row_to_watch(r)
+                try:
+                    live.setText(wt.format(wt.read_raw(m)) if (wt and m is not None) else "")
+                except Exception:
+                    live.setText("??")
+        finally:
+            self._watch_building = False
+
+    # ---- Breakpoints tab
+    def _breaks_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel(
+            "Pause when PC reaches an address. Condition (optional): 'ADDR[.size] OP VALUE', "
+            "e.g. '4812 = 0' or '4a00.2 > 0x100' — fires only when it holds. Saved per ROM."))
+        t = QTableWidget(0, 3)
+        t.setHorizontalHeaderLabels(["PC", "Condition", "On"])
+        t.verticalHeader().setVisible(False)
+        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        t.itemChanged.connect(self._on_break_item)
+        self._break_table = t
+        lay.addWidget(t, 1)
+        bar = QHBoxLayout()
+        add = QPushButton("＋ Add"); add.setObjectName("ghost"); add.clicked.connect(self._break_add)
+        rem = QPushButton("－ Remove"); rem.setObjectName("ghost"); rem.clicked.connect(self._break_remove)
+        bar.addWidget(add); bar.addWidget(rem); bar.addStretch()
+        lay.addLayout(bar)
+        return w
+
+    def _break_add_row(self, bp: ExecBreak | None = None) -> None:
+        t = self._break_table
+        r = t.rowCount(); t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem(f"{bp.pc:06X}" if bp else ""))
+        t.setItem(r, 1, QTableWidgetItem(bp.cond if bp else ""))
+        on = QTableWidgetItem()
+        on.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        on.setCheckState(Qt.CheckState.Checked if (bp is None or bp.enabled)
+                         else Qt.CheckState.Unchecked)
+        on.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        t.setItem(r, 2, on)
+
+    def _break_add(self) -> None:
+        self._breaks_building = True
+        self._break_add_row()
+        self._breaks_building = False
+
+    def _break_remove(self) -> None:
+        r = self._break_table.currentRow()
+        if r >= 0:
+            self._break_table.removeRow(r)
+            self._commit_breaks()
+
+    def _on_break_item(self, _item) -> None:
+        if not self._breaks_building:
+            self._commit_breaks()
+
+    def _row_to_break(self, r: int) -> ExecBreak | None:
+        t = self._break_table
+        cell = t.item(r, 0)
+        pctxt = cell.text().strip() if cell else ""
+        if not pctxt:
+            return None
+        try:
+            pc = int(pctxt, 16)
+        except ValueError:
+            return None
+        cond = t.item(r, 1).text().strip() if t.item(r, 1) else ""
+        on = t.item(r, 2)
+        enabled = on is None or on.checkState() == Qt.CheckState.Checked
+        return ExecBreak(pc, cond, enabled)
+
+    def _commit_breaks(self) -> None:
+        if self._play is None or self._breaks_building:
+            return
+        items = [b for r in range(self._break_table.rowCount())
+                 if (b := self._row_to_break(r)) is not None]
+        self._play.breaks.items = items
+        self._play._save_breaks()  # noqa: SLF001
+
+    def _rebuild_break_table(self) -> None:
+        play = self._play
+        if play is None:
+            return
+        self._breaks_building = True
+        try:
+            self._break_table.setRowCount(0)
+            for bp in play.breaks.items:
+                self._break_add_row(bp)
+        finally:
+            self._breaks_building = False
+
+    def _refresh_breaks(self) -> None:
+        play = self._play
+        if play is None or self._breaks_building:
+            return
+        stem = play._rom_path.stem if play._rom_path else None  # noqa: SLF001
+        if stem != self._breaks_rom:
+            self._breaks_rom = stem
+            QTimer.singleShot(0, self._rebuild_break_table)
+
+    # ---- RAM Search tab
+    def _ramsearch_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel(
+            "Find where a value lives: New search, let the game change it, then filter. "
+            "Double-click a hit (or Add) to name & watch it."))
+        r1 = QHBoxLayout()
+        self._rs_start = QLineEdit("004000"); self._rs_start.setFixedWidth(74)
+        self._rs_end = QLineEdit("00C000"); self._rs_end.setFixedWidth(74)
+        for e in (self._rs_start, self._rs_end):
+            e.setFont(QFont(_MONO, 10))
+        self._rs_size = QComboBox()
+        for lab, d in (("1", 1), ("2", 2), ("4", 4)):
+            self._rs_size.addItem(lab, d)
+        self._rs_signed = QCheckBox("signed")
+        nb = QPushButton("New search"); nb.setObjectName("ghost"); nb.clicked.connect(self._rs_new)
+        r1.addWidget(QLabel("Range")); r1.addWidget(self._rs_start)
+        r1.addWidget(QLabel("‥")); r1.addWidget(self._rs_end)
+        r1.addWidget(QLabel("Size")); r1.addWidget(self._rs_size)
+        r1.addWidget(self._rs_signed); r1.addWidget(nb); r1.addStretch()
+        lay.addLayout(r1)
+        r2 = QHBoxLayout()
+        self._rs_value = QLineEdit(); self._rs_value.setFixedWidth(84)
+        self._rs_value.setPlaceholderText("value"); self._rs_value.setFont(QFont(_MONO, 10))
+        r2.addWidget(self._rs_value)
+        for lab, op in (("=", "="), ("≠", "!="), (">", ">"), ("<", "<")):
+            b = QPushButton(lab); b.setObjectName("ghost"); b.setFixedWidth(32)
+            b.clicked.connect(lambda _c, o=op: self._rs_filter(o, True)); r2.addWidget(b)
+        r2.addSpacing(10)
+        for lab, op in (("changed", "changed"), ("=prev", "unchanged"),
+                        ("▲", "increased"), ("▼", "decreased")):
+            b = QPushButton(lab); b.setObjectName("ghost")
+            b.clicked.connect(lambda _c, o=op: self._rs_filter(o, False)); r2.addWidget(b)
+        r2.addStretch()
+        lay.addLayout(r2)
+        self._rs_count = QLabel("no search"); self._rs_count.setObjectName("hint")
+        lay.addWidget(self._rs_count)
+        t = QTableWidget(0, 2); t.setHorizontalHeaderLabels(["Address", "Value"])
+        t.verticalHeader().setVisible(False)
+        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        t.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        t.cellDoubleClicked.connect(lambda *_: self._rs_add_to_watch())
+        self._rs_list = t
+        lay.addWidget(t, 1)
+        add = QPushButton("＋ Add selected to Watch"); add.setObjectName("ghost")
+        add.clicked.connect(self._rs_add_to_watch)
+        lay.addWidget(add)
+        return w
+
+    def _rs_new(self) -> None:
+        m = self._m
+        if m is None:
+            return
+        try:
+            lo = int(self._rs_start.text(), 16); hi = int(self._rs_end.text(), 16)
+        except ValueError:
+            return
+        n = self._ram.new_search(m, lo, hi, self._rs_size.currentData(),
+                                 self._rs_signed.isChecked())
+        self._rs_count.setText(f"{n} candidates")
+        self._rs_update_list()
+
+    def _rs_filter(self, op: str, needs_value: bool) -> None:
+        m = self._m
+        if m is None or not self._ram.started:
+            return
+        operand = None
+        if needs_value:
+            try:
+                operand = int(self._rs_value.text(), 0)
+            except ValueError:
+                self._rs_value.setStyleSheet("color:#e06c75"); return
+            self._rs_value.setStyleSheet("")
+        n = self._ram.refine(m, op, operand)
+        self._rs_count.setText(f"{n} candidates")
+        self._rs_update_list()
+
+    def _rs_update_list(self) -> None:
+        m = self._m
+        res = self._ram.results(m) if m is not None else []
+        t = self._rs_list
+        t.setRowCount(0)
+        for addr, val in res:
+            r = t.rowCount(); t.insertRow(r)
+            a = QTableWidgetItem(f"{addr:06X}"); a.setFont(QFont(_MONO, 10))
+            v = QTableWidgetItem(val); v.setFont(QFont(_MONO, 10))
+            v.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            t.setItem(r, 0, a); t.setItem(r, 1, v)
+        total = self._ram.count()
+        if total > len(res):
+            self._rs_count.setText(f"{total} candidates (showing {len(res)})")
+
+    def _rs_add_to_watch(self) -> None:
+        if self._play is None:
+            return
+        rows = sorted({i.row() for i in self._rs_list.selectedIndexes()})
+        if not rows:
+            return
+        size = self._rs_size.currentData()
+        fmt = "s" if self._rs_signed.isChecked() else "hex"
+        for r in rows:
+            cell = self._rs_list.item(r, 0)
+            if cell is None:
+                continue
+            addr = int(cell.text(), 16)
+            self._play.watches.watches.append(Watch(f"ram_{addr:06X}", addr, size, fmt))
+        self._play._save_watches()  # noqa: SLF001
+        self._watch_rom = None       # force the Watch tab to repopulate from the list
+        for i in range(self._tabs.count()):
+            if self._tabs.tabText(i) == "Watch":
+                self._tabs.setCurrentIndex(i); break
+
+    def _refresh_ramsearch(self) -> None:
+        m = self._m
+        if m is None or not self._ram.started:
+            return
+        res = dict(self._ram.results(m))         # addr -> live value, no structural change
+        t = self._rs_list
+        for r in range(t.rowCount()):
+            a = t.item(r, 0); v = t.item(r, 1)
+            if a is None or v is None:
+                continue
+            try:
+                addr = int(a.text(), 16)
+            except ValueError:
+                continue
+            if addr in res:
+                v.setText(res[addr])
+
+    # ---- Audio tab
+    _APU_CHANS = ("Square 1", "Square 2", "Square 3", "Noise", "DAC")
+
+    def _audio_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        mrow = QHBoxLayout(); mrow.addWidget(QLabel("Mute / solo:"))
+        self._mute_boxes = []
+        for name in self._APU_CHANS:
+            cb = QCheckBox(name); cb.setChecked(True)
+            cb.toggled.connect(self._apply_mute)
+            self._mute_boxes.append(cb); mrow.addWidget(cb)
+        mrow.addStretch()
+        lay.addLayout(mrow)
+
+        t = QTableWidget(4, 5)
+        t.setHorizontalHeaderLabels(["Channel", "Freq", "Note", "Vol L", "Vol R"])
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for c in range(5):
+            t.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+        t.setFixedHeight(140)
+        self._apu_table = t
+        lay.addWidget(t)
+
+        self._scope = QLabel(); self._scope.setFixedHeight(84)
+        self._scope.setStyleSheet("background:#111;")
+        lay.addWidget(self._scope)
+
+        self._z80_lbl = QLabel("—"); self._z80_lbl.setObjectName("hint")
+        self._z80_lbl.setFont(QFont(_MONO, 9))
+        lay.addWidget(self._z80_lbl)
+
+        vrow = QHBoxLayout()
+        self._vgm_btn = QPushButton("⏺ Record"); self._vgm_btn.setObjectName("ghost")
+        self._vgm_btn.setToolTip("Capture the music (for VGM and MIDI export)")
+        self._vgm_btn.setCheckable(True); self._vgm_btn.toggled.connect(self._toggle_vgm)
+        self._vgm_save = QPushButton("💾 VGM…"); self._vgm_save.setObjectName("ghost")
+        self._vgm_save.clicked.connect(self._save_vgm)
+        self._song_save = QPushButton("💾 Song (.ngps)…"); self._song_save.setObjectName("ghost")
+        self._song_save.setToolTip("Save as a sound-creator song (.ngps) to open in the tracker")
+        self._song_save.clicked.connect(self._save_song)
+        self._vgm_lbl = QLabel(""); self._vgm_lbl.setObjectName("hint")
+        vrow.addWidget(self._vgm_btn); vrow.addWidget(self._vgm_save)
+        vrow.addWidget(self._song_save); vrow.addWidget(self._vgm_lbl); vrow.addStretch()
+        lay.addLayout(vrow)
+
+        self._apu_log = QPlainTextEdit(); self._apu_log.setReadOnly(True)
+        self._apu_log.setFont(QFont(_MONO, 9))
+        lay.addWidget(self._apu_log, 1)
+        return w
+
+    def _mute_mask(self) -> int:
+        return sum((1 << i) for i, cb in enumerate(self._mute_boxes) if cb.isChecked())
+
+    def _apply_mute(self) -> None:
+        if self._m is not None:
+            try:
+                self._m.set_apu_channel_mask(self._mute_mask())
+            except Exception:
+                pass
+
+    def _toggle_vgm(self, on: bool) -> None:
+        if self._play is None or self._m is None:
+            self._vgm_btn.blockSignals(True); self._vgm_btn.setChecked(False)
+            self._vgm_btn.blockSignals(False)
+            return
+        if on:
+            vrec = VgmRecorder(); vrec.begin(self._m.apu_write_count())
+            srec = NgpsRecorder(); srec.begin()
+            self._vgm_rec = vrec; self._song_rec = srec
+            self._play._vgm = vrec                     # noqa: SLF001  (play loop feeds these)
+            self._play._song = srec                    # noqa: SLF001
+            self._vgm_btn.setText("⏹ Stop")
+        else:
+            self._play._vgm = None                     # noqa: SLF001  (freeze the buffers)
+            self._play._song = None                    # noqa: SLF001
+            self._vgm_btn.setText("⏺ Record")
+
+    def _save_vgm(self) -> None:
+        rec = self._vgm_rec
+        if rec is None or rec.empty():
+            self._status.setText("nothing recorded"); return
+        path, _ = QFileDialog.getSaveFileName(self, "Save VGM", "capture.vgm", "VGM (*.vgm)")
+        if path:
+            Path(path).write_bytes(rec.build())
+            self._status.setText(f"saved {Path(path).name}")
+
+    def _save_song(self) -> None:
+        rec = self._song_rec
+        if rec is None or rec.empty():
+            self._status.setText("nothing recorded"); return
+        path, _ = QFileDialog.getSaveFileName(self, "Save song", "capture.ngps",
+                                              "NGPC song (*.ngps)")
+        if path:
+            Path(path).write_bytes(rec.build())
+            self._status.setText(f"saved {Path(path).name}")
+
+    def _scope_pixmap(self, audio: bytes):
+        w, h = 480, 80
+        arr = np.zeros((h, w, 3), np.uint8)
+        arr[h // 2, :] = (40, 40, 40)                  # centre line
+        if audio and len(audio) >= 4:
+            s = np.frombuffer(audio, np.int16)
+            left = s[0::2].astype(np.float32)
+            if len(left) >= 2:
+                idx = np.linspace(0, len(left) - 1, w).astype(int)
+                pts = left[idx]
+                peak = max(1.0, float(np.abs(pts).max()))
+                ys = (h // 2 - (pts / peak) * (h // 2 - 2)).astype(int).clip(0, h - 1)
+                arr[ys, np.arange(w)] = (120, 220, 120)
+        return _pixmap(arr, 1)
+
+    def _refresh_audio(self) -> None:
+        self._apply_mute()                             # keep the mask across game resets
+        m = self._m
+        t = self._apu_table
+        if m is None:
+            for r in range(4):
+                for c in range(5):
+                    t.setItem(r, c, QTableWidgetItem(""))
+            return
+        st = m.apu_state()
+        def put(r, vals):
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(str(v))
+                if c:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                t.setItem(r, c, it)
+        for i in range(3):
+            per = st.square_period[i]
+            freq = (96000.0 / per) if per > 0 else 0.0
+            on = per > 0 and (st.square_vol_left[i] or st.square_vol_right[i])
+            put(i, [self._APU_CHANS[i], f"{freq:.0f} Hz" if on else "—",
+                    _freq_to_note(freq) if on else "—",
+                    st.square_vol_left[i], st.square_vol_right[i]])
+        nsel = st.noise_period_select
+        nmode = "tone3" if nsel == 3 else f"÷{[512, 1024, 2048][nsel]}" if nsel < 3 else "—"
+        put(3, ["Noise", nmode, "white" if st.noise_tap else "—",
+                st.noise_vol_left, st.noise_vol_right])
+
+        self._scope.setPixmap(self._scope_pixmap(getattr(self._play, "_last_audio", b"")))
+
+        z = m.z80()
+        self._z80_lbl.setText(
+            f"Z80 sound CPU  pc={z.pc:04X} sp={z.sp:04X}  {'RUN' if z.running else 'halt'}"
+            f"   executed={z.executed}   chip-writes={m.apu_write_count()}")
+
+        ws = m.apu_writes()
+        lines = []
+        for a in ws[-26:]:
+            door = ("L" if a.address & 1 else "R") if a.kind == 1 else "port"
+            lines.append(f"{a.cycle:>13}  {door:>4}  {a.address:04X} = {a.value:02X}")
+        self._apu_log.setPlainText("\n".join(lines))
+        if self._vgm_rec is not None:
+            state = "● rec" if self._play and self._play._vgm is not None else "stopped"  # noqa: SLF001
+            self._vgm_lbl.setText(f"{len(self._vgm_rec.events)} writes ({state})")
+
     # ---- Palette tab
     def _palette_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
@@ -532,5 +1096,6 @@ class DebugWindow(QMainWindow):
             self._btn_pause.setText("▶ Resume" if self._play.paused else "⏸ Pause")
             self._status.setText("paused" if self._play.paused else "running")
         idx = self._tabs.currentIndex()
-        (self._refresh_cpu, self._refresh_disasm, self._refresh_mem,
+        (self._refresh_cpu, self._refresh_disasm, self._refresh_mem, self._refresh_watch,
+         self._refresh_breaks, self._refresh_ramsearch, self._refresh_audio,
          self._refresh_palette, self._refresh_tiles, self._refresh_sprites)[idx]()

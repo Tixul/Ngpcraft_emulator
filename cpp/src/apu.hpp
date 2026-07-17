@@ -103,6 +103,11 @@ struct Apu {
     uint8_t latch_left  = 0;    /* (index << 1) | is_volume */
     uint8_t latch_right = 0;
 
+    /* Debug channel enable mask: bit0..2 squares, bit3 noise, bit4 DAC. All on by
+     * default. Muting drops a channel from the MIX only -- its oscillator keeps
+     * advancing, so un-muting does not jump the phase. */
+    uint8_t channel_mask = 0x1F;
+
     /* The sampled voice. Held between writes (zero-order hold), which is what the
      * converter itself does: it keeps driving the last code it was given. */
     uint8_t dac_left  = kDacSilence;

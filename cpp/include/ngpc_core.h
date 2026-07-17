@@ -318,6 +318,8 @@ NGPC_API void ngpc_raise_irq(ngpc_t*, uint32_t vector_index);
 NGPC_API void ngpc_set_timer_base(ngpc_t*, uint32_t cycles_per_phi_t1);
 
 NGPC_API void ngpc_get_apu_state(ngpc_t*, ngpc_apu_state_t* out);
+/* Debug channel mute mask: bit0..2 squares, bit3 noise, bit4 DAC (0x1F = all on). */
+NGPC_API void ngpc_set_apu_channel_mask(ngpc_t*, uint32_t mask);
 NGPC_API uint32_t ngpc_get_audio(ngpc_t*, int16_t* out, uint32_t frames);
 NGPC_API uint64_t ngpc_audio_dropped(ngpc_t*);
 

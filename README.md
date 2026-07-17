@@ -16,8 +16,13 @@ fast that most emulators show.
 - **Save states** — 8 slots per game (toolbar or `F2` save / `F4` load / `F3` slot).
 - **In-game saves** — the game's own flash save, stored in the ROM, a separate file, or both.
 - **Speed control** — fast-forward (hold `Tab`) and 0.25×…4× (`[` / `]` or the toolbar).
+- **Rewind** — hold `,` (or the ⏪ toolbar button) to run the game backward; release to
+  resume. `.` steps one frame forward. Buffer length configurable (Off / 10 / 20 / 30 s).
 - **Screenshots** (`F12`, folder configurable), **FPS overlay**, a hideable **player toolbar**.
-- **Debug tools** — CPU, disassembly, memory (with poke), palette, tiles, sprites; export.
+- **Debug tools** (`F1`) — CPU, disassembly, memory (with poke), palette, tiles, sprites;
+  **named watchpoints** (break-on-value / break-on-write / freeze), **execution breakpoints**
+  (with conditions), **RAM search**, and an **audio** panel (per-channel note/volume,
+  oscilloscope, mute/solo, **VGM export**); everything exportable and saved per ROM.
 - **Crash reports** — a ROM fault writes a detailed `crashes/*.txt` (reason, PC, opcode,
   registers, memory & stack dumps).
 
@@ -61,8 +66,11 @@ This produces `cpp/build/ngpc_core.{dll,so,dylib}`, which the shell loads automa
 No ROMs or BIOS are included — provide your own.
 
 - Put `.ngc` / `.ngp` files in **`roms/`** (or pick any folder via **Settings ▸ Library**).
-- A real NGPC **BIOS** is optional: place it as **`bios.bin`** next to the app (or set the
-  path in Settings) to use *Boot BIOS*. Games launch fine without it.
+- A real Neo Geo Pocket **BIOS** — place it as **`bios.bin`** next to the app (or set the
+  path in **Settings ▸ BIOS**). **Most homebrew need it**: they call BIOS routines through
+  the console's vector table, so without a BIOS they crash on boot (the emulator will tell
+  you when that happens). Commercial games and BIOS-free homebrew run without one. Leave
+  *Boot BIOS* **off** — the BIOS is used automatically; the game still boots straight in.
 
 ## Saves
 
@@ -95,7 +103,46 @@ Two different things, kept separate:
 | `F2` / `F4` / `F3` | save / load state · change slot |
 | `Tab` (hold) · `[` / `]` | fast-forward · slower / faster |
 | `F12` · `F11` · `Ctrl+1…5` | screenshot · fullscreen · window size 1×…5× |
+| hold `,` · `.` | rewind while held (release to resume) · step one frame forward |
 | `F1` · `H` | debug tools · toggle player toolbar |
+
+## Debugging (F1)
+
+Built for people writing NGPC games by hand. Everything below is saved **per ROM**, so
+your map of a game survives across sessions.
+
+- **Watch** — give memory addresses logical names and see their live value (1/2/4 bytes,
+  hex or signed/unsigned). Each row can also:
+  - **break on value** — pause when it hits a condition (`=`, `≠`, `<`, `>`, `change`);
+  - **break on write** — pause when *any* code writes it, naming the **PC that did it**;
+  - **lock** — freeze the address to a value each frame (test "what if HP never drops").
+- **Breakpoints** — pause when PC reaches an address, with an optional guard condition
+  (`4812 = 0`, `4a00.2 > 0x100`): it only fires when the condition holds.
+- **RAM Search** — find *where* a value lives: start a search, let the game change it, then
+  filter (`=`, `≠`, `>`, `<`, `changed`, `=prev`, `▲`, `▼`) until one address remains.
+  Double-click a hit to name and watch it.
+- **Audio** — live per-channel monitor (3 square + noise): period → frequency → **note**,
+  L/R volume, plus an oscilloscope of the output and the sound Z80's state. **Mute / solo**
+  any channel to isolate it, watch the raw chip-write log, and **record the music** — save it
+  as a **`.vgm`** (Furnace / VGM players) or as a **`.ngps` song** for the NGPC sound creator.
+- Plus the live viewers: CPU, disassembly + trace-to-file, memory (with poke), palette,
+  tiles, sprites — each with an Export button.
+
+### Rewind — how it works and its limits
+
+Rewind keeps a ring of recent frame snapshots so you can step **back** (`,`) and **forward**
+(`.`) through what just happened. Buffer length is set in **Settings ▸ General ▸ Rewind
+buffer**: **Off**, or 10 / 20 / 30 seconds. Each snapshot is ~48 KB, so the cost is roughly
+**10 s ≈ 29 MB, 20 s ≈ 58 MB, 30 s ≈ 86 MB** of RAM held while a game runs (Off = no cost).
+The default is 10 s.
+
+What it restores is the same thing a **save state** restores: the CPU plus the whole working
+image (I/O, RAM, VRAM). That means the **visible frame and game memory come back exactly**,
+but a few pieces of hardware timing that live only inside the core — the sound chip's stream,
+the timers, the scanline position — are **not** snapshotted and re-sync on the next frame. So
+rewind is frame-accurate for *what you saw and what's in memory*, but audio may click at the
+seam and cycle-exact timing right after a rewind is approximate. It's a "what did I just see?"
+tool, not a deterministic TAS engine.
 
 ## Legal
 

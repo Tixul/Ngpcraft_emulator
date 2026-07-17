@@ -135,6 +135,19 @@ def flash_capacity_bytes(s: QSettings, rom_bytes: int) -> int:
     return rom_bytes
 
 
+REWIND_CHOICES = (0, 10, 20, 30)          # seconds of history the UI offers
+
+
+def rewind_seconds(s: QSettings) -> int:
+    """Seconds of frame-perfect rewind history to keep (0 = off). Each frame snapshot is
+    ~48 KiB, so 10 s ~= 29 MB, 20 s ~= 58 MB, 30 s ~= 86 MB."""
+    try:
+        v = int(s.value("debug/rewind_seconds", 10))
+    except (ValueError, TypeError):
+        v = 10
+    return v if v in REWIND_CHOICES else 10
+
+
 def save_mode(s: QSettings) -> str:
     """Where a game's own save goes: 'rom' = into the .ngc (like a real cartridge's flash),
     'sidecar' = a separate saves/<rom>.flash (ROM untouched), 'both' = ROM + a backup file."""
@@ -299,6 +312,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "save_sidecar": "Separate file", "save_both": "ROM + separate file",
         "flash_size": "Cart flash size", "flash_auto": "Auto",
         "flash_4m": "4 Mbit (512 KB)", "flash_8m": "8 Mbit (1 MB)", "flash_16m": "16 Mbit (2 MB)",
+        "rewind": "Rewind buffer", "rewind_off": "Off",
+        "rewind_10": "10 s (~29 MB)", "rewind_20": "20 s (~58 MB)", "rewind_30": "30 s (~86 MB)",
         "slot": "Slot {n}", "state_saved": "State {n} saved",
         "state_loaded": "State {n} loaded", "state_empty": "Slot {n} empty",
         "speed": "Speed {x}x",
@@ -358,6 +373,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "save_sidecar": "Fichier séparé", "save_both": "ROM + fichier séparé",
         "flash_size": "Taille flash cart", "flash_auto": "Auto",
         "flash_4m": "4 Mbit (512 Ko)", "flash_8m": "8 Mbit (1 Mo)", "flash_16m": "16 Mbit (2 Mo)",
+        "rewind": "Tampon rembobinage", "rewind_off": "Désactivé",
+        "rewind_10": "10 s (~29 Mo)", "rewind_20": "20 s (~58 Mo)", "rewind_30": "30 s (~86 Mo)",
         "slot": "Emplacement {n}", "state_saved": "État {n} sauvé",
         "state_loaded": "État {n} chargé", "state_empty": "Emplacement {n} vide",
         "speed": "Vitesse {x}x",

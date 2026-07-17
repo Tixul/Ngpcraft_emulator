@@ -243,6 +243,8 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_raise_irq.restype = None
     lib.ngpc_get_apu_state.argtypes = [c_void_p, POINTER(ApuState)]
     lib.ngpc_get_apu_state.restype = None
+    lib.ngpc_set_apu_channel_mask.argtypes = [c_void_p, c_uint32]
+    lib.ngpc_set_apu_channel_mask.restype = None
     lib.ngpc_get_audio.argtypes = [c_void_p, POINTER(c_int16), c_uint32]
     lib.ngpc_get_audio.restype = c_uint32
     lib.ngpc_audio_dropped.argtypes = [c_void_p]
@@ -408,6 +410,10 @@ class NativeMachine:
         st = ApuState()
         self._lib.ngpc_get_apu_state(self._h, ctypes.byref(st))
         return st
+
+    def set_apu_channel_mask(self, mask: int) -> None:
+        """Debug mute: bit0..2 squares, bit3 noise, bit4 DAC (0x1F = all on)."""
+        self._lib.ngpc_set_apu_channel_mask(self._h, int(mask) & 0x1F)
 
     AUDIO_RATE_HZ = 44100
 

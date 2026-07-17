@@ -859,6 +859,16 @@ bool exec_reg_family(Machine& m, ngpc_record_t* rec, uint8_t op, uint32_t pc,
         out_len = L(2); out_cycles = 3;
         return true;
     }
+    if (sub == 0x14) {                              // PAA r   -. 4. 4  (word and long)
+        /* Pointer-adjust: "if r<0> = 1 then INC r" (Toshiba catalog) -- round an odd
+         * pointer up to the next even (16-bit-aligned) address. No flags. Puyo Pop uses
+         * it after a copy loop; unported, it faulted the whole game. Cross-checked
+         * against NeoPop (regPAA) and ares (instructionPointerAdjustAccumulator). */
+        if (sz == 0) return false;                  // no byte form (-WL)
+        WR((rv + (rv & 1u)) & mask);                // flags unchanged
+        out_len = L(2); out_cycles = 4;
+        return true;
+    }
     if (sub >= 0x60 && sub <= 0x6F) {               // INC / DEC #3, r   (#3 == 0 means 8)
         /* ⭐ THE FLAGS DEPEND ON THE SIZE, AND ONLY THE BYTE FORM HAS ANY.
          * Toshiba's instruction list gives this opcode THREE rows, and they do not

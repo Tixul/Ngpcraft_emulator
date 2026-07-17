@@ -30,5 +30,7 @@ set_target_properties(ngpc_core PROPERTIES PREFIX "")   # ngpc_core.dll, not lib
 # With MinGW/GCC, statically link the C++ runtime so the DLL has no external runtime
 # dependency (it is loaded by an MSVC-built CPython that knows nothing about MinGW).
 if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  target_link_options(ngpc_core PRIVATE -static-libgcc -static-libstdc++)
+  # -static also pulls in libwinpthread statically (std::thread/mutex would otherwise
+  # leave a libwinpthread-1.dll dependency the MSVC CPython host cannot resolve).
+  target_link_options(ngpc_core PRIVATE -static-libgcc -static-libstdc++ -static)
 endif()
