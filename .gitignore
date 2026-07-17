@@ -24,6 +24,9 @@ system_ram.bin
 /release/
 *.spec
 
+# dev-internal docs (kept in the repo for convenience, never distributed)
+/DEVLOG.md
+
 # native build artifacts (keep the prebuilt cpp/build/ngpc_core.dll)
 /cpp/build/CMakeFiles/
 /cpp/build/*.cmake

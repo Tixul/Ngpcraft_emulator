@@ -8,7 +8,7 @@ couple of reusable widgets; the modern shell owns the look.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QPushButton
 
@@ -122,14 +122,23 @@ def flash_size_setting(s: QSettings) -> str:
 
 
 def flash_capacity_bytes(s: QSettings, rom_bytes: int) -> int:
-    """Resolve the flash chip capacity for a ROM. Explicit setting wins; 'auto' keeps a
-    full-size commercial ROM as-is but presents a tiny homebrew ROM as a 16 Mbit flashcart
-    (so it can save in its top block). Never smaller than the ROM."""
+    """Resolve the flash chip capacity for a ROM. Explicit setting wins; 'auto' presents
+    any under-filled cart as a full 16 Mbit chip so a game can save in its chip's top block.
+    Never smaller than the ROM.
+
+    A cart's flash chip is a standard 4/8/16 Mbit part and is very often BIGGER than the ROM
+    image burned onto it -- the game saves in the chip's top block, which can sit far above
+    the ROM. Delta Warp is 512 KB (4 Mbit) of ROM yet programs its record save at ~1 MB
+    offset (an 8 Mbit chip's block); StarGunner reaches block 33 (a 16 Mbit chip). Presenting
+    such a cart at only its ROM size leaves that block missing, the program is a no-op, the
+    game's read-back verify fails, and it shows "SAVE ERROR". So in auto mode ANY cart below
+    16 Mbit is presented as a 16 Mbit chip (top filled with erased 0xFF, exactly like an
+    under-filled flashcart); a full 2 MB ROM is kept as-is."""
     mode = flash_size_setting(s)
     if mode in _FLASH_BYTES:
         return max(rom_bytes, _FLASH_BYTES[mode])
-    # auto: a ROM well under a 4 Mbit chip is homebrew on a (typically 16 Mbit) flashcart.
-    if rom_bytes < 0x040000:
+    # auto: an under-filled cart is a small ROM on a (typically 16 Mbit) flash chip.
+    if rom_bytes < 0x200000:
         return 0x200000
     return rom_bytes
 
@@ -224,7 +233,11 @@ def set_binding(s: QSettings, label: str, code: int) -> None:
 # --- a button that captures the next keypress -----------------------------
 class KeyCaptureButton(QPushButton):
     """Click -> shows the prompt -> the next key press becomes the binding.
-    Emits nothing; read `.key_code()` (the owner persists it)."""
+    Emits `captured(new_code)` AFTER `_key` is updated so the owner persists the
+    NEW value (never read `.key_code()` from an event filter -- that races the
+    keyPressEvent below and saves the previous key)."""
+
+    captured = pyqtSignal(int)   # emitted with the new key code once a capture completes
 
     def __init__(self, key_code: int, prompt: str = "press a key…") -> None:
         super().__init__()
@@ -251,10 +264,13 @@ class KeyCaptureButton(QPushButton):
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
         if self._grabbing:
-            if event.key() != int(Qt.Key.Key_Escape):
+            changed = event.key() != int(Qt.Key.Key_Escape)
+            if changed:
                 self._key = int(event.key())
             self._grabbing = False
             self._render()
+            if changed:
+                self.captured.emit(self._key)   # persist the NEW code (see class docstring)
             return
         super().keyPressEvent(event)
 

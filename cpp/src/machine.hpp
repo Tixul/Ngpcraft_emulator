@@ -197,6 +197,13 @@ constexpr uint32_t kT23modAddress = 0x000028;
 constexpr uint8_t  kTrunPrescaler = 0x80;
 /* Toshiba Table 3.3 (1): the vector VALUE divided by four. */
 constexpr unsigned kIrqVectorIndexIntT0 = 0x40 / 4;   /* 16 */
+/* Micro-DMA transfer-END interrupts (INTTC0..3). Vector VALUES 0x74/0x78/0x7C/0x80
+ * on the TMP95C061 (verified against THIS BIOS: hw vec[29] @0xFFFF74 dispatches, via
+ * the BIOS stub at 0xFF22E1, through the user slot 0x6FF0 = HW_INT_DMA0). A game that
+ * re-arms a MicroDMA channel from its completion ISR -- Ogre Battle Gaiden drives its
+ * card-scene raster split this way, resetting SCR1_X=0 for the dialogue-box lines --
+ * needs this delivered or the whole scroll plane, dialogue box and all, slides off. */
+constexpr unsigned kIrqVectorIndexIntTc0 = 0x74 / 4;  /* 29 */
 
 /* --- interrupt PRIORITY IS PROGRAMMABLE, NOT A CONSTANT --------------------
  * VBlank is fixed at level 4 (the SNK SDK says so outright), but every other
@@ -284,6 +291,13 @@ inline bool irq_priority_register(unsigned vector_index, IrqPriorityReg& out) {
          * not ours to fix. */
         case 11: out = {0x0071, false}; return true;   // INT4  == VBlank
         case 12: out = {0x0071, true};  return true;   // INT5
+        /* Micro-DMA transfer-end levels. The NGPC keeps INTETC01/INTETC23 at 0x79/0x7A
+         * (not the generic H1 core's 0xF0/0xF1): the BIOS's INTLVSET routine writes 0x79
+         * here -- observed writing 0x09 (level 1) for Ogre Battle's channel-0 raster ISR. */
+        case 29: out = {0x0079, false}; return true;   // INTTC0
+        case 30: out = {0x0079, true};  return true;   // INTTC1
+        case 31: out = {0x007A, false}; return true;   // INTTC2
+        case 32: out = {0x007A, true};  return true;   // INTTC3
         default: return false;
     }
 }
@@ -448,7 +462,7 @@ struct Machine {
     }
 
     /* pending interrupts, keyed by the chip's own hardware vector index */
-    uint32_t irq_pending = 0;
+    uint64_t irq_pending = 0;   /* bit = vector index; 64-bit so INTTC3 (index 32) fits */
 
     /* POWER = the console's NMI (non-maskable, vector index 8 -> 0xFFFF20). On real
      * hardware the BIOS boots into an idle HALT and the POWER-button NMI is what runs

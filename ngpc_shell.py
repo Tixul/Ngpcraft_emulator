@@ -882,11 +882,13 @@ class SettingsPage(QWidget):
             btn = cfg.KeyCaptureButton(code)
             btn.setObjectName("ghost"); btn.setFixedWidth(140)
 
-            def persist(lbl=label, b=btn) -> None:
-                cfg.set_binding(self._settings, lbl, b.key_code())
+            # Persist on the button's `captured` signal, which fires AFTER the new key
+            # is set -- so the saved binding is the one the user just pressed.
+            def persist(new_code: int, lbl=label) -> None:
+                cfg.set_binding(self._settings, lbl, int(new_code))
+                self._settings.sync()      # flush to disk/registry so it survives a crash
                 self.changed.emit()
-            btn.clicked.connect(lambda _=False: None)
-            btn.installEventFilter(self)   # persist after capture (keyRelease)
+            btn.captured.connect(persist)
             self._keybtns[label] = btn
             lab = QLabel(label)
             v.addWidget(_row(lab, btn))
@@ -911,24 +913,13 @@ class SettingsPage(QWidget):
             self._hk_labels.append((lab, key))
         return w
 
-    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
-        # After a KeyCaptureButton captures (on KeyPress), persist on the next event.
-        from PyQt6.QtCore import QEvent
-        if isinstance(obj, cfg.KeyCaptureButton) and event.type() == QEvent.Type.KeyPress:
-            res = super().eventFilter(obj, event)
-            for label, b in self._keybtns.items():
-                if b is obj:
-                    cfg.set_binding(self._settings, label, b.key_code())
-                    self.changed.emit()
-            return res
-        return super().eventFilter(obj, event)
-
     def _restore_keys(self) -> None:
         for label, btn in self._keybtns.items():
             code = cfg.DEFAULT_KEYS.get(label, 0)
             btn._key = code           # noqa: SLF001
             btn._render()             # noqa: SLF001
             cfg.set_binding(self._settings, label, code)
+        self._settings.sync()
         self.changed.emit()
 
     def _pick_bios(self) -> None:

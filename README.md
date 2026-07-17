@@ -112,9 +112,14 @@ Two different things, kept separate:
   Homebrew that drives the flash directly (e.g. save-library test ROMs) saves without one.
 
   **Cart flash size** (Settings ▸ General) — the emulator presents a flash chip of a given
-  capacity to the game. Some homebrew save to a high block that only exists on a 2 MB
-  (16 Mbit) cart, so **Auto** gives small ROMs a 16 Mbit chip; the `.ngc` grows to that size
-  on first save. Set it explicitly (4 / 8 / 16 Mbit) if a game needs a specific capacity.
+  capacity to the game. A real cartridge's flash chip is a standard 4 / 8 / 16 Mbit part and
+  is often **bigger than the ROM burned on it**, and the game saves in the chip's top block —
+  which can sit far above the ROM data. Delta Warp, for example, is a 512 KB ROM yet writes
+  its record save at a ~1 MB offset; on a chip sized to the ROM that block is missing and the
+  game shows *"SAVE ERROR"*. So **Auto** presents any under-filled cart as a full 16 Mbit chip
+  (the top is erased `0xFF`, exactly like an under-filled flashcart); the `.ngc` grows to that
+  size on first save (use **Separate file** to leave the ROM untouched). Set it explicitly
+  (4 / 8 / 16 Mbit) only if a game needs a specific capacity.
 
 ## Controls (default)
 
@@ -165,6 +170,17 @@ the timers, the scanline position — are **not** snapshotted and re-sync on the
 rewind is frame-accurate for *what you saw and what's in memory*, but audio may click at the
 seam and cycle-exact timing right after a rewind is approximate. It's a "what did I just see?"
 tool, not a deterministic TAS engine.
+
+## Known issues
+
+- **Metal Slug — 2nd Mission**: in-game **fire and jump (A / B) do nothing**, while grenade
+  (Option) works normally; A / B still work in the menus. The controller input is confirmed
+  to reach the game correctly (the game's own button read and edge-detection produce the
+  right A / B values), so the fault is downstream in the title's in-game action handling and
+  is still under investigation. Other games are unaffected.
+
+If you hit a bug, a ROM fault auto-writes a `crashes/*.txt` report (reason, PC, opcode,
+registers, memory & stack) — attach it, ideally with a save state, when reporting.
 
 ## Legal
 

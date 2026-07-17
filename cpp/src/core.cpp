@@ -284,6 +284,12 @@ static const unsigned kIrqSourceIndices[] = {
     ngpc::kIrqVectorIndexIntT0, ngpc::kIrqVectorIndexIntT0 + 1,
     ngpc::kIrqVectorIndexIntT0 + 2, ngpc::kIrqVectorIndexIntT0 + 3,
     ngpc::kIrqVectorIndexIntAd,
+    /* Micro-DMA transfer-end (INTTC0..3): a channel raises these when its DMAC hits 0,
+     * and a game re-arms the channel (and, for Ogre Battle, resets the scroll split) from
+     * the completion ISR. micro_dma_service never matches a channel on THESE vectors, so
+     * they fall through the DMA step and vector the CPU normally, level-gated by 0x79/0x7A. */
+    ngpc::kIrqVectorIndexIntTc0,     ngpc::kIrqVectorIndexIntTc0 + 1,
+    ngpc::kIrqVectorIndexIntTc0 + 2, ngpc::kIrqVectorIndexIntTc0 + 3,
 };
 
 /* The level a source is delivered at. VBlank is fixed; everything else reads its
@@ -330,9 +336,9 @@ static bool deliver_irq(ngpc::Machine& m) {
      * See specs/MICRO_DMA.md. */
     bool dma_ran = false;
     for (unsigned index : kIrqSourceIndices) {
-        if (!(m.irq_pending & (1u << index))) continue;
+        if (!(m.irq_pending & (uint64_t(1) << index))) continue;
         if (m.micro_dma_service(index)) {
-            m.irq_pending &= ~(1u << index);   /* consumed -- the CPU is not disturbed */
+            m.irq_pending &= ~(uint64_t(1) << index);   /* consumed -- the CPU is not disturbed */
             dma_ran = true;
         }
     }
@@ -341,7 +347,7 @@ static bool deliver_irq(ngpc::Machine& m) {
     uint8_t  best_level = 0;
     bool     found = false;
     for (unsigned index : kIrqSourceIndices) {
-        if (!(m.irq_pending & (1u << index))) continue;
+        if (!(m.irq_pending & (uint64_t(1) << index))) continue;
         const uint8_t level = irq_level_of(m, index);
         if (level == 0) continue;                                   // source disabled
         if (level < m.cpu.iff_level) continue;                      // L >= IFF
@@ -364,7 +370,7 @@ static bool deliver_irq(ngpc::Machine& m) {
 
     c.iff_level = uint8_t(best_level + 1 > 7 ? 7 : best_level + 1);
     c.pc = m.read32(kIrqVectorTableBase + 4u * best_index);
-    m.irq_pending &= ~(1u << best_index);
+    m.irq_pending &= ~(uint64_t(1) << best_index);
     return true;
 }
 

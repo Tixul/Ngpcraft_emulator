@@ -324,7 +324,20 @@ void Machine::timer_tick(uint32_t cycles) {
     uint32_t cascade[4] = {0, 0, 0, 0};
 
     for (unsigned i = 0; i < 4; ++i) {
-        if (!(trun & (1u << i))) continue;
+        if (!(trun & (1u << i))) {
+            /* A STOPPED TLCS-900 timer holds its up-counter CLEARED (TxRUN=0 resets UC);
+             * it does not merely freeze. Games re-phase a per-frame HBlank raster effect
+             * by stop/starting Timer0 in VBlank every frame (TRUN 0x88 -> 0x8B): the
+             * restart must begin the count at 0 so the first match lands the SAME scanline
+             * each frame -- dev_ref Effects-and-Raster 6.5: "the fire line does not drift".
+             * Freezing the count here instead carried a fractional remainder across frames
+             * (Super Real Mahjong: TREG0=12 over 152 HBlanks = 12.67 matches/frame), so its
+             * MicroDMA backdrop-colour gradient (table -> 0x8118) drifted and corrupted a
+             * band of scanlines that swept the felt on a ~7-frame cycle. */
+            timer_count[i] = 0;
+            timer_clock[i] = 0;
+            continue;
+        }
         const bool even = (i % 2) == 0;
         const uint32_t period = even ? kEvenSources[mode[i]] : kOddSources[mode[i]];
 
@@ -666,18 +679,20 @@ bool Machine::micro_dma_service(unsigned vector_index) {
         cnt = (cnt & 0xFFFF0000u) | left;
         if (left == 0) {
             /* "the HDMA start vector is cleared, and the HDMA start source of the
-             * channel is also cleared" -- datasheet §3.3.2. Software re-arms it,
-             * and the SDK's raster example does so every frame from its VBlank ISR.
-             *
-             * ⚠️ NOT DONE: the transfer-END interrupt (INTTCn). Its hardware vector
-             * index is not established here, and a source that vectors somewhere
-             * invented is worse than one that stays quiet. The raster case does not
-             * need it (VBlank re-arms), so this is honest and bounded -- but a
-             * driver that re-arms from INTTC will stall, and it will stall SILENTLY.
-             * That is the one thing this file does not tell you loudly. */
+             * channel is also cleared" -- datasheet §3.3.2. */
             mem[kDma0vAddress + ch] = 0;
+            /* ...AND the transfer-END interrupt INTTCn is requested. This IS needed:
+             * the SDK's own auto-rearm pattern re-programs DMAS/DMAC/DMAxV from the
+             * INTTCn ISR (user slot 0x6FF0+4n), and Ogre Battle Gaiden drives its
+             * card-scene raster split from it -- the ISR resets SCR1_X=0 so the lower
+             * (dialogue-box) scanlines render unscrolled. Left silent, the box slid off
+             * with the plane. The vector index is now established (see machine.hpp,
+             * confirmed against this BIOS's dispatch stub) and it is level-gated by the
+             * INTETC01/23 nibble like every other source, so a game that leaves the
+             * level at 0 still sees nothing. */
+            irq_pending |= uint64_t(1) << (kIrqVectorIndexIntTc0 + ch);
         }
-        return true;                                 /* the CPU does NOT see it */
+        return true;                                 /* the DMA itself does not vector the CPU */
     }
     return false;
 }

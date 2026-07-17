@@ -350,6 +350,19 @@ uint8_t step(Machine& m, ngpc_record_t* rec) {
             return NGPC_OK;
         }
 
+        /* push #8 (0x09) — `09 : #8`, 2 bytes. Pushes ONE byte (SP -= 1), the byte
+         * sibling of PUSHW #16 (T900 ref: "PUSH r/R/#imm push (8/16/32)"). 4 states:
+         * PUSH A is 3, this adds one immediate fetch. Missing case crashed Baseball
+         * Stars (a `09 07 09 06 09 05` byte-argument push run at 0x209294). */
+        case 0x09: {                                    // push #imm8
+            const uint8_t imm = m.read8(pc + 1);
+            c.pc = (pc + 2) & kAddrMask;
+            c.regs[NGPC_XSP] -= 1;
+            store(m, rec, c.regs[NGPC_XSP], imm, 1);
+            finish(rec, m, pc, 2, 4, 1u << NGPC_XSP);
+            return NGPC_OK;
+        }
+
         /* pushw #16 (0x0B) · push A (0x14) · pop A (0x15) · push F (0x18) · pop F (0x19)
          * Toshiba: PUSH F / PUSH A = 3, POP F / POP A = 4, PUSHW #16 = 5. */
         case 0x0B: {                                    // pushw #imm16
