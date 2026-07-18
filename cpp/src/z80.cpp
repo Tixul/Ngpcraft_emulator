@@ -353,7 +353,55 @@ unsigned exec_ed(Ctx& x) {
         case 0x45: case 0x55: case 0x65: case 0x75:                        // RETN
         case 0x4D: case 0x5D: case 0x6D: case 0x7D:                        // RETI
             z.pc = x.pop16(); z.iff1 = z.iff2; return 14;
+
+        /* ⚡ RRD / RLD — HALF A BYTE AT A TIME, BETWEEN A AND (HL).
+         *
+         * The nibble is the point: packing two 4-bit values into one byte is how
+         * music data stays small (a note and a volume, a length and an index), and
+         * these are the fast way to unpack it. A driver with nibble-packed pattern
+         * data needs them; the ones in the corpus store a byte per value, which is
+         * why the hole never showed. */
+        case 0x67: {                                                       // RRD
+            const uint16_t hl = uint16_t((z.h << 8) | z.l);
+            const uint8_t v = z80_read(m, hl);
+            z80_write(m, hl, uint8_t(((z.a & 0x0F) << 4) | (v >> 4)));
+            z.a = uint8_t((z.a & 0xF0) | (v & 0x0F));
+            z.f = uint8_t((z.f & ZF_C) | sz53p(z.a));                      // H = N = 0
+            return 18;
+        }
+        case 0x6F: {                                                       // RLD
+            const uint16_t hl = uint16_t((z.h << 8) | z.l);
+            const uint8_t v = z80_read(m, hl);
+            z80_write(m, hl, uint8_t((v << 4) | (z.a & 0x0F)));
+            z.a = uint8_t((z.a & 0xF0) | (v >> 4));
+            z.f = uint8_t((z.f & ZF_C) | sz53p(z.a));                      // H = N = 0
+            return 18;
+        }
         default: break;
+    }
+
+    /* ⚡ IN r,(C) / OUT (C),r — THE PORT NUMBER FROM A REGISTER.
+     *
+     * The immediate forms (0xD3 / 0xDB) were already here; these take the port from
+     * C so it can be computed. That matters on THIS console specifically: an I/O
+     * write is the interrupt acknowledge (K1SoundSim § 5.2.4, see z80_out), so a
+     * driver acknowledging with `out (c),a` rather than `out (0xFF),a` would have
+     * trapped the sound CPU dead.
+     *
+     * ⚠️ Operand 6 is the undocumented pair -- `IN (C)` sets flags and discards the
+     * byte, `OUT (C),0` writes zero. Neither may go through get_r/put_r, which would
+     * read or write (HL) instead of a register. */
+    if ((op & 0xC7) == 0x40) {                                             // IN r,(C)
+        const uint8_t v = z80_in(m, z.c);
+        const unsigned r = (op >> 3) & 7;
+        if (r != 6) x.put_r(r, v);
+        z.f = uint8_t((z.f & ZF_C) | sz53p(v));                            // H = N = 0
+        return 12;
+    }
+    if ((op & 0xC7) == 0x41) {                                             // OUT (C),r
+        const unsigned r = (op >> 3) & 7;
+        z80_out(m, z.c, (r == 6) ? uint8_t(0) : x.get_r(r));
+        return 12;
     }
 
     /* ADC / SBC HL,rr  -- `01 rr 1 010` = SBC, `01 rr 1 011` hmm: the pattern is
@@ -406,10 +454,46 @@ unsigned exec_ed(Ctx& x) {
     if (op >= 0xA0 && op <= 0xBB && (op & 0x04) == 0) {
         const bool inc = (op & 0x08) == 0;
         const bool repeat = (op & 0x10) != 0;
-        const unsigned kind = op & 0x03;           // 0 = LD, 1 = CP
+        const unsigned kind = op & 0x03;           // 0 = LD, 1 = CP, 2 = IN, 3 = OUT
         const int step = inc ? 1 : -1;
 
         uint16_t hl = uint16_t((z.h << 8) | z.l);
+
+        /* ⚡ THE BLOCK I/O OPS — INI / IND / OUTI / OUTD AND THEIR REPEATING FORMS.
+         *
+         * Same shape as LDIR, but one end is an I/O PORT instead of memory. On this
+         * console the T6W28 is MEMORY-mapped (0x4000/0x4001), so its drivers move
+         * data with plain stores and never need these -- which is exactly why they
+         * sat un-ported behind a trap for so long.
+         *
+         * ⚠️ THEY COUNT WITH B ALONE, NOT BC. That is the trap, and it is why this
+         * cannot share the writeback below: LDIR/CPIR decrement the 16-bit pair BC,
+         * these decrement the 8-bit register B and leave C alone -- because C holds
+         * the PORT NUMBER. Running them through the BC path would corrupt the port
+         * on every iteration, silently.
+         *
+         * The flags are the manual's, not the silicon's: Zilog defines only Z (from
+         * B) and N (set), calls S/H/PV undefined, and says carry is not affected.
+         * Real hardware is known to do more (N from bit 7 of the byte, H and C from
+         * an overflow involving it); that model is NOT implemented, and nothing here
+         * could test it if it were. */
+        if (kind >= 2) {
+            if (kind == 2) {                       // INI / IND / INIR / INDR
+                z80_write(m, hl, z80_in(m, z.c));
+            } else {                               // OUTI / OUTD / OTIR / OTDR
+                z80_out(m, z.c, z80_read(m, hl));
+            }
+            hl = uint16_t(hl + step);
+            z.b = uint8_t(z.b - 1);
+            z.h = uint8_t(hl >> 8); z.l = uint8_t(hl);
+            z.f = uint8_t((z.f & ZF_C) | ZF_N | sz53(z.b));
+            if (repeat && z.b != 0) {
+                z.pc = uint16_t(z.pc - 2);         // the loop is INSIDE the opcode
+                return 21;
+            }
+            return 16;
+        }
+
         uint16_t de = uint16_t((z.d << 8) | z.e);
         uint16_t bc = uint16_t((z.b << 8) | z.c);
 
@@ -436,10 +520,6 @@ unsigned exec_ed(Ctx& x) {
                 z.h = uint8_t(hl >> 8); z.l = uint8_t(hl);
                 return 16;
             }
-        } else {
-            z.trapped = true; z.trap_pc = uint16_t(z.pc - 2);
-            z.trap_opcode = op; z.trap_prefix = 0xED;
-            return 0;                               // the I/O block ops: not ported
         }
 
         z.b = uint8_t(bc >> 8); z.c = uint8_t(bc);
@@ -694,6 +774,19 @@ unsigned exec_one(Machine& m, Z80& z) {
         case 0x18: { const int8_t d = int8_t(x.fetch8()); z.pc = uint16_t(z.pc + d); return 12; }  // JR
         case 0xC3: z.pc = x.fetch16(); return 10;                      // JP nn
         case 0xE9: z.pc = uint16_t((z.h << 8) | z.l); return 4;        // JP (HL)
+        /* ⚡ LD SP,HL — THE STACK POINTER FROM A COMPUTED ADDRESS.
+         *
+         * This was missing outright, and it is not an exotic opcode: it is how code
+         * sets the stack when the address is worked out at run time instead of being
+         * assembled in. The immediate form `ld sp,nn` (0x31) was always here, which
+         * is why no sound driver ever noticed -- every one of them opens with
+         * `ld sp,0x1000`.
+         *
+         * ⛔ AND THE INDEXED FORM WAS ALREADY PRESENT: `LD SP,IX` (DD F9) is handled
+         * in exec_index below. Only the base form was absent -- an oversight, not a
+         * decision. Found by sweeping all 1280 opcode slots against a reference core,
+         * which is a thing running one driver and declaring victory cannot do. */
+        case 0xF9: z.sp = uint16_t((z.h << 8) | z.l); return 6;        // LD SP,HL
         case 0xCD: { const uint16_t nn = x.fetch16(); x.push16(z.pc); z.pc = nn; return 17; }
         case 0xC9: z.pc = x.pop16(); return 10;                        // RET
         case 0xF3: z.iff1 = z.iff2 = false; return 4;                  // DI

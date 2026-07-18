@@ -14,6 +14,7 @@ an emulator machine-state snapshot.  It is deliberately narrow:
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 from dataclasses import dataclass
@@ -47,6 +48,17 @@ SAVESTATE_BACKWARD_COMPAT_VERSIONS = (
     "2026-05-20.v3",
     "2026-05-20.v2",
 )
+
+
+# ⚡ THE SAVE STATE THE PLAYER ACTUALLY HAS.
+#
+# `ngpc_shell.py` (F2 / F4) writes this: a magic, the native core's CpuState struct
+# verbatim, then the whole working image from 0x0000 -- the I/O page, work RAM, and all
+# of video memory. It is not this module's JSON, and nothing could read it outside the
+# app, which meant the one artefact a player can produce at the exact moment a bug
+# happens was useless to every analysis tool. Now it is the same door.
+SHELL_SAVESTATE_MAGIC = b"NGPCST01"
+SHELL_SAVESTATE_MEM_LEN = 0x00C000
 
 
 @dataclass(frozen=True)
@@ -154,7 +166,18 @@ def load_savestate(
     If `expected_rom_path` is provided, the loader computes its SHA-256 and
     rejects the savestate if the hash does not match `rom.sha256`.  Path is
     informational only; matching is always by content hash.
+
+    ⚡ TWO FORMATS, ONE DOOR. The JSON below is this module's own; `NGPCST01` is
+    what the PLAYER's emulator writes with F2, and that is the one a person
+    actually has when they hit a bug. Every `--seed-from` consumer -- 28 CLI
+    subcommands, and through them the inspector tools -- reaches the machine
+    through this single function, so teaching it the player's format is what
+    lets somebody hand over a save state taken one frame before a glitch and
+    have the whole toolset open it. See `load_shell_savestate`.
     """
+    if path.read_bytes()[: len(SHELL_SAVESTATE_MAGIC)] == SHELL_SAVESTATE_MAGIC:
+        return load_shell_savestate(path, expected_rom_path=expected_rom_path)
+
     raw = json.loads(path.read_text(encoding="utf-8"))
     _validate_schema(raw, path)
 
@@ -329,6 +352,94 @@ def _cpu_to_savestate_payload(cpu: NgpcCpuState) -> dict[str, object]:
         },
         "control_registers": _control_registers_to_payload(cpu.control_registers),
     }
+
+
+def load_shell_savestate(
+    path: Path,
+    *,
+    expected_rom_path: Path | None = None,
+) -> SavestateDocument:
+    """Read a save state written by the player's emulator (`NGPCST01`).
+
+    Layout: magic, the native `CpuState` struct, then `SHELL_SAVESTATE_MEM_LEN` bytes
+    of the working image starting at address 0. The struct is read through
+    `core.native`'s ctypes mirror, which is a pure declaration -- **importing it does
+    not need the compiled core**, so this works in a Python-only checkout.
+
+    ⚠️ NO ROM HASH. The player's format does not record one, so `expected_rom_path`
+    cannot be enforced here the way it is for the JSON format. Loading a state against
+    the wrong cartridge yields nonsense rather than an error, so the ROM identity is
+    reported as empty rather than invented -- a caller that needs certainty must ask
+    the person which game it came from.
+    """
+    from core.native import CpuState        # ctypes declaration only; no DLL needed
+
+    blob = path.read_bytes()
+    cpu_size = ctypes.sizeof(CpuState)
+    header = len(SHELL_SAVESTATE_MAGIC)
+    expected = header + cpu_size + SHELL_SAVESTATE_MEM_LEN
+    if len(blob) != expected:
+        raise ValueError(
+            f"{path} is not a usable {SHELL_SAVESTATE_MAGIC.decode()} save state: "
+            f"expected {expected} bytes ({cpu_size}-byte CPU struct + "
+            f"{SHELL_SAVESTATE_MEM_LEN} of memory), got {len(blob)}"
+        )
+
+    raw_cpu = CpuState.from_buffer_copy(blob[header : header + cpu_size])
+    memory = blob[header + cpu_size :]
+
+    # Only the cells that carry something are handed on: the overlay is a sparse dict,
+    # and a fully zeroed 48 KiB image would otherwise become 48 000 useless entries.
+    overlay = {addr: byte for addr, byte in enumerate(memory) if byte}
+
+    flags = raw_cpu.flags
+    return SavestateDocument(
+        format_version=SAVESTATE_FORMAT_VERSION,
+        created_at_utc="",
+        rom_sha256="",                     # not recorded by the player's format
+        rom_file_size=0,
+        rom_header_title="",
+        rom_header_entry_point=0,
+        rom_header_mode_raw=0,
+        cpu=NgpcCpuState(
+            pc=int(raw_cpu.pc),
+            sr_raw=int(raw_cpu.sr_raw),
+            flags=_flags_from_byte(flags),
+            register_bank=int(raw_cpu.rfp),
+            regs=GeneralRegisters32(
+                xwa=int(raw_cpu.regs[0]), xbc=int(raw_cpu.regs[1]),
+                xde=int(raw_cpu.regs[2]), xhl=int(raw_cpu.regs[3]),
+                xix=int(raw_cpu.regs[4]), xiy=int(raw_cpu.regs[5]),
+                xiz=int(raw_cpu.regs[6]), xsp=int(raw_cpu.regs[7]),
+            ),
+            modeled_fields=("PC", "architectural-register-set"),
+            note=f"CPU state restored from a player save state ({path.name}).",
+            iff_enabled=int(raw_cpu.iff_level) < 7,
+            iff_level=int(raw_cpu.iff_level),
+            rfp=int(raw_cpu.rfp),
+            register_banks=None,
+            alt_flags=_flags_from_byte(raw_cpu.alt_flags),
+            control_registers=create_unknown_control_registers(),
+        ),
+        writable_overlay=overlay,
+        quirk_database_version=load_known_quirk_database().database_version,
+        matched_on_last_step=None,
+        note="Loaded from a player save state; ROM identity is not carried by that format.",
+        frame_state=initial_frame_state(),
+        irq_state=initial_irq_state(),
+    )
+
+
+def _flags_from_byte(raw: int) -> StatusFlags:
+    """The native core packs the status flags one per bit, SZ-H-V-NC (TLCS-900/H SR)."""
+    return StatusFlags(
+        sf=bool(raw & 0x80),
+        zf=bool(raw & 0x40),
+        hf=bool(raw & 0x10),
+        vf=bool(raw & 0x04),
+        nf=bool(raw & 0x02),
+        cf=bool(raw & 0x01),
+    )
 
 
 def _savestate_payload_to_cpu(payload: dict[str, object]) -> NgpcCpuState:
