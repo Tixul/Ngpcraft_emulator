@@ -33,8 +33,19 @@ NGPC_API int ngpc_load_rom(ngpc_t* h, const uint8_t* data, size_t len) {
     Machine* m = reinterpret_cast<Machine*>(h);
     m->rom.assign(data, data + len);
     /* The cartridge IS the flash chip. Its block map comes from its size, and a game
-     * saves by erasing and programming the small blocks at the top (SDK FlashMem.txt). */
-    m->flash_build_blocks(0, uint32_t(len));
+     * saves by erasing and programming the small blocks at the top (SDK FlashMem.txt).
+     *
+     * ⚡ AND A 4 MiB CART IS TWO CHIPS, so it is two block maps. This built ONE map sized
+     * to the WHOLE image, which is wrong at both ends: chip 0's map ran to 4 MiB while its
+     * window stops at 2 MiB -- putting the small top blocks, the ones a save actually
+     * uses, at 0x5F0000, outside the cartridge altogether -- and chip 1 got no map at all,
+     * so `flash_present(1)` was false and every command on the second die was refused
+     * (measured: a program to 0x840000 was a silent no-op). Pass 247 gave the second die
+     * its address window; it never gave it an identity. */
+    const uint32_t total = uint32_t(len);
+    const uint32_t chip0 = total < kCartChipSize ? total : kCartChipSize;
+    m->flash_build_blocks(0, chip0);
+    if (total > kCartChipSize) m->flash_build_blocks(1, total - kCartChipSize);
     return 0;
 }
 
@@ -78,7 +89,13 @@ NGPC_API int ngpc_flash_restore(ngpc_t* h, uint32_t address,
                                 const uint8_t* data, uint32_t len) {
     if (!h || !data) return -1;
     Machine* m = reinterpret_cast<Machine*>(h);
-    if (address < 0x200000 || uint64_t(address) + len > 0x400000) return -1;
+    /* ⚡ BOTH DIES. A 4 MiB cart is two chips and the second is wired to 0x800000, not
+     * to the end of the first (pass 247, reset_memory). This check only ever knew about
+     * chip 0's window, so re-inserting a 4 MiB cartridge -- which is what a reboot and a
+     * save restore both are -- was refused for every byte on the second die. */
+    const bool in_chip0 = address >= 0x200000 && uint64_t(address) + len <= 0x400000;
+    const bool in_chip1 = address >= 0x800000 && uint64_t(address) + len <= 0xA00000;
+    if (!in_chip0 && !in_chip1) return -1;
     for (uint32_t i = 0; i < len; ++i) m->mem[address + i] = data[i];
     return 0;
 }
@@ -110,10 +127,58 @@ NGPC_API int ngpc_load_bios(ngpc_t* h, const uint8_t* data, size_t len) {
     return 0;
 }
 
+/* ⚡ WHAT THE BIOS'S BOOT SCREEN LEAVES IN CHARACTER RAM.
+ *
+ * The hand-off seeds the state a real boot would have left behind; see the block on
+ * `kCharRamBase` in machine.hpp for why those 8 KiB are part of that state and which
+ * game reads them. This is the same method that produced the grey ramp and the entry
+ * registers: power the console on for real, let the BIOS draw, and read the machine.
+ *
+ * It runs BEFORE the hand-off reset wipes memory, so the only thing that survives the
+ * warm-up is the buffer we take out of it -- work RAM, the flash working image and
+ * every register are re-initialised from scratch afterwards. `m->bios` and
+ * `m->battery_ram` are members, not memory, so the boot cannot disturb them.
+ *
+ * Returns false (and leaves `out` untouched) when there is no BIOS to boot. */
+static bool capture_bios_boot_char_ram(ngpc_t* h, uint8_t* out) {
+    Machine* m = reinterpret_cast<Machine*>(h);
+    if (m->bios.empty()) return false;          /* no BIOS -> nothing to seed, and no invention */
+
+    ngpc_reset(h, kResetBiosBoot);
+
+    ngpc_summary_t s;
+    std::memset(&s, 0, sizeof(s));
+    ngpc_run_frames(h, kBiosWarmUpFrames, kBiosWarmUpMaxInstrs, &s);
+
+    /* THE HALT IS NOT A HANG: IT IS THE CONSOLE SWITCHED OFF. The BIOS boots, arms
+     * INT0 and sleeps; INT0 is the POWER BUTTON. Same press the shell makes on the
+     * player's behalf -- if the two ever diverge, the BIOS never draws and this
+     * returns the zeros it was meant to replace. */
+    if (s.stop_status == NGPC_HALTED) {
+        ngpc_raise_irq(h, kInt0PowerButton);
+        ngpc_run_frames(h, kBiosWarmUpFrames, kBiosWarmUpMaxInstrs, &s);
+    }
+
+    std::memcpy(out, &m->mem[kCharRamBase], kCharRamSize);
+    return true;
+}
+
 NGPC_API void ngpc_reset(ngpc_t* h, int reset_mode) {
     if (!h) return;
     Machine* m = reinterpret_cast<Machine*>(h);
     const bool apply_bios_handoff = (reset_mode == kResetHandoff);
+
+    /* Taken before `reset_memory()` below wipes it, and put back at the end of the
+     * hand-off. The recursion guard matters: the warm-up resets the machine itself,
+     * and without it a hand-off reset would boot the BIOS forever. */
+    std::vector<uint8_t> bios_char_ram;
+    if (apply_bios_handoff && !m->in_bios_warm_up) {
+        m->in_bios_warm_up = true;
+        bios_char_ram.resize(kCharRamSize);
+        if (!capture_bios_boot_char_ram(h, bios_char_ram.data())) bios_char_ram.clear();
+        m->in_bios_warm_up = false;
+    }
+
     m->reset_memory();
 
     std::memset(&m->cpu, 0, sizeof(m->cpu));
@@ -203,6 +268,12 @@ NGPC_API void ngpc_reset(ngpc_t* h, int reset_mode) {
          * and this is part of that state, no different from XSP or INTE45. */
         m->mem[kBiosFlashCardType0] = m->flash_size_code(0);
         m->mem[kBiosFlashCardType1] = m->flash_size_code(1);
+
+        /* The BIOS's boot screen, still in character RAM -- see machine.hpp. Empty
+         * when no BIOS is attached, and then the cart gets the zeros it always got:
+         * we seed what we MEASURED, never a stand-in for it. */
+        if (!bios_char_ram.empty())
+            std::memcpy(&m->mem[kCharRamBase], bios_char_ram.data(), kCharRamSize);
     }
     m->cpu.banks[m->cpu.rfp][NGPC_XSP] = m->cpu.regs[NGPC_XSP];
 }

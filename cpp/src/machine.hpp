@@ -362,6 +362,46 @@ constexpr uint32_t kBiosHandoffXwa = 0x000000DD;
 constexpr uint32_t kBiosHandoffXbc = 0x00200018;
 /* XDE and XHL: NOT seeded. They vary between power-ons -- see above. */
 
+/* INT0 IS THE POWER BUTTON (pass 235): the BIOS boots, arms it, and sleeps. */
+constexpr uint32_t kInt0PowerButton      = 8;
+/* One flash die is 2 MiB. A 4 MiB cart is two of them; the second is wired to 0x800000
+ * (pass 247) -- so it is a second CHIP, with its own block map and its own identity. */
+constexpr uint32_t kCartChipSize         = 0x200000;
+
+/* --- CHARACTER RAM AT HAND-OFF: THE BIOS'S BOOT SCREEN IS STILL IN IT --------
+ *
+ * The hand-off's job is to leave the cart the state a real boot would have left, and
+ * character RAM was a hole in that list. On the console the BIOS draws its start-up
+ * screen out of these 8 KiB, and the tiles are STILL THERE when the cart takes over --
+ * nothing clears them. Our fast path handed the game 8 KiB of zeros.
+ *
+ * ⚡ AND ONE GAME READS THEM AS A COPY-PROTECTION CHECK. Metal Slug - 2nd Mission
+ * scans 0xA000..0xC000 for a 64-byte run of BIOS tile data (its own copy of the
+ * pattern is at cart 0x28DCC4) and, when it does not find it, wipes the magic
+ * "MET2" at 0x6A88. A per-frame check at 0x28DD86 then zeroes 0x46DC/0x46DD -- the
+ * two bytes that hold the FIRE and JUMP button masks. The masks feed `and A,B` in
+ * the shared "is this button down?" helper at 0x2102A5, so a zero mask reads as
+ * "never pressed": the player can walk and throw grenades (mask 0x40, a constant in
+ * the code) but can NEVER SHOOT OR JUMP. The game runs, looks perfect, and is
+ * unplayable -- which is precisely what the check is designed to do to a copy.
+ *
+ * 🔑 The symptom named the wrong culprit. "A and B do nothing" reads as an INPUT bug,
+ * and the input was provably perfect all the way to 0x425E. The distinction between
+ * A and B did not die in a decode: the game never asked about them, because the
+ * question it asks is `and A, <mask>` and the mask had been zeroed for us.
+ *
+ * ⛔ NOT A BLOB. The tiles are not stored in the BIOS image in this form (259 of the
+ * 377 non-empty tiles are a 1bpp font expanded on the fly; the rest are built), so
+ * there is nothing to copy out and no anchor to search for. We get them the only
+ * honest way: RUN THE BIOS'S OWN BOOT for a moment and read the machine, exactly as
+ * pass 237 got the grey ramp and the entry registers. Measured on this BIOS: char RAM
+ * is empty through frame 8, fills between 16 and 32, and never changes after -- so 64
+ * frames is double the settling time, and costs ~0.08 s once, at reset. */
+constexpr uint32_t kCharRamBase          = 0x00A000;
+constexpr uint32_t kCharRamSize          = 0x002000;
+constexpr uint32_t kBiosWarmUpFrames     = 64;
+constexpr uint32_t kBiosWarmUpMaxInstrs  = kBiosWarmUpFrames * 200000;
+
 /* --- the USER interrupt vector table (RAM) -------------------------------
  * SysPro.txt: every interrupt vectors through the BIOS, which chains to a user
  * handler pointer in RAM at `0x6FB8 + 4n` -- 18 slots. The BIOS's power-on code
@@ -473,6 +513,11 @@ struct Machine {
      * The setup itself SPINS (never halts), so no press fires during it. Capped so a
      * handler that keeps bouncing back to idle cannot loop forever. */
     uint8_t power_nmi_count = 0;
+
+    /* Set while a hand-off reset is booting the BIOS to read character RAM back out
+     * of it (see kCharRamBase). The warm-up resets the machine, so without this the
+     * hand-off would recurse into itself forever. */
+    bool in_bios_warm_up = false;
 
     /* How a family reports a stop that is NOT "not ported yet".
      *
@@ -663,6 +708,7 @@ struct Machine {
     std::vector<FlashBlock> flash_blocks[2];
 
     void flash_build_blocks(int chip, uint32_t size);
+    void flash_adopt_capacity_from_save(int chip, uint32_t offset);
     void flash_program(int chip, uint32_t base, uint32_t addr, uint8_t data);
     void flash_erase_block(int chip, uint32_t base, uint32_t addr);
     void flash_erase_all(int chip, uint32_t base);

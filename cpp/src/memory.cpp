@@ -493,8 +493,46 @@ int Machine::flash_block_of(int chip, uint32_t offset) const {
     return -1;
 }
 
+/* ⚡ THE CARTRIDGE TELLS US WHICH CHIP IT IS -- BY WHERE IT SAVES.
+ *
+ * A game erases by BLOCK NUMBER (SDK FlashMem.txt / BLOCK_NO.INC) and the number->address
+ * table differs per card, so the capacity we present IS the block numbering. Block 17 is
+ * 0xFA000 on an 8 Mbit card and 0x110000 on a 16 Mbit one. Present Delta Warp's 8 Mbit cart
+ * as 16 Mbit and its erase lands two blocks from its save: the area is never cleared, the
+ * read-back verify fails, and the game says "SAVE ERROR!" -- measured, 9 erases at 0x310000
+ * while it programmed 0x2FA000.
+ *
+ * ⛔ AND THE CAPACITY CANNOT BE DERIVED FROM THE ROM IMAGE. The chip is bigger than the
+ * image burned on it, by however much the publisher chose: Delta Warp is 512 KiB on an
+ * 8 Mbit part, StarGunner is a small homebrew on a 16 Mbit one. "Always 16 Mbit" breaks the
+ * first, "the next size up" breaks the second. Two carts, two answers, same ROM size --
+ * there is no static rule, which is exactly why this used to be guesswork.
+ *
+ * 🔑 BUT THE SDK'S OWN TABLE HAS A CONSTANT IN IT. On all three cards the save block is the
+ * SECOND 8 KiB BLOCK FROM THE TOP, so `capacity - save address == 0x6000`, exactly:
+ *
+ *      4 Mbit  block  9 @ 0x07A000     8 Mbit  block 17 @ 0x0FA000     16 Mbit  block 33 @ 0x1FA000
+ *
+ * So the cart answers the question itself, the first time it programs: capacity =
+ * offset + 0x6000. And the trigger is precise rather than fuzzy -- offset + 0x6000 is a
+ * standard capacity for THREE offsets only, and they are precisely the three save blocks.
+ * A cart already presenting at the derived size (every full-size cart, saving at 0x1FA000)
+ * changes nothing. The game's own retry then finds the geometry right. */
+void Machine::flash_adopt_capacity_from_save(int chip, uint32_t offset) {
+    const uint32_t derived = offset + 0x6000;
+    if (derived != 0x080000 && derived != 0x100000 && derived != 0x200000) return;
+    if (flash_blocks[chip].empty()) return;
+    const auto& top = flash_blocks[chip].back();
+    if (top.offset + top.length == derived) return;      /* already this card */
+    flash_build_blocks(chip, derived);
+    /* The BIOS reads the card type before it touches the chip, so restate it: the block
+     * map and this byte are two halves of one answer. */
+    mem[chip == 0 ? kBiosFlashCardType0 : kBiosFlashCardType1] = flash_size_code(chip);
+}
+
 /* ⚠️ A NOR CELL ONLY GOES DOWN. Programming ANDs; only an erase restores the ones. */
 void Machine::flash_program(int chip, uint32_t base, uint32_t addr, uint8_t data) {
+    flash_adopt_capacity_from_save(chip, addr - base);
     const int blk = flash_block_of(chip, addr - base);
     if (blk < 0 || !flash_blocks[chip][blk].writable) return;
     const uint8_t before = mem[addr];

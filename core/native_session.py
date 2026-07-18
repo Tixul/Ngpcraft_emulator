@@ -77,6 +77,24 @@ SYSTEM_RAM_PATH = SAVE_DIR / "system.ram"
 # INT0 is the POWER BUTTON (pass 235). The BIOS boots, arms it, and sleeps.
 INT0_POWER = 8
 
+# One flash die is 2 MiB. A 4 MiB cart is two of them, and the hardware maps the second
+# at 0x800000 -- NOT at 0x400000, which is not a cartridge window (pass 247, memory.cpp).
+CART_CHIP_SIZE = 0x200000
+CART_CHIP1_BASE = 0x800000
+
+# What the BIOS reads to learn which flash card is in the slot, and the codes it expects
+# (memory.cpp::flash_size_code). It decides the block-number -> address table from this.
+BIOS_FLASH_CARD_TYPE = 0x006C58
+
+
+def flash_size_code(capacity: int) -> int:
+    """1 = 4 Mbit, 2 = 8 Mbit, 3 = 16 Mbit -- the same ladder the core uses."""
+    if capacity <= 0x080000:
+        return 1
+    if capacity <= 0x100000:
+        return 2
+    return 3
+
 
 class NativeSession:
     """Boot a cartridge on the native core and pull frames out of it."""
@@ -133,8 +151,28 @@ class NativeSession:
         # that saves in the chip's top block has that block. The working image becomes the
         # full chip (ROM + 0xFF), so the in-ROM save covers the save block too -- the .ngc
         # grows to the chip size on first save, exactly like padding it for the flashcart.
-        if flash_size and flash_size > len(self._rom):
+        #
+        # ⚡ THE CAPACITY IS THE BLOCK NUMBERING, NOT JUST THE SIZE. A game erases by BLOCK
+        # NUMBER (SDK FlashMem.txt, BLOCK_NO.INC) and the number->address table is different
+        # for each chip: block 17 is 0xFA000 on an 8 Mbit card and 0x110000 on a 16 Mbit one.
+        # Delta Warp saves in block 17 of an 8 Mbit card; presented as 16 Mbit its erase lands
+        # two blocks away, the save area is never cleared, the read-back verify fails and the
+        # game says "SAVE ERROR!" -- measured: 9 erases at 0x310000 while it programmed
+        # 0x2FA000. So an explicit capacity has to be obeyed EVEN WHEN IT IS SMALLER than the
+        # image: `> len(rom)` silently ignored every downward choice, which made the setting
+        # look broken for exactly the cart that needs it. Only GROWING rewrites the image.
+        # What the chip currently presents as: `ngpc_load_rom` built the map from the image,
+        # which for a cart already padded to its chip size is the padded length -- so the
+        # identity is read off the FILE, and a file grown by an earlier save keeps claiming
+        # the bigger card forever. That is why an explicit setting must be able to shrink it.
+        self._flash_presented = min(len(self._rom), CART_CHIP_SIZE)
+        if flash_size and flash_size != self._flash_presented:
             self.machine.set_flash_size(flash_size)
+            # The BIOS reads the card type BEFORE it touches the chip, and `reset` wrote it
+            # from the pre-resize map -- so it has to be restated, or the byte and the block
+            # map disagree about which card this is.
+            self.machine.write(BIOS_FLASH_CARD_TYPE, bytes([flash_size_code(flash_size)]))
+        if flash_size and flash_size > len(self._rom):
             self._rom = self._orig_rom = bytes(self.machine.read(flash_file.CART_BASE, flash_size))
 
         # THE SAVE. The cartridge is the save -- a game erases a block of its own ROM
@@ -199,7 +237,7 @@ class NativeSession:
         block file is ALSO written beside it (backup / portable copy)."""
         if not self.machine.flash_dirty():
             return False
-        current = bytes(self.machine.read(flash_file.CART_BASE, len(self._rom)))
+        current = self._read_cart_image()
         if current == self._rom:
             self.machine.flash_clear_dirty()
             return False
@@ -214,12 +252,45 @@ class NativeSession:
         #    pristine cart, so it stays a usable standalone save even in ROM mode)
         if self.sidecar:
             self.save_path.parent.mkdir(parents=True, exist_ok=True)
-            flash_file.write(self.save_path, flash_file.diff_blocks(self._orig_rom, current))
+            # Per die: `diff_blocks` adds a flat offset to one base, and the second die's
+            # bytes do NOT continue from the first one's address -- they start again at
+            # 0x800000. Diffing the whole image against CART_BASE would stamp every block
+            # above 2 MiB with an address that is not a cartridge at all, and the reload
+            # would refuse them.
+            blocks: list[tuple[int, bytes]] = []
+            offset = 0
+            for base, size in self._cart_windows():
+                blocks += flash_file.diff_blocks(
+                    self._orig_rom[offset:offset + size], current[offset:offset + size], base)
+                offset += size
+            flash_file.write(self.save_path, blocks)
             wrote = True
         if wrote:
             self._rom = current
             self.machine.flash_clear_dirty()
         return wrote
+
+    def _cart_windows(self) -> list[tuple[int, int]]:
+        """(base, length) of each flash die, exactly as the core maps them."""
+        size = len(self._rom)
+        chip0 = min(size, CART_CHIP_SIZE)
+        windows = [(flash_file.CART_BASE, chip0)]
+        if size > CART_CHIP_SIZE:
+            windows.append((CART_CHIP1_BASE, min(size - CART_CHIP_SIZE, CART_CHIP_SIZE)))
+        return windows
+
+    def _read_cart_image(self) -> bytes:
+        """The whole cartridge, in the order the ROM FILE lays it out.
+
+        ⚡ NOT one flat read from 0x200000. A 4 MiB cart is two dies and the second is
+        wired to 0x800000, so reading `len(rom)` bytes straight through chip 0 runs off
+        its window into space that is not a cartridge and reads back ZEROS. `commit_save`
+        did exactly that, compared the result against the ROM file, found it "changed",
+        and -- saving into the .ngc, which is the default -- WROTE THE SECOND HALF OF THE
+        CARTRIDGE BACK AS ZEROS. Any 4 MiB game that saves would have destroyed its own
+        ROM file the first time it did (measured: bytes 2 MiB..4 MiB all zero).
+        """
+        return b"".join(self.machine.read(base, size) for base, size in self._cart_windows())
 
     def reboot(self) -> None:
         """POWER OFF, POWER ON. The cartridge never left the slot.
@@ -235,7 +306,15 @@ class NativeSession:
         quietly wiped the save the player made two minutes ago would be a cruel bug, and
         it is exactly the bug the naive implementation has.
         """
-        cartridge = self.machine.read(flash_file.CART_BASE, len(self._rom))
+        # ⚡ A 4 MiB CART IS TWO DIES, AND THEY ARE NOT ADJACENT ON THE BUS. Chip 0 sits
+        # at 0x200000 and holds at most 2 MiB; chip 1 is wired to 0x800000 (pass 247).
+        # This used to snapshot `len(self._rom)` bytes straight through 0x200000, which
+        # for the three 4 MiB carts runs off the end of chip 0's window into space that
+        # is not a cartridge at all -- and `flash_restore` rightly refused it, so
+        # rebooting Metal Slug 2nd Mission, SvC MotM or Densha de Go! 2 raised instead
+        # of rebooting. Snapshot each die from where its pins actually are.
+        cartridge = [(base, self.machine.read(base, size))
+                     for base, size in self._cart_windows()]
         coin_cell = self.machine.battery_ram() if self.real_bios else None
 
         if self.real_bios:
@@ -244,7 +323,8 @@ class NativeSession:
         else:
             self.machine.reset(bios_handoff=True)
 
-        self.machine.flash_restore(flash_file.CART_BASE, cartridge)
+        for base, data in cartridge:
+            self.machine.flash_restore(base, data)
 
         self._power_pressed = False
         self.executed = 0

@@ -79,6 +79,11 @@ No ROMs or BIOS are included — provide your own.
   the console's vector table, so without a BIOS they crash on boot (the emulator will tell
   you when that happens). Commercial games and BIOS-free homebrew run without one.
 
+> **A few commercial games need `bios.bin` too.** *Metal Slug — 2nd Mission* checks that the
+> console really booted through its BIOS, and quietly disables **fire and jump** when it
+> decides it did not — the game still runs and looks perfect, you simply can never shoot or
+> jump. Both start modes below satisfy the check; no BIOS at all does not.
+
 ### Two ways to start a game
 
 - **Instant hand-off** *(default — leave "Console boot" OFF)*: the cartridge is handed the
@@ -116,10 +121,19 @@ Two different things, kept separate:
   is often **bigger than the ROM burned on it**, and the game saves in the chip's top block —
   which can sit far above the ROM data. Delta Warp, for example, is a 512 KB ROM yet writes
   its record save at a ~1 MB offset; on a chip sized to the ROM that block is missing and the
-  game shows *"SAVE ERROR"*. So **Auto** presents any under-filled cart as a full 16 Mbit chip
-  (the top is erased `0xFF`, exactly like an under-filled flashcart); the `.ngc` grows to that
-  size on first save (use **Separate file** to leave the ROM untouched). Set it explicitly
-  (4 / 8 / 16 Mbit) only if a game needs a specific capacity.
+  game shows *"SAVE ERROR"*. The capacity is not just a size: a game erases by **block
+  number**, and the number→address table is different on each chip (block 17 is `0xFA000` on
+  an 8 Mbit card, `0x110000` on a 16 Mbit one), so the wrong capacity sends the erase to the
+  wrong place and the save fails on the *second* write — the first one lands on erased flash
+  and works, which is what makes it look fine at first.
+
+  Which chip a cart carries cannot be read off the ROM image (Delta Warp is 512 KB on an
+  8 Mbit part; StarGunner is smaller still on a 16 Mbit one). So **Auto** lets the cartridge
+  answer: on every three-card table in SNK's SDK the save block is the second 8 KB block from
+  the top, so `capacity = save address + 0x6000`, and the first time a game programs its save
+  the chip re-presents itself at the matching capacity. The `.ngc` grows to the chip size on
+  first save (use **Separate file** to leave the ROM untouched). Set it explicitly
+  (4 / 8 / 16 Mbit) only to override that.
 
 ## Controls (default)
 
@@ -173,11 +187,16 @@ tool, not a deterministic TAS engine.
 
 ## Known issues
 
-- **Metal Slug — 2nd Mission**: in-game **fire and jump (A / B) do nothing**, while grenade
-  (Option) works normally; A / B still work in the menus. The controller input is confirmed
-  to reach the game correctly (the game's own button read and edge-detection produce the
-  right A / B values), so the fault is downstream in the title's in-game action handling and
-  is still under investigation. Other games are unaffected.
+- **A save state can carry an old fault back with it.** A state is the whole machine
+  including work RAM, so anything a fix corrects *at boot* is restored to its broken value by
+  a state captured before the fix. Two known cases, both fixed for a fresh run and both still
+  reproducible from an old state — **start a new run to see the fix**:
+  - *Metal Slug — 2nd Mission*, fire and jump dead in-game: its copy-protection flag lives in
+    work RAM. (The hand-off now leaves character RAM as a real BIOS boot does, which is what
+    the game checks.)
+  - *Delta Warp*, `"SAVE ERROR!"` on the second save onward: the flash card type the BIOS
+    reads lives in work RAM at `0x6C58`. (The chip now takes its capacity from where the game
+    actually saves — see **Cart flash size** above.)
 
 If you hit a bug, a ROM fault auto-writes a `crashes/*.txt` report (reason, PC, opcode,
 registers, memory & stack) — attach it, ideally with a save state, when reporting.
