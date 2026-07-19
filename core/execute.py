@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -15186,39 +15185,38 @@ def _read_bank3_word(before_cpu: NgpcCpuState, r32_index: int) -> int | None:
     return (hi << 8) | lo
 
 
-def _bios_rtc_struct_time() -> time.struct_time:
-    """Host wall-clock reading for VECT_RTCGET.
-
-    On real NGPC the RTC is a live hardware clock; NeoPop's HLE reads the host
-    clock (`time()`/`localtime()`). We do the same. This makes RTCGET
-    intentionally non-deterministic (like every emulator's RTC); pin this
-    function in tests to get a fixed clock.
-    """
-    return time.localtime()
-
-
 def _to_bcd(value: int) -> int:
     return (((value // 10) & 0x0F) << 4) | (value % 10)
 
 
-def _bios_rtc_bcd_bytes() -> bytes:
-    """7 packed-BCD RTC bytes, matching NeoPop bios.c::update_rtc.
+# The calendar chip's registers, and what a powered-on console reads back from each
+# (core/memory.py seeds the same values -- keep the two in step).
+_RTC_REGS = (0x000091, 0x000092, 0x000093, 0x000094, 0x000095, 0x000096, 0x000097)
+_RTC_SEED = {0x000091: 0x24, 0x000092: 0x01, 0x000093: 0x01, 0x000097: 0x01}
 
-    Layout: year(since 2000), month(1-12), day, hour, minute, second,
-    then ((year_bcd % 4) << 4) | weekday. C `struct tm` semantics are
-    reconstructed from Python's struct_time (tm_mon is already 1-12;
-    tm_wday is Mon=0..Sun=6 and must be shifted to the C Sun=0..Sat=6).
+
+def _bios_rtc_bcd_bytes(memory: dict[int, int]) -> bytes:
+    """The 7 packed-BCD bytes VECT_RTCGET hands back: year(since 2000), month, day,
+    hour, minute, second, then ((year & 3) << 4) | weekday.
+
+    ⚡ READ OUT OF THE MACHINE'S OWN CLOCK CHIP (I/O 0x91-0x97), not off the host.
+    This used to call `time.localtime()`, copying NeoPop's HLE, and that gave the
+    console TWO clocks that disagreed: a game reading the registers saw the emulated
+    chip, and the same game asking the BIOS saw the wall clock on the desk. On
+    hardware there is only ever one -- the BIOS reads the very same chip, and the
+    native core (which runs the real BIOS rather than this shortcut) always did. It
+    also made the reference core non-deterministic, which for the half of a
+    differential pair whose job is to be reproducible is a defect on its own.
+
+    The registers ARE the layout: 0x97 already reads back weekday with the leap phase
+    in its top nibble, so the bytes come straight across.
+
+    ⚠️ This core seeds its clock and leaves it frozen -- it models the chip's power-on
+    value, not a running clock (the ticking one lives in the native core). So RTCGET
+    here returns a fixed instant. That is a known, deliberate gap, and it is still
+    strictly better than reporting a time the rest of the machine disagrees with.
     """
-    t = _bios_rtc_struct_time()
-    year = _to_bcd((t.tm_year - 2000) % 100)
-    month = _to_bcd(t.tm_mon)
-    day = _to_bcd(t.tm_mday)
-    hour = _to_bcd(t.tm_hour)
-    minute = _to_bcd(t.tm_min)
-    second = _to_bcd(t.tm_sec)
-    c_wday = (t.tm_wday + 1) % 7  # Python Mon=0..Sun=6 -> C Sun=0..Sat=6
-    weekday_byte = ((year % 4) << 4) | (c_wday & 0x0F)
-    return bytes([year, month, day, hour, minute, second, weekday_byte])
+    return bytes(memory.get(reg, _RTC_SEED.get(reg, 0x00)) & 0xFF for reg in _RTC_REGS)
 
 
 def _swi1_note_prefix(vect: int) -> str:
@@ -15728,7 +15726,7 @@ def _swi1_rtcget(
             ),
         )
 
-    bcd = _bios_rtc_bcd_bytes()
+    bcd = _bios_rtc_bcd_bytes(before_memory)
     base = _mask_address(buf)
     after_memory = dict(before_memory)
     for offset, value in enumerate(bcd):

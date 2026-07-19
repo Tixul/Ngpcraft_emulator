@@ -20,6 +20,8 @@ fast that most emulators show.
   colour profiles, real fullscreen. The canvas follows the window; size presets `Ctrl+1…5`.
 - **Save states** — 8 slots per game (toolbar or `F2` save / `F4` load / `F3` slot).
 - **In-game saves** — the game's own flash save, stored in the ROM, a separate file, or both.
+- **A console that remembers** — the coin cell keeps its BIOS settings *and* its clock, so
+  the date is still right next time. The **RTC alarm** works too, and goes off on time.
 - **Speed control** — fast-forward (hold `Tab`) and 0.25×…4× (`[` / `]` or the toolbar).
 - **Rewind** — hold `,` (or the ⏪ toolbar button) to run the game backward; release to
   resume. `.` steps one frame forward. Buffer length configurable (Off / 10 / 20 / 30 s).
@@ -73,9 +75,10 @@ This produces `cpp/build/ngpc_core.{dll,so,dylib}`, which the shell loads automa
 
 No ROMs or BIOS are included — provide your own.
 
-- Put `.ngc` / `.ngp` files in **`roms/`** (or pick any folder via **Settings ▸ Library**).
+- Put `.ngc` / `.ngp` files in **`roms/`** (or pick any folder with **Choose ROM folder**,
+  in the Library).
 - A real Neo Geo Pocket **BIOS** — place it as **`bios.bin`** next to the app (or set the
-  path in **Settings ▸ BIOS**). **Most homebrew need it**: they call BIOS routines through
+  path in **Settings ▸ Console (BIOS)**). **Most homebrew need it**: they call BIOS routines through
   the console's vector table, so without a BIOS they crash on boot (the emulator will tell
   you when that happens). Commercial games and BIOS-free homebrew run without one.
 
@@ -89,7 +92,7 @@ No ROMs or BIOS are included — provide your own.
 - **Instant hand-off** *(default — leave "Console boot" OFF)*: the cartridge is handed the
   exact state the BIOS boot would have left, so the game starts immediately. The BIOS image
   is still used behind the scenes (saves, system calls); the game just boots straight in.
-- **Console boot** *(Settings ▸ General ▸ "Play the console boot")*: the real BIOS powers on,
+- **Console boot** *(Settings ▸ Console (BIOS) ▸ "Play the console boot")*: the real BIOS powers on,
   plays its **NEO·GEO POCKET intro**, and then boots the game on its own — exactly like
   turning on the hardware. A brand-new console configures itself the first time (the BIOS
   first-boot setup is auto-completed with defaults and remembered), so you always get
@@ -101,10 +104,12 @@ console's own language/clock screens, one of the NGPC's signature features.
 
 ## Saves
 
-Two different things, kept separate:
+Three different things, kept separate:
 
 - **Save states** — an instant snapshot of the whole machine, 8 slots per game. Toolbar
   buttons, or `F2` save / `F4` load / `F3` change slot. Stored in `savestates/`.
+- **The console's own memory** — not a game's at all: the language, colour and date the
+  BIOS remembers, kept by the coin cell. See [The console's clock](#the-consoles-clock).
 - **In-game saves** — the game's OWN save (RPG progress, high scores, options), written by
   the cartridge's flash. Choose how it is stored in **Settings ▸ General ▸ "In-game save"**:
   - **In the ROM (.ngc)** — written back into the cartridge file itself, exactly like the
@@ -134,6 +139,40 @@ Two different things, kept separate:
   the chip re-presents itself at the matching capacity. The `.ngc` grows to the chip size on
   first save (use **Separate file** to leave the ROM untouched). Set it explicitly
   (4 / 8 / 16 Mbit) only to override that.
+
+## The console's clock
+
+A Neo Geo Pocket carries a **calendar chip** and a **coin cell**, and that one battery keeps
+*both* the BIOS settings (language, colour) *and* the clock alive. The emulator models it the
+same way, so the two are saved together — `saves/system.ram` and `saves/system.rtc`. Pull one
+and you would have a console that runs its first-boot setup while still insisting it knows the
+date, which is why the reset below clears both.
+
+The clock **runs while you play** and, by default, **keeps running while the emulator is
+closed** — shut it for three days and the console comes back three days later, exactly as the
+coin cell does on hardware. Choose in **Settings ▸ Console (BIOS) ▸ "Clock while the emulator
+is closed"**:
+
+- **Keeps running** *(default)* — what real hardware does.
+- **Follow the PC's clock** — set from your computer at every launch. Always right, but it
+  overrides whatever date you set on the BIOS screen.
+- **Stops, and resumes where it left off** — time freezes with the emulator. Not hardware
+  behaviour, but it is **reproducible**, which is what you want when debugging or when a
+  game's in-world clock should stay put.
+
+> A **brand-new** console has a flat cell, and the BIOS treats that exactly as hardware does:
+> it resets the date to 1998-01-01 on the first boot. That is not a bug — it is the
+> dead-battery path. From the second launch on, the BIOS trusts the chip and never touches it.
+
+**The alarm works.** A game that sets one through the BIOS (`VECT_ALARMSET`) gets its
+interrupt at the minute it asked for, and an alarm that came due **while the console was
+switched off** fires on the next launch. The alarm setting is coin-cell state too, so it
+survives a restart.
+
+**Reset the console** (same panel) is pulling the battery out: the console forgets its
+language, colour and date, and runs its first-boot setup again like a machine out of the box.
+It asks first. **Your games and their saves are not touched** — those live in the ROM and
+`.flash` files.
 
 ## Controls (default)
 

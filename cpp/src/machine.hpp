@@ -58,6 +58,21 @@ constexpr uint32_t kBiosBase             = 0xFF0000;
 constexpr unsigned kIrqVectorIndexVBlank = 11;          // -> 0xFFFF2C  (it IS the INT4 pin)
 constexpr uint8_t  kIrqLevelVBlank       = 4;
 
+/* ⏰ THE RTC ALARM -- vector index 10 (0xFFFF28), the INT0 pin the calendar chip drives.
+ *
+ * Not the power button, which is index 8: the two are separate lines that this project
+ * confused for one, because ares calls index 10 "INT0" while our core calls index 8 the
+ * same thing. Settled by reading the retail BIOS's own vector table: index 10 goes to
+ * 0xFF2856, and that handler is the ONLY code in the 64 KiB that references 0x6FC8 --
+ * the RAM vector the SDK documents as the RTC alarm hook. Index 8 goes to 0xFF1898, the
+ * power/boot handler.
+ *
+ * They are related on hardware, which is what made the confusion plausible: with the
+ * console switched OFF the alarm line is what powers it back on to sound (the SDK's
+ * VECT_ALARMDOWNSET). While a game is running the same alarm arrives here instead --
+ * which is why the SDK says the two alarm calls cannot both be set at once. */
+constexpr unsigned kIrqVectorIndexRtcAlarm = 10;
+
 /* ⚡ INT5 -- THE SOUND CPU'S INTERRUPT TO THE MAIN CPU. Vector index 12 (0xFFFF30).
  *
  * The Z80 raises it by WRITING ITS OWN 0xC000. SNK says so in as many words, and its
@@ -278,6 +293,21 @@ inline bool irq_priority_register(unsigned vector_index, IrqPriorityReg& out) {
         case 18: out = {0x0074, false}; return true;   // INTT2
         case 19: out = {0x0074, true};  return true;   // INTT3
         case 8:  out = {0x0070, false}; return true;   // INT0
+        /* ⚡ THE RTC ALARM, vector index 10 -- and until now it could never fire, because
+         * a vector with no entry here reads back priority 0 and is dropped on the floor.
+         *
+         * Index 10 is the alarm and index 8 is the power button; they are NOT the same
+         * line, which is what made this look unimplementable at first. Settled by asking
+         * the BIOS: its vector table at 0xFFFF00 puts index 10 at 0xFF2856, and that
+         * handler is the only code in the whole 64 KiB that references 0x6FC8 -- the RAM
+         * vector the SDK documents as "RTC alarm interrupt". Index 8 goes to 0xFF1898,
+         * the power/boot handler. (They ARE related on hardware, just not the same pin:
+         * with the console switched off the alarm line is what powers it back on to
+         * sound -- that is VECT_ALARMDOWNSET. While a game runs it arrives here instead.)
+         *
+         * The level lives in the low nibble of 0x0070, which it shares with INT0 -- the
+         * Ghidra loader independently names that byte "RTC_Alarm_Level". */
+        case 10: out = {0x0070, false}; return true;   // INT0 pin == the RTC alarm
         case 28: out = {0x0070, true};  return true;   // INTAD (shares 0x70 with INT0)
         /* INTE45 (0x71) carries BOTH halves of the pair this project kept apart:
          *   low nibble  = INT4 -- and VBlank IS the INT4 pin
@@ -549,8 +579,25 @@ struct Machine {
         uint8_t enable = 1;
         uint8_t year = 0x24, month = 0x01, day = 0x01;   /* 2024-01-01 */
         uint8_t hour = 0x00, minute = 0x00, second = 0x00, weekday = 0x01;
+        /* --- THE ALARM, at 0x98-0x9A (+ enable in 0x90 bit 1) ------------------
+         * Undocumented: no datasheet, no ares, no Ghidra loader has these. Found by
+         * MEASUREMENT -- running VECT_ALARMSET on the real BIOS and logging the I/O
+         * page. The BIOS writes the day to 0x98, the hour to 0x99 and the minute to
+         * 0x9A, then sets 0x90 to 0x03 (bit0 clock + bit1 alarm). Verified by varying
+         * the values passed and watching all three registers follow.
+         *
+         * Compare granularity is day/hour/minute -- there is no alarm second, which
+         * matches the SDK's ALARM struct {Day, Hour, Min, Code}. */
+        uint8_t alarm_enable = 0;
+        uint8_t alarm_day = 0, alarm_hour = 0, alarm_minute = 0;
     } rtc;
     void    rtc_step(uint32_t cycles);
+    /* Wind the clock forward by whole seconds, through the same carry chain the tick
+     * uses -- for the time that passed while the emulator was closed (the coin cell
+     * keeps a real console's clock running when it is switched off). */
+    void    rtc_advance_seconds(uint32_t seconds);
+    void    rtc_tick_one_second();
+    bool    rtc_alarm_due() const;
     uint8_t rtc_read(uint32_t addr) const;
     void    rtc_write(uint32_t addr, uint8_t value);
 
@@ -755,8 +802,9 @@ struct Machine {
             if (flash_id_read(a, id)) return id;
         }
         /* The RTC's registers answer from the clock, not from the byte the last
-         * write happened to leave in the I/O page. */
-        if (a >= 0x90 && a <= 0x97) return rtc_read(a);
+         * write happened to leave in the I/O page. 0x98-0x9A are the alarm's
+         * day/hour/minute -- part of the same chip, so they answer from it too. */
+        if (a >= 0x90 && a <= 0x9A) return rtc_read(a);
         /* Port 0xB1 (ares ngp/cpu/io.cpp): bit1 = the CR2032 SUB-BATTERY, bit2 = a
          * must-be-1 line ("or SNK Gals' Fighter shows a link error"). Leaving them 0
          * is the whole "SUB BATTERY DEAD" loop -- the BIOS reads a dead coin cell and

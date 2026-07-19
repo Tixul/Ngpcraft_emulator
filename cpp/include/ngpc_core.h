@@ -178,6 +178,45 @@ NGPC_API void        ngpc_reset(ngpc_t*, int reset_mode);
  * NULL/0 for a dead cell (a blank RAM, and a BIOS that boots as if brand new). */
 NGPC_API void        ngpc_set_battery_ram(ngpc_t*, const uint8_t* data, uint32_t len);
 
+/* THE CALENDAR IC, at I/O 0x90-0x97 -- and it runs off THE SAME COIN CELL as the RAM
+ * above. That is not a detail: one cell keeps both alive, so a console that remembers
+ * your language necessarily remembers the time too, and the two must be saved and
+ * restored TOGETHER. The clock is machine state, not memory, so `ngpc_read_mem` cannot
+ * reach it and a plain RAM dump silently leaves it behind -- which is exactly how it
+ * came to be re-seeded to a hardcoded date at every launch.
+ *
+ * MEASURED against the retail BIOS (both paths):
+ *   - blank cell   -> the BIOS REWRITES the chip to 1998-01-01 00:00:00 at 0xFF20FD
+ *                     (stop clock, set fields, restart) -- a dead battery, reset the date.
+ *   - configured   -> the BIOS does not touch it. NOT ONE WRITE.
+ * So on a configured console whatever we hand over is what the console believes, forever;
+ * the BIOS will never correct it. Restoring the real one is the whole fix.
+ *
+ * All fields are packed BCD, exactly as the registers read. `counter` is the sub-second
+ * cycle accumulator -- internal, not visible to software, carried so a round-trip through
+ * a save is lossless. Hand the clock over BEFORE `ngpc_reset` in BIOS-boot mode, like the
+ * battery RAM: the BIOS reads it during its own boot. */
+typedef struct {
+    uint8_t  enable;                       /* register 0x90 bit 0 */
+    uint8_t  year, month, day;             /* 0x91 0x92 0x93 */
+    uint8_t  hour, minute, second;         /* 0x94 0x95 0x96 */
+    uint8_t  weekday;                      /* 0x97 bits 0-3 (the leap phase is derived) */
+    /* The alarm is coin-cell state too: a real console you set an alarm on still has it
+     * set tomorrow. Same chip, same battery, same save. 0x90 bit1 + 0x98/0x99/0x9A. */
+    uint8_t  alarm_enable;
+    uint8_t  alarm_day, alarm_hour, alarm_minute;
+    uint32_t counter;                      /* cycles accumulated toward the next second */
+} ngpc_rtc_t;
+
+NGPC_API void        ngpc_get_rtc(ngpc_t*, ngpc_rtc_t* out);
+NGPC_API void        ngpc_set_rtc(ngpc_t*, const ngpc_rtc_t* in);
+
+/* Wind the clock forward by whole seconds, through the same BCD carry chain the running
+ * clock ticks through -- month ends and leap years included. This is how time the console
+ * spent SWITCHED OFF gets caught up: a real coin cell keeps the calendar running while the
+ * machine is dark, so a save restored a week later should come back a week later. */
+NGPC_API void        ngpc_rtc_advance(ngpc_t*, uint32_t seconds);
+
 /* THE PICTURE. 160 x 152 raw 12-bit 0BGR colours, drawn ONE LINE AT A TIME as the beam
  * passed -- so a game that streams VRAM mid-frame comes out the way the silicon draws it,
  * not smeared with the frame's final state. Copies out; returns the number of pixels. */

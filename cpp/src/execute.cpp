@@ -139,8 +139,9 @@ void store(Machine& m, ngpc_record_t* rec, uint32_t addr, uint32_t value, uint8_
             if (m.vram_wait && a >= 0x8000 && a <= 0xBFFF && !m.in_vblank())
                 m.access_wait += m.vram_wait;
             m.note_write(a, bytes[i]);      // the write log; disarmed, this is 2 compares
-            /* The RTC's registers are not plain I/O bytes: a write sets the clock. */
-            if (a >= 0x90 && a <= 0x97) m.rtc_write(a, bytes[i]);
+            /* The RTC's registers are not plain I/O bytes: a write sets the clock --
+             * or, at 0x98-0x9A, the alarm it should go off at. */
+            if (a >= 0x90 && a <= 0x9A) m.rtc_write(a, bytes[i]);
         }
 
     /* The SOUND CPU's control registers are memory-mapped, and writing them is an

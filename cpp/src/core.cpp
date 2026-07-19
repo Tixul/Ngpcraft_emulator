@@ -111,6 +111,50 @@ NGPC_API void ngpc_set_battery_ram(ngpc_t* h, const uint8_t* data, uint32_t len)
     m->battery_ram.assign(data, data + (len > kRamSize ? kRamSize : len));
 }
 
+/* ⚡ AND THE OTHER HALF OF THAT COIN CELL: the clock. See ngpc_core.h for why these two
+ * belong together and for what the BIOS was measured doing to each. */
+NGPC_API void ngpc_get_rtc(ngpc_t* h, ngpc_rtc_t* out) {
+    if (!h || !out) return;
+    const Machine* m = reinterpret_cast<const Machine*>(h);
+    out->enable  = m->rtc.enable;
+    out->year    = m->rtc.year;
+    out->month   = m->rtc.month;
+    out->day     = m->rtc.day;
+    out->hour    = m->rtc.hour;
+    out->minute  = m->rtc.minute;
+    out->second  = m->rtc.second;
+    out->weekday = m->rtc.weekday;
+    out->alarm_enable = m->rtc.alarm_enable;
+    out->alarm_day    = m->rtc.alarm_day;
+    out->alarm_hour   = m->rtc.alarm_hour;
+    out->alarm_minute = m->rtc.alarm_minute;
+    out->counter = m->rtc.counter;
+}
+
+NGPC_API void ngpc_set_rtc(ngpc_t* h, const ngpc_rtc_t* in) {
+    if (!h || !in) return;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    m->rtc.enable  = uint8_t(in->enable & 1u);
+    m->rtc.year    = in->year;
+    m->rtc.month   = in->month;
+    m->rtc.day     = in->day;
+    m->rtc.hour    = in->hour;
+    m->rtc.minute  = in->minute;
+    m->rtc.second  = in->second;
+    m->rtc.weekday = uint8_t(in->weekday & 0x0Fu);
+    m->rtc.alarm_enable = uint8_t(in->alarm_enable & 1u);
+    m->rtc.alarm_day    = in->alarm_day;
+    m->rtc.alarm_hour   = in->alarm_hour;
+    m->rtc.alarm_minute = in->alarm_minute;
+    m->rtc.counter = in->counter;
+}
+
+/* Wind the clock forward over time the console spent switched off. */
+NGPC_API void ngpc_rtc_advance(ngpc_t* h, uint32_t seconds) {
+    if (!h) return;
+    reinterpret_cast<Machine*>(h)->rtc_advance_seconds(seconds);
+}
+
 NGPC_API uint32_t ngpc_get_framebuffer(ngpc_t* h, uint16_t* out, uint32_t max_pixels) {
     if (!h || !out) return 0;
     Machine* m = reinterpret_cast<Machine*>(h);
@@ -350,6 +394,10 @@ static void advance_raster(ngpc::Machine& m, uint16_t cycles) {
  * vector index, which is the datasheet's own priority order. */
 static const unsigned kIrqSourceIndices[] = {
     ngpc::kIrqVectorIndexInt0,       /* the POWER button: it is what wakes the BIOS */
+    /* The calendar chip's alarm. A source missing from THIS list can never be delivered
+     * however correctly it is raised -- which is exactly why the alarm did nothing for
+     * so long: the vector existed, the BIOS had a handler for it, and nobody looked. */
+    ngpc::kIrqVectorIndexRtcAlarm,
     ngpc::kIrqVectorIndexInt5,       /* the SOUND CPU interrupting the main one */
     ngpc::kIrqVectorIndexVBlank,
     ngpc::kIrqVectorIndexIntT0, ngpc::kIrqVectorIndexIntT0 + 1,

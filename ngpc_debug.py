@@ -52,8 +52,51 @@ def _freq_to_note(freq: float) -> str:
 
 # ---- VRAM / palette map (mirrors cpp/src/render.cpp) ----
 CHAR_RAM = 0x00A000
+# Character RAM is 8 KiB = 512 tiles of 16 bytes, and sprites address it with a 9-bit
+# index (the attribute byte's bit 0 is tile bit 8), so tiles 256-511 are ordinary,
+# heavily-used graphics -- not an exotic corner. The viewer used to read a flat 256.
+CHAR_RAM_SIZE = 0x2000
+TILE_BYTES = 16
+CHAR_RAM_TILES = CHAR_RAM_SIZE // TILE_BYTES
 OAM_BASE = 0x008800
 OAM_CPC = 0x008C00
+# The two tilemaps, 32x32 entries of 2 bytes (mirrors cpp/src/render.cpp kScr1Map/kScr2Map).
+# Entry = [tile low 8 bits][attrib], and attrib bit 0 is tile bit 8 -- the same 9-bit index
+# sprites use, because all three consumers read the SAME character RAM.
+SCR1_MAP = 0x009000
+SCR2_MAP = 0x009800
+TILEMAP_BYTES = 32 * 32 * 2
+# 515 cycles x 199 scanlines at 6.144 MHz = 59.95 Hz (cpp/src/machine.hpp). This is the
+# whole budget a game gets between two pictures.
+CYCLES_PER_FRAME = 515 * 199
+
+# Who is using a tile, as a bitmask. Character RAM is shared and the hardware keeps no
+# ownership at all -- so this is worked out from who REFERENCES each tile right now.
+USE_SCR1, USE_SCR2, USE_SPRITE = 1, 2, 4
+# Colour per usage. "Shared" is deliberately loud: a tile pulled by both a plane and a
+# sprite is usually a range that was loaded over another one, which is a real and
+# hard-to-see bug when it happens by accident.
+USAGE_COLOURS = {
+    0: (38, 38, 42),                      # nobody -- free space
+    USE_SCR1: (59, 130, 246),             # plane 1
+    USE_SCR2: (34, 168, 83),              # plane 2
+    USE_SPRITE: (245, 158, 11),           # sprites
+}
+USAGE_SHARED = (236, 72, 153)             # more than one consumer
+
+
+def tile_usage(m) -> np.ndarray:
+    """Which consumer references each of the 512 tiles, as a USE_* bitmask per tile."""
+    usage = np.zeros(CHAR_RAM_TILES, np.uint8)
+    for base, flag in ((SCR1_MAP, USE_SCR1), (SCR2_MAP, USE_SCR2)):
+        raw = m.read(base, TILEMAP_BYTES)
+        ids = np.frombuffer(raw, np.uint8).reshape(-1, 2)
+        tiles = ids[:, 0].astype(np.uint16) | ((ids[:, 1] & 1).astype(np.uint16) << 8)
+        usage[np.unique(tiles)] |= flag
+    oam = m.read(OAM_BASE, 64 * 4)
+    for i in range(64):
+        usage[((oam[i * 4 + 1] & 1) << 8) | oam[i * 4]] |= USE_SPRITE
+    return usage
 PAL = {
     "Sprite": 0x008200, "Plane 1 (SCR1)": 0x008280, "Plane 2 (SCR2)": 0x008300,
     "Backdrop": 0x0083E0, "Window": 0x0083F0,
@@ -122,8 +165,16 @@ def _disasm_bytes(raw: bytes, pc: int) -> str:
         return "??"
 
 
-def decode_tiles(char_bytes: bytes, palette_rgb: np.ndarray) -> np.ndarray:
-    """char_bytes: N*16 bytes of 2bpp tiles -> (rows*8, cols*8, 3) uint8 sheet."""
+def decode_tiles(char_bytes: bytes, palette_rgb: np.ndarray,
+                 usage: "np.ndarray | None" = None,
+                 show: "set[int] | None" = None) -> np.ndarray:
+    """char_bytes: N*16 bytes of 2bpp tiles -> an (rows, cols) sheet of 8x8 tiles.
+
+    With `usage` (a USE_* bitmask per tile, from `tile_usage`) each tile gets a 1px frame
+    saying who references it, and `show` filters: a tile whose consumers are all unchecked
+    is dimmed rather than removed, so the grid keeps its shape and a tile's position still
+    tells you its index.
+    """
     n = len(char_bytes) // 16
     if n == 0:
         return np.zeros((8, 8, 3), np.uint8)
@@ -138,10 +189,33 @@ def decode_tiles(char_bytes: bytes, palette_rgb: np.ndarray) -> np.ndarray:
     rgb = palette_rgb[px]
     cols = 16
     rows = (n + cols - 1) // cols
-    sheet = np.zeros((rows * 8, cols * 8, 3), np.uint8)
+
+    if usage is None:
+        sheet = np.zeros((rows * 8, cols * 8, 3), np.uint8)
+        for i in range(n):
+            r, c = divmod(i, cols)
+            sheet[r * 8:(r + 1) * 8, c * 8:(c + 1) * 8] = rgb[i]
+        return sheet
+
+    pitch = 10                                    # 1px frame + 8px tile + 1px frame
+    sheet = np.zeros((rows * pitch, cols * pitch, 3), np.uint8)
     for i in range(n):
         r, c = divmod(i, cols)
-        sheet[r * 8:(r + 1) * 8, c * 8:(c + 1) * 8] = rgb[i]
+        u = int(usage[i]) if i < len(usage) else 0
+        consumers = [f for f in (USE_SCR1, USE_SCR2, USE_SPRITE) if u & f]
+        if len(consumers) > 1:
+            frame = USAGE_SHARED
+        elif consumers:
+            frame = USAGE_COLOURS[consumers[0]]
+        else:
+            frame = USAGE_COLOURS[0]
+        tile = rgb[i]
+        if show is not None and not (set(consumers) & show if consumers else 0 in show):
+            tile = (tile.astype(np.uint16) * 3 // 10).astype(np.uint8)   # filtered out
+            frame = tuple(v * 3 // 10 for v in frame)
+        y, x = r * pitch, c * pitch
+        sheet[y:y + pitch, x:x + pitch] = frame
+        sheet[y + 1:y + 9, x + 1:x + 9] = tile
     return sheet
 
 
@@ -309,6 +383,40 @@ class DebugWindow(QMainWindow):
             r = regs[i] if i < len(regs) else 0
             lines.append(f"{name} {r:08X}   {name[1:]} {r & 0xFFFF:04X}   "
                          f"{name[1]} {r & 0xFF:02X}")
+
+        # ---- what the CONSOLE is doing, which is not what the on-screen fps shows.
+        # That readout is the host's, and the pacer holds it at 60 on any machine fast
+        # enough to matter. These three are the emulated machine's own figures.
+        if self._play is not None and hasattr(self._play, "perf"):
+            p = self._play.perf()
+            budget = CYCLES_PER_FRAME
+            game = p["game_fps"]
+            verdict = ("keeping up" if game >= 58 else
+                       "nothing moving on screen" if game <= 0.5 else
+                       "below 60 — not updating every frame")
+            # Speed is "times faster than real time the host COULD go". As a headline that
+            # reads as "the game runs 24x too fast", which is the opposite of what happens
+            # -- the pacer keeps playback at 1x. Shown as load instead: the share of real
+            # time actually spent emulating, where over 100% is the failure case.
+            speed = p["speed"]
+            load = (100.0 / speed) if speed > 0 else 0.0
+            headroom = (f"{speed:.0f}x headroom" if speed >= 1.5
+                        else "THE HOST IS THE LIMIT")
+            lines += [
+                "",
+                "-- console load ------------------------------",
+                f"sprite activity   {game:5.1f} /s   ({verdict})",
+                f"instr last frame  {p['instr']:5d}      (frame budget {budget} cycles)",
+                f"host load         {load:5.1f}%      "
+                f"({headroom} — the game still plays at 1x)",
+                "",
+                "host load is how much of real time this PC spends emulating: 4% means",
+                "it could run the console ~24x faster, but the pacer holds playback at",
+                "1x so the game runs at hardware speed. Over 100% it cannot keep up.",
+                "sprite activity INFERS the game's update rate from the sprite table",
+                "changing, so it is a hint, not a measurement: it reads 0 on a still",
+                "screen, and misses an update that rewrites identical values.",
+            ]
         self._cpu_text.setPlainText("\n".join(lines))
 
     # ---- Disassembly tab
@@ -989,11 +1097,44 @@ class DebugWindow(QMainWindow):
             self._vgm_lbl.setText(f"{len(self._vgm_rec.events)} writes ({state})")
 
     # ---- Palette tab
+    # Which consumer each palette block belongs to. Unlike character RAM, palettes ARE
+    # split by hardware -- sprites and the two planes each own their own 16 sub-palettes.
+    PAL_BLOCKS = (("Sprites", 0x008200, 16, USE_SPRITE),
+                  ("Plane 1 (SCR1)", 0x008280, 16, USE_SCR1),
+                  ("Plane 2 (SCR2)", 0x008300, 16, USE_SCR2),
+                  ("Backdrop", 0x0083E0, 2, 0),
+                  ("Window", 0x0083F0, 2, 0))
+
     def _palette_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
         lay.addWidget(QLabel("Colour palettes (each row = a 4-colour sub-palette)"))
-        self._pal_label = QLabel(); self._pal_label.setAlignment(Qt.AlignmentFlag.AlignTop)
-        sc = QScrollArea(); sc.setWidget(self._pal_label); sc.setWidgetResizable(True)
+
+        # Same per-consumer boxes as the Tiles tab. The blocks used to be stacked into one
+        # unlabelled image, so you could not tell whose palette a row was.
+        self._pal_show = {}
+        who = QHBoxLayout()
+        who.addWidget(QLabel("Show:"))
+        for name, _base, _rows, flag in self.PAL_BLOCKS:
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            cb.stateChanged.connect(self.refresh)
+            cb.setStyleSheet(f"color: rgb{USAGE_COLOURS[flag]};")
+            who.addWidget(cb)
+            self._pal_show[name] = cb
+        who.addStretch()
+        lay.addLayout(who)
+
+        inner = QWidget(); self._pal_rows = QVBoxLayout(inner)
+        self._pal_rows.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._pal_widgets = {}
+        for name, _base, _rows, flag in self.PAL_BLOCKS:
+            head = QLabel(name)
+            head.setStyleSheet(f"color: rgb{USAGE_COLOURS[flag]}; font-weight: bold;")
+            img = QLabel(); img.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            self._pal_rows.addWidget(head)
+            self._pal_rows.addWidget(img)
+            self._pal_widgets[name] = (head, img)
+        sc = QScrollArea(); sc.setWidget(inner); sc.setWidgetResizable(True)
         lay.addWidget(sc)
         lay.addLayout(self._export_row(
             lambda: self._save_png(self._pal_arr, "palette.png"), "💾 Save PNG…"))
@@ -1002,22 +1143,27 @@ class DebugWindow(QMainWindow):
     def _refresh_palette(self) -> None:
         m = self._m
         if m is None:
-            self._pal_label.setText("(no game running)"); return
-        blocks = [("Sprite", 0x008200, 16), ("Plane 1", 0x008280, 16),
-                  ("Plane 2", 0x008300, 16), ("Backdrop", 0x0083E0, 2),
-                  ("Window", 0x0083F0, 2)]
+            for head, img in self._pal_widgets.values():
+                img.setText("(no game running)"); img.setPixmap(QPixmap())
+                head.setVisible(True); img.setVisible(True)
+            return
         cell = 16
-        total_rows = sum(rows for _, _, rows in blocks)
-        img = np.zeros((total_rows * cell, 4 * cell, 3), np.uint8)
-        y = 0
-        for _name, base, rows in blocks:
+        parts = []
+        for name, base, rows, _flag in self.PAL_BLOCKS:
+            head, img = self._pal_widgets[name]
+            visible = self._pal_show[name].isChecked()
+            head.setVisible(visible); img.setVisible(visible)
+            block = np.zeros((rows * cell, 4 * cell, 3), np.uint8)
             for r in range(rows):
                 for c in range(4):
                     col = _read_u16(m, base + (r * 4 + c) * 2)
-                    img[y * cell:(y + 1) * cell, c * cell:(c + 1) * cell] = _rgb_from_u16(col)
-                y += 1
-        self._pal_arr = np.repeat(np.repeat(img, 2, 0), 2, 1)
-        self._pal_label.setPixmap(_pixmap(img, 2))
+                    block[r * cell:(r + 1) * cell, c * cell:(c + 1) * cell] = _rgb_from_u16(col)
+            if visible:
+                img.setPixmap(_pixmap(block, 2))
+                parts.append(block)
+        # The export keeps whatever is on screen, so a saved PNG matches what you saw.
+        combined = np.concatenate(parts, axis=0) if parts else np.zeros((1, 1, 3), np.uint8)
+        self._pal_arr = np.repeat(np.repeat(combined, 2, 0), 2, 1)
 
     # ---- Tiles tab
     def _tiles_tab(self) -> QWidget:
@@ -1032,7 +1178,33 @@ class DebugWindow(QMainWindow):
         bar.addWidget(QLabel("Palette")); bar.addWidget(self._tile_pal)
         bar.addWidget(QLabel("Sub")); bar.addWidget(self._tile_sub)
         bar.addStretch()
+        # The Sprites tab names tiles by index (they run past 255), so say how to find one.
+        bar.addWidget(QLabel(f"{CHAR_RAM_TILES} tiles · 16 per row · id = row×16 + column"))
         lay.addLayout(bar)
+
+        # ⚡ WHO OWNS A TILE? Nobody: character RAM is one shared pool and the hardware
+        # records no ownership. What we CAN show is who currently references each tile,
+        # read out of the two tilemaps and OAM. Per-consumer boxes, like the audio tab's
+        # per-channel mute, so a plane's tiles can be picked out of the shared sheet.
+        self._tile_show = {}
+        who = QHBoxLayout()
+        who.addWidget(QLabel("Show:"))
+        for flag, name in ((USE_SCR1, "Plane 1 (SCR1)"), (USE_SCR2, "Plane 2 (SCR2)"),
+                           (USE_SPRITE, "Sprites"), (0, "Unused")):
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            cb.stateChanged.connect(self.refresh)
+            colour = USAGE_COLOURS[flag]
+            cb.setStyleSheet(f"color: rgb{colour};")
+            who.addWidget(cb)
+            self._tile_show[flag] = cb
+        shared = QLabel("■ shared")
+        shared.setStyleSheet(f"color: rgb{USAGE_SHARED};")
+        shared.setToolTip("Referenced by more than one consumer — often a tile range that "
+                          "was loaded over another one.")
+        who.addWidget(shared)
+        who.addStretch()
+        lay.addLayout(who)
         self._tile_label = QLabel(); self._tile_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         sc = QScrollArea(); sc.setWidget(self._tile_label); sc.setWidgetResizable(True)
         lay.addWidget(sc)
@@ -1054,8 +1226,10 @@ class DebugWindow(QMainWindow):
         m = self._m
         if m is None:
             self._tile_label.setText("(no game running)"); return
-        char = m.read(CHAR_RAM, 256 * 16)
-        sheet = decode_tiles(char, self._tile_palette_rgb())
+        char = m.read(CHAR_RAM, CHAR_RAM_SIZE)
+        usage = tile_usage(m)
+        show = {flag for flag, cb in self._tile_show.items() if cb.isChecked()}
+        sheet = decode_tiles(char, self._tile_palette_rgb(), usage, show)
         self._tiles_arr = np.repeat(np.repeat(sheet, 3, 0), 3, 1)
         self._tile_label.setPixmap(_pixmap(sheet, 3))
 

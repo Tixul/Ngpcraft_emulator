@@ -98,6 +98,17 @@ def real_bios(s: QSettings) -> bool:
     return bool(s.value("general/real_bios", False, type=bool))
 
 
+def clock_mode(s: QSettings) -> str:
+    """What the console's calendar clock does while the emulator is CLOSED.
+
+    The mode ids live in `core.native_session` (which is what acts on them); this is
+    only the stored preference. Defaults to `hardware` -- what a real coin cell does.
+    """
+    from core.native_session import CLOCK_HARDWARE, CLOCK_MODES
+    m = str(s.value("bios/clock_mode", CLOCK_HARDWARE, type=str))
+    return m if m in CLOCK_MODES else CLOCK_HARDWARE
+
+
 def show_fps(s: QSettings) -> bool:
     """Show the on-screen FPS / speed readout over the game."""
     return bool(s.value("gfx/show_fps", False, type=bool))
@@ -283,7 +294,32 @@ STRINGS: dict[str, dict[str, str]] = {
         "set_folder": "Choose ROM folder…", "play": "Play", "resume": "Resume",
         "reset": "Reset", "quit_lib": "Quit to Library", "paused": "Paused",
         "cat_general": "General", "cat_graphics": "Graphics", "cat_audio": "Audio",
+        "cat_bios": "Console (BIOS)",
         "cat_controls": "Controls", "rom_folder": "ROM folder", "bios": "BIOS image",
+        # -- the console's own clock and coin cell
+        "clock_mode": "Clock while the emulator is closed",
+        "clk_hardware": "Keeps running (like real hardware)",
+        "clk_host": "Follow the PC's clock",
+        "clk_paused": "Stops, and resumes where it left off",
+        "clock_mode_hint": "A real console's clock runs off its coin cell whether or not "
+        "you are playing, so shutting the emulator for three days should bring it back "
+        "three days later — that is the default. 'Follow the PC's clock' sets it from your "
+        "computer at every launch: always right, but it overrides whatever date you set on "
+        "the BIOS screen. 'Stops' freezes time with the emulator — not what hardware does, "
+        "but it is reproducible, which is what you want when debugging.",
+        "coin_cell": "Coin cell (console memory)",
+        "coin_cell_hint": "One battery keeps BOTH the BIOS settings (language, colour) and "
+        "the clock alive. Resetting it is pulling that battery out: the console forgets its "
+        "language and date and runs its first-boot setup again, exactly like a brand-new "
+        "machine. Your games and their saves are NOT touched.",
+        "coin_cell_reset": "Reset the console",
+        "coin_cell_confirm_title": "Reset the console?",
+        "coin_cell_confirm": "This clears the BIOS settings (language, colour) and the "
+        "clock, and the console will run its first-boot setup again.\n\nYour games and "
+        "their saves are not affected.\n\nReset it?",
+        "coin_cell_done": "Console reset — it will boot as new.",
+        "coin_cell_empty": "Nothing to reset: this console has no saved settings yet.",
+        "coin_cell_busy": "Quit the game first — the console is running.",
         "language": "Language", "real_bios": "Boot the real BIOS at power-on",
         "lcd_scale": "Window scale", "smoothing": "Smooth scaling", "scanlines":
         "Scanline overlay", "audio_on": "Enable audio", "volume": "Volume",
@@ -341,8 +377,34 @@ STRINGS: dict[str, dict[str, str]] = {
         "play": "Jouer", "resume": "Reprendre", "reset": "Réinitialiser",
         "quit_lib": "Retour à la bibliothèque", "paused": "En pause",
         "cat_general": "Général", "cat_graphics": "Graphismes", "cat_audio": "Audio",
+        "cat_bios": "Console (BIOS)",
         "cat_controls": "Commandes", "rom_folder": "Dossier des ROMs",
         "bios": "Image BIOS", "language": "Langue",
+        # -- l'horloge et la pile bouton de la console
+        "clock_mode": "Horloge quand l'émulateur est fermé",
+        "clk_hardware": "Continue de tourner (comme le vrai matériel)",
+        "clk_host": "Suivre l'horloge du PC",
+        "clk_paused": "S'arrête, et reprend où elle en était",
+        "clock_mode_hint": "Sur une vraie console, la pile bouton fait tourner l'horloge "
+        "que vous jouiez ou non : fermer l'émulateur trois jours devrait donc la retrouver "
+        "trois jours plus tard — c'est le réglage par défaut. « Suivre l'horloge du PC » la "
+        "règle sur votre ordinateur à chaque lancement : toujours juste, mais ça écrase la "
+        "date que vous aviez mise dans le BIOS. « S'arrête » fige le temps avec l'émulateur "
+        "— ce n'est pas le comportement du matériel, mais c'est reproductible, ce qu'on veut "
+        "pour déboguer.",
+        "coin_cell": "Pile bouton (mémoire de la console)",
+        "coin_cell_hint": "Une seule pile garde EN VIE les réglages du BIOS (langue, "
+        "couleur) ET l'horloge. La réinitialiser, c'est retirer cette pile : la console "
+        "oublie sa langue et sa date et refait sa configuration de premier démarrage, comme "
+        "une machine neuve. Vos jeux et leurs sauvegardes ne sont PAS touchés.",
+        "coin_cell_reset": "Réinitialiser la console",
+        "coin_cell_confirm_title": "Réinitialiser la console ?",
+        "coin_cell_confirm": "Ceci efface les réglages du BIOS (langue, couleur) et "
+        "l'horloge, et la console refera sa configuration de premier démarrage.\n\nVos jeux "
+        "et leurs sauvegardes ne sont pas affectés.\n\nRéinitialiser ?",
+        "coin_cell_done": "Console réinitialisée — elle démarrera comme neuve.",
+        "coin_cell_empty": "Rien à réinitialiser : cette console n'a pas encore de réglages.",
+        "coin_cell_busy": "Quittez le jeu d'abord — la console tourne.",
         "real_bios": "Démarrer le vrai BIOS à l'allumage", "lcd_scale":
         "Échelle de la fenêtre", "smoothing": "Lissage", "scanlines":
         "Effet lignes de balayage", "audio_on": "Activer l'audio", "volume": "Volume",

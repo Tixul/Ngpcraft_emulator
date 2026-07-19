@@ -203,6 +203,32 @@ class WriteRec(Structure):
     ]
 
 
+class RtcState(Structure):
+    """The calendar IC at I/O 0x90-0x97. Mirrors `ngpc_rtc_t`.
+
+    Packed BCD, exactly as the registers read: `year=0x24` IS 2024. `counter` is the
+    sub-second cycle accumulator -- invisible to software, carried so that saving and
+    restoring the clock loses nothing.
+    """
+
+    _fields_ = [
+        ("enable", c_uint8),
+        ("year", c_uint8),
+        ("month", c_uint8),
+        ("day", c_uint8),
+        ("hour", c_uint8),
+        ("minute", c_uint8),
+        ("second", c_uint8),
+        ("weekday", c_uint8),
+        # The alarm rides the same coin cell, so it belongs to the same save.
+        ("alarm_enable", c_uint8),
+        ("alarm_day", c_uint8),
+        ("alarm_hour", c_uint8),
+        ("alarm_minute", c_uint8),
+        ("counter", c_uint32),
+    ]
+
+
 class Summary(Structure):
     _fields_ = [
         ("executed", c_uint32),
@@ -259,6 +285,12 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_get_framebuffer.restype = c_uint32
     lib.ngpc_set_battery_ram.argtypes = [c_void_p, POINTER(c_uint8), c_uint32]
     lib.ngpc_set_battery_ram.restype = None
+    lib.ngpc_get_rtc.argtypes = [c_void_p, POINTER(RtcState)]
+    lib.ngpc_get_rtc.restype = None
+    lib.ngpc_set_rtc.argtypes = [c_void_p, POINTER(RtcState)]
+    lib.ngpc_set_rtc.restype = None
+    lib.ngpc_rtc_advance.argtypes = [c_void_p, c_uint32]
+    lib.ngpc_rtc_advance.restype = None
     lib.ngpc_set_cart_wait.argtypes = [c_void_p, c_uint32]
     lib.ngpc_set_cart_wait.restype = None
     lib.ngpc_set_cart_data_wait.argtypes = [c_void_p, c_uint32]
@@ -554,6 +586,34 @@ class NativeMachine:
     def battery_ram(self) -> bytes:
         """The console's 12 KiB of work RAM, as it stands now."""
         return self.read(RAM_START, RAM_SIZE)
+
+    def rtc(self) -> RtcState:
+        """The calendar IC (I/O 0x90-0x97), in packed BCD.
+
+        It runs off the SAME coin cell as `battery_ram`, so it belongs to the same save.
+        It is machine state rather than memory, though, so `read` cannot reach it -- which
+        is precisely how it went unsaved and got re-seeded to a fixed date every launch.
+        """
+        st = RtcState()
+        self._lib.ngpc_get_rtc(self._h, ctypes.byref(st))
+        return st
+
+    def rtc_advance(self, seconds: int) -> None:
+        """Wind the clock forward, for time the console spent switched off.
+
+        Goes through the CORE's own BCD carry chain -- the same one the running clock
+        ticks through -- so month ends and leap years are handled by the code that
+        already gets them right, instead of by a second implementation up here.
+        """
+        if seconds > 0:
+            self._lib.ngpc_rtc_advance(self._h, int(seconds))
+
+    def set_rtc(self, st: RtcState) -> None:
+        """Put the clock back the way it was left. Hand it over BEFORE `reset` in
+        real-BIOS mode: the BIOS reads the chip during its own boot, and (measured) it
+        REWRITES it to 1998-01-01 only when the coin cell is blank -- on a configured
+        console it never writes it at all, so this is what the console will believe."""
+        self._lib.ngpc_set_rtc(self._h, ctypes.byref(st))
 
     def reset(self, *, bios_handoff: bool = True, real_bios: bool = False) -> None:
         """Power the machine up. See NGPC_RESET_* in ngpc_core.h.

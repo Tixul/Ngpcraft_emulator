@@ -392,9 +392,15 @@ void Machine::timer_tick(uint32_t cycles) {
  * The CPU runs at ~6.144 MHz, so one RTC second is that many cycles. */
 static constexpr uint32_t kRtcCyclesPerSecond = 6144000u;
 
+/* The alarm's own vector. See irq_priority_register in machine.hpp for how index 10 was
+ * pinned down, and why it is not the power button's index 8. */
+constexpr uint32_t kRtcAlarmVector = 10;
+
 uint8_t Machine::rtc_read(uint32_t addr) const {
     switch (addr) {
-        case 0x90: return uint8_t(rtc.enable & 1u);
+        /* bit0 = the clock runs, bit1 = the alarm is armed. Returning only bit0 meant the
+         * BIOS wrote 0x03 and read back 0x01 -- it could never see its own alarm. */
+        case 0x90: return uint8_t((rtc.enable & 1u) | ((rtc.alarm_enable & 1u) << 1));
         case 0x91: return rtc.year;
         case 0x92: return rtc.month;
         case 0x93: return rtc.day;
@@ -402,13 +408,19 @@ uint8_t Machine::rtc_read(uint32_t addr) const {
         case 0x95: return rtc.minute;
         case 0x96: return rtc.second;
         case 0x97: return uint8_t((rtc.weekday & 0x0Fu) | ((rtc.year & 3u) << 4));
+        case 0x98: return rtc.alarm_day;
+        case 0x99: return rtc.alarm_hour;
+        case 0x9A: return rtc.alarm_minute;
         default:   return 0;
     }
 }
 
 void Machine::rtc_write(uint32_t addr, uint8_t v) {
     switch (addr) {
-        case 0x90: rtc.enable  = uint8_t(v & 1u); break;
+        case 0x90:
+            rtc.enable       = uint8_t(v & 1u);
+            rtc.alarm_enable = uint8_t((v >> 1) & 1u);
+            break;
         case 0x91: rtc.year    = v; break;
         case 0x92: rtc.month   = v; break;
         case 0x93: rtc.day     = v; break;
@@ -416,6 +428,9 @@ void Machine::rtc_write(uint32_t addr, uint8_t v) {
         case 0x95: rtc.minute  = v; break;
         case 0x96: rtc.second  = v; break;
         case 0x97: rtc.weekday = uint8_t(v & 0x0Fu); break;
+        case 0x98: rtc.alarm_day    = v; break;
+        case 0x99: rtc.alarm_hour   = v; break;
+        case 0x9A: rtc.alarm_minute = v; break;
         default:   break;
     }
 }
@@ -428,40 +443,72 @@ static uint8_t rtc_days_in_month(uint8_t bcd_month, uint8_t bcd_year) {
     }
 }
 
+/* ONE SECOND on the calendar chip: the BCD carry chain, byte for byte per ares. Each
+ * `return` is "the carry stopped here", which is what the original wrote as `continue`. */
+void Machine::rtc_tick_one_second() {
+    rtc.second++;
+    if ((rtc.second & 0x0Fu) <= 0x09) return;
+    rtc.second += 6;
+    if (rtc.second <= 0x59) return;
+    rtc.second = 0;
+    rtc.minute++;
+    if ((rtc.minute & 0x0Fu) <= 0x09) return;
+    rtc.minute += 6;
+    if (rtc.minute <= 0x59) return;
+    rtc.minute = 0;
+    rtc.hour++;
+    if ((rtc.hour & 0x0Fu) >= 0x0a) rtc.hour += 6;
+    if (rtc.hour <= 0x23) return;
+    rtc.hour = 0;
+    rtc.weekday++;
+    if (rtc.weekday >= 7) rtc.weekday = 0;
+    rtc.day++;
+    if ((rtc.day & 0x0Fu) >= 0x0a) rtc.day += 6;
+    if (rtc.day <= rtc_days_in_month(rtc.month, rtc.year)) return;
+    rtc.day = 1;
+    rtc.month++;
+    if ((rtc.month & 0x0Fu) >= 0x0a) rtc.month += 6;
+    if (rtc.month <= 0x12) return;
+    rtc.month = 1;
+    rtc.year++;
+    if ((rtc.year & 0x0Fu) >= 0x0a) rtc.year += 6;
+    if (rtc.year <= 0x99) return;
+    rtc.year = 0;
+}
+
+/* Has the clock just reached the armed alarm?
+ *
+ * Day/hour/minute only -- the chip has no alarm second (SDK: ALARM{Day,Hour,Min,Code}) --
+ * so the match is taken on the second the minute turns over, ONCE, rather than staying
+ * true for all sixty seconds of that minute. Day 0 is the "every day" case: the BIOS
+ * normalises the SDK's 0xFF wildcard before it ever reaches the chip, so anything it
+ * writes is a real day; a game poking the register directly may not, and an impossible
+ * day should not silently mean "never". */
+bool Machine::rtc_alarm_due() const {
+    if (!rtc.alarm_enable) return false;
+    if (rtc.second != 0x00) return false;
+    if (rtc.minute != rtc.alarm_minute) return false;
+    if (rtc.hour != rtc.alarm_hour) return false;
+    return rtc.alarm_day == 0x00 || rtc.alarm_day == rtc.day;
+}
+
+/* Split out of `rtc_step` so that catching up on time that passed while the emulator was
+ * CLOSED goes through this exact chain rather than a second implementation -- a real
+ * console's clock runs off the coin cell whether or not you are playing. One carry chain,
+ * both callers, and an alarm crossed while the machine was dark still fires. */
+void Machine::rtc_advance_seconds(uint32_t seconds) {
+    for (uint32_t i = 0; i < seconds; ++i) {
+        if (!rtc.enable) return;        /* a stopped clock does not run, wound or ticked */
+        rtc_tick_one_second();
+        if (rtc_alarm_due()) irq_pending |= (1ull << kRtcAlarmVector);
+    }
+}
+
 void Machine::rtc_step(uint32_t cycles) {
     rtc.counter += cycles;
     while (rtc.counter >= kRtcCyclesPerSecond) {
         rtc.counter -= kRtcCyclesPerSecond;
-        if (!rtc.enable) continue;
-        /* BCD carry chain, byte for byte per ares. */
-        rtc.second++;
-        if ((rtc.second & 0x0Fu) <= 0x09) continue;
-        rtc.second += 6;
-        if (rtc.second <= 0x59) continue;
-        rtc.second = 0;
-        rtc.minute++;
-        if ((rtc.minute & 0x0Fu) <= 0x09) continue;
-        rtc.minute += 6;
-        if (rtc.minute <= 0x59) continue;
-        rtc.minute = 0;
-        rtc.hour++;
-        if ((rtc.hour & 0x0Fu) >= 0x0a) rtc.hour += 6;
-        if (rtc.hour <= 0x23) continue;
-        rtc.hour = 0;
-        rtc.weekday++;
-        if (rtc.weekday >= 7) rtc.weekday = 0;
-        rtc.day++;
-        if ((rtc.day & 0x0Fu) >= 0x0a) rtc.day += 6;
-        if (rtc.day <= rtc_days_in_month(rtc.month, rtc.year)) continue;
-        rtc.day = 1;
-        rtc.month++;
-        if ((rtc.month & 0x0Fu) >= 0x0a) rtc.month += 6;
-        if (rtc.month <= 0x12) continue;
-        rtc.month = 1;
-        rtc.year++;
-        if ((rtc.year & 0x0Fu) >= 0x0a) rtc.year += 6;
-        if (rtc.year <= 0x99) continue;
-        rtc.year = 0;
+        rtc_advance_seconds(1);
     }
 }
 

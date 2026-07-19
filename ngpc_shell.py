@@ -36,7 +36,13 @@ from PyQt6.QtWidgets import (
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import native  # noqa: E402
-from core.native_session import NativeSession, SYSTEM_RAM_PATH as _SYSTEM_RAM  # noqa: E402
+from core import native_session as ns  # noqa: E402  (clock-mode ids live there)
+from core.native_session import (  # noqa: E402
+    NativeSession,
+    SYSTEM_RAM_PATH as _SYSTEM_RAM,
+    SYSTEM_RTC_PATH as _SYSTEM_RTC,
+    write_rtc_file as _write_rtc_file,
+)
 from core.frame_pacer import FramePacer  # noqa: E402
 from core.watches import WatchSet  # noqa: E402
 from core.exec_breaks import ExecBreakSet  # noqa: E402
@@ -678,13 +684,15 @@ class SettingsPage(QWidget):
         self._cats = QListWidget()
         self._cats.setObjectName("cats")
         self._cats.setFixedWidth(150)
-        for key in ("cat_general", "cat_graphics", "cat_audio", "cat_controls", "cat_hotkeys"):
+        for key in ("cat_general", "cat_bios", "cat_graphics", "cat_audio",
+                    "cat_controls", "cat_hotkeys"):
             QListWidgetItem(self._cats)
         self._cats.currentRowChanged.connect(lambda i: self._stack.setCurrentIndex(i))
         root.addWidget(self._cats)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._general_panel())
+        self._stack.addWidget(self._bios_panel())
         self._stack.addWidget(self._graphics_panel())
         self._stack.addWidget(self._audio_panel())
         self._stack.addWidget(self._controls_panel())
@@ -694,7 +702,7 @@ class SettingsPage(QWidget):
         self._cats.setCurrentRow(0)
         self.retranslate()
 
-    _CATEGORY_ROW = {"video": 1, "audio": 2, "controls": 3}
+    _CATEGORY_ROW = {"bios": 1, "video": 2, "audio": 3, "controls": 4}
 
     def show_category(self, category: str) -> None:
         self._cats.setCurrentRow(self._CATEGORY_ROW.get(category, 0))
@@ -721,21 +729,6 @@ class SettingsPage(QWidget):
         self._lang.setCurrentIndex([c for c, _ in cfg.LANGUAGES].index(cur))
         self._lang.currentIndexChanged.connect(self._on_lang)
         self._lbl_lang = QLabel()
-
-        self._realbios = QCheckBox()
-        self._realbios.setChecked(cfg.real_bios(self._settings))
-        self._realbios.toggled.connect(
-            lambda b: (self._settings.setValue("general/real_bios", b), self.changed.emit()))
-        self._lbl_realbios = QLabel()
-
-        self._bios_edit = QLineEdit(cfg.bios_path(self._settings))
-        self._bios_edit.editingFinished.connect(
-            lambda: self._settings.setValue("paths/bios", self._bios_edit.text()))
-        self._bios_browse = QPushButton(); self._bios_browse.setObjectName("ghost")
-        self._bios_browse.clicked.connect(self._pick_bios)
-        biosw = QWidget(); bh = QHBoxLayout(biosw); bh.setContentsMargins(0, 0, 0, 0)
-        self._bios_edit.setFixedWidth(220); bh.addWidget(self._bios_edit); bh.addWidget(self._bios_browse)
-        self._lbl_bios = QLabel()
 
         self._shot_edit = QLineEdit(cfg.screenshot_dir(self._settings))
         self._shot_edit.setPlaceholderText(str(REPO / "screenshots"))
@@ -773,24 +766,97 @@ class SettingsPage(QWidget):
         self._cartwait_hint.setObjectName("hint")
         self._cartwait_hint.setWordWrap(True)
 
-        self._realbios_hint = QLabel()
-        self._realbios_hint.setObjectName("hint")
-        self._realbios_hint.setWordWrap(True)
         self._rows_general = [
             _row(self._lbl_lang, self._lang),
-            _row(self._lbl_bios, biosw),
             _row(self._lbl_shots, shotw),
             _row(self._lbl_savemode, self._savemode),
             _row(self._lbl_flashsize, self._flashsize),
             _row(self._lbl_rewind, self._rewind),
-            _row(self._lbl_realbios, self._realbios),
             _row(self._lbl_cartwait, self._cartwait),
         ]
         for r in self._rows_general:
             v.addWidget(r)
         v.addWidget(self._cartwait_hint)
-        v.addWidget(self._realbios_hint)
         return w
+
+    # -- Console (BIOS): the machine itself -- its boot, its clock, its coin cell.
+    # Grouped here because they are one subject: all three are the CONSOLE's state
+    # rather than the emulator's, and two of them are literally the same battery.
+    def _bios_panel(self) -> QWidget:
+        w, v = self._panel()
+
+        self._bios_edit = QLineEdit(cfg.bios_path(self._settings))
+        self._bios_edit.editingFinished.connect(
+            lambda: self._settings.setValue("paths/bios", self._bios_edit.text()))
+        self._bios_browse = QPushButton(); self._bios_browse.setObjectName("ghost")
+        self._bios_browse.clicked.connect(self._pick_bios)
+        biosw = QWidget(); bh = QHBoxLayout(biosw); bh.setContentsMargins(0, 0, 0, 0)
+        self._bios_edit.setFixedWidth(220)
+        bh.addWidget(self._bios_edit); bh.addWidget(self._bios_browse)
+        self._lbl_bios = QLabel()
+
+        self._realbios = QCheckBox()
+        self._realbios.setChecked(cfg.real_bios(self._settings))
+        self._realbios.toggled.connect(
+            lambda b: (self._settings.setValue("general/real_bios", b), self.changed.emit()))
+        self._lbl_realbios = QLabel()
+        self._realbios_hint = QLabel()
+        self._realbios_hint.setObjectName("hint")
+        self._realbios_hint.setWordWrap(True)
+
+        self._clock_items = [
+            (ns.CLOCK_HARDWARE, "clk_hardware"), (ns.CLOCK_HOST, "clk_host"),
+            (ns.CLOCK_PAUSED, "clk_paused")]
+        self._clockmode = self._combo("bios/clock_mode", self._clock_items,
+                                      cfg.clock_mode(self._settings))
+        self._lbl_clockmode = QLabel()
+        self._clockmode_hint = QLabel()
+        self._clockmode_hint.setObjectName("hint")
+        self._clockmode_hint.setWordWrap(True)
+
+        # Pulling the coin cell. Destructive and not undoable, so it asks first.
+        self._coincell_btn = QPushButton(); self._coincell_btn.setObjectName("ghost")
+        self._coincell_btn.clicked.connect(self._reset_coin_cell)
+        self._lbl_coincell = QLabel()
+        self._coincell_hint = QLabel()
+        self._coincell_hint.setObjectName("hint")
+        self._coincell_hint.setWordWrap(True)
+
+        for r in (_row(self._lbl_bios, biosw),
+                  _row(self._lbl_realbios, self._realbios)):
+            v.addWidget(r)
+        v.addWidget(self._realbios_hint)
+        v.addWidget(_row(self._lbl_clockmode, self._clockmode))
+        v.addWidget(self._clockmode_hint)
+        v.addWidget(_row(self._lbl_coincell, self._coincell_btn))
+        v.addWidget(self._coincell_hint)
+        return w
+
+    def _reset_coin_cell(self) -> None:
+        """Pull the console's battery: forget the BIOS settings AND the clock.
+
+        The two files are one battery on hardware, so they go together -- clearing only
+        the settings would leave a console that runs first-boot setup while still
+        insisting it is a date it cannot have remembered. Cartridge saves live in the
+        ROM / .flash files and are deliberately untouched.
+        """
+        lang = cfg.language(self._settings)
+        t = lambda k: cfg.tr(lang, k)  # noqa: E731
+        files = [p for p in (_SYSTEM_RAM, _SYSTEM_RTC) if p.exists()]
+        if not files:
+            QMessageBox.information(self, t("coin_cell_confirm_title"), t("coin_cell_empty"))
+            return
+        if QMessageBox.question(
+                self, t("coin_cell_confirm_title"), t("coin_cell_confirm"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        for p in files:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        QMessageBox.information(self, t("coin_cell_confirm_title"), t("coin_cell_done"))
 
     # -- Graphics
     def _combo(self, key: str, items: list[tuple[str, str]], current: str):
@@ -944,7 +1010,7 @@ class SettingsPage(QWidget):
     def retranslate(self) -> None:
         lang = cfg.language(self._settings)
         t = lambda k: cfg.tr(lang, k)
-        for i, key in enumerate(("cat_general", "cat_graphics", "cat_audio",
+        for i, key in enumerate(("cat_general", "cat_bios", "cat_graphics", "cat_audio",
                                  "cat_controls", "cat_hotkeys")):
             self._cats.item(i).setText(t(key))
         self._resume_banner.setText("▶  " + t("m_resume"))
@@ -965,6 +1031,13 @@ class SettingsPage(QWidget):
         for i, key in enumerate(["rewind_off", "rewind_10", "rewind_20", "rewind_30"]):
             self._rewind.setItemText(i, t(key))
         self._realbios_hint.setText(t("console_boot_hint"))
+        self._lbl_clockmode.setText(t("clock_mode"))
+        for i, (_val, key) in enumerate(self._clock_items):
+            self._clockmode.setItemText(i, t(key))
+        self._clockmode_hint.setText(t("clock_mode_hint"))
+        self._lbl_coincell.setText(t("coin_cell"))
+        self._coincell_btn.setText(t("coin_cell_reset"))
+        self._coincell_hint.setText(t("coin_cell_hint"))
         self._lbl_cartwait.setText(t("cart_wait")); self._cartwait_hint.setText(t("cart_wait_hint"))
         self._lbl_scale.setText(t("lcd_scale")); self._lbl_smooth.setText(t("smoothing"))
         self._lbl_filter.setText(t("filter")); self._lbl_color.setText(t("color_profile"))
@@ -1129,6 +1202,21 @@ class PlayPage(QWidget):
         self.osd = QLabel("", self); self.osd.setObjectName("osd")
         self.osd.move(10, 8); self.osd.setVisible(False)
         self._fps = 0.0; self._fps_frames = 0; self._fps_t0 = time.perf_counter()
+        # The core's own frame counter, so the readout can report frames that were really
+        # EMULATED rather than frames the pacer asked for -- see _tick.
+        self._core_frames = 0
+        # ⚡ CONSOLE-SIDE LOAD, for the debug tools. The on-screen fps says how the HOST is
+        # doing, and on any modern PC that is a flat 60 that tells you nothing. What is
+        # worth knowing is what the emulated console is doing: how much of its frame the
+        # game is burning, and whether the game is still hitting 60 or has fallen behind
+        # the way it would on real hardware. See `perf()`.
+        self._perf_instr = 0
+        self._perf_wall = 0.0            # real seconds actually spent emulating
+        self._perf_frames = 0            # console frames emulated in that time
+        self._perf_oam_prev = b""
+        self._perf_oam_hits = 0          # frames in which the sprite table changed
+        self._perf_t0 = time.perf_counter()
+        self._perf = {"speed": 0.0, "game_fps": 0.0, "instr": 0}
 
         # A discoverable control bar under the screen (save states, speed, shot, reset…).
         self.toolbar = self._make_toolbar()
@@ -1217,7 +1305,7 @@ class PlayPage(QWidget):
             rom, bios_path=self._bios_path(), real_bios=self._real_bios,
             save_to_rom=mode in (cfg.SAVE_ROM, cfg.SAVE_BOTH),
             sidecar=mode in (cfg.SAVE_SIDECAR, cfg.SAVE_BOTH),
-            flash_size=cap)
+            flash_size=cap, clock_mode=cfg.clock_mode(self._settings))
         self.machine = self.session.machine
         # Silicon-calibrated cart-flash wait-states so self-timed games run at their
         # real 30fps instead of ~2x too fast. See cfg.cart_wait_states / project memo.
@@ -1246,6 +1334,12 @@ class PlayPage(QWidget):
         self._raw = native.NativeMachine(_NO_CART, bios=bios.read_bytes())
         if _SYSTEM_RAM.exists():
             self._raw.set_battery_ram(_SYSTEM_RAM.read_bytes())
+        # The console's clock, kept alive by the same coin cell as those settings. This is
+        # the screen where the player SETS the date, so it is the one place it must not be
+        # thrown away -- and the BIOS only ever rewrites the chip itself when the cell is
+        # blank, so on a configured console what we restore here is what it will show.
+        # Same policy as a game boot, from the same place: see native_session.apply_saved_clock.
+        ns.apply_saved_clock(self._raw, _SYSTEM_RTC, cfg.clock_mode(self._settings))
         self._raw.reset(real_bios=True)
         self.session = None
         self.machine = self._raw
@@ -1282,6 +1376,10 @@ class PlayPage(QWidget):
                 if self._real_bios:            # keep the BIOS's language/date
                     _SYSTEM_RAM.parent.mkdir(parents=True, exist_ok=True)
                     _SYSTEM_RAM.write_bytes(self._raw.battery_ram())
+                    # Both halves of the coin cell, or the console half-remembers: the
+                    # date the player just set on the BIOS's own clock screen lives in the
+                    # calendar chip, which is machine state and rides in no RAM dump.
+                    _write_rtc_file(_SYSTEM_RTC, self._raw.rtc())
             except Exception:
                 pass
             try:
@@ -1480,9 +1578,17 @@ class PlayPage(QWidget):
         coin = self.machine.battery_ram()
         if self.session is not None:
             self.session.system_ram_baseline = coin
+        # ⚡ THE CLOCK IS THE OTHER HALF OF THAT COIN CELL, and it must be carried over the
+        # hand-off BY HAND. Two things would otherwise destroy it here: we blank the coin
+        # cell for the reset, and the hand-off reset boots the BIOS internally to capture
+        # its character RAM -- a boot that, seeing a blank cell, takes the dead-battery path
+        # and stamps 1998-01-01 over the chip. So the date the BIOS just showed the player
+        # would be gone by the time the game reads it. Snapshot it, hand it straight back.
+        clock = self.machine.rtc()
         self.machine.set_battery_ram(b"")   # the game boots with clean work RAM (instant state)
         self.machine.reset(bios_handoff=True)
         self.machine.set_battery_ram(coin)  # coin cell back in the buffer (mem stays clean)
+        self.machine.set_rtc(clock)         # and the clock the BIOS was running
         self.apply_debug()                  # re-arm breakpoints/write-log after the reset
         self._did_handoff = True
         self.overlay.setText("")
@@ -2067,10 +2173,28 @@ class PlayPage(QWidget):
         self.machine.write(0x00B0, bytes([self.held & 0x7F]))
         wrange = self.watches.write_range()      # break-on-write window, if any
         locked = self.watches.locked()
+        ran = 0
+        emu_t0 = time.perf_counter()
         for _ in range(due):
             if wrange is not None:               # fresh per-frame write capture
                 self.machine.set_write_log(wrange[0], wrange[1])
             summ = self.machine.run_frames(1)
+            # Console-side load. `executed` is the game's own work for this frame, and a
+            # changed sprite table means the game completed a logic update -- a game that
+            # has fallen behind updates on fewer frames than the LCD draws. Read straight
+            # from OAM rather than the write log, which watchpoints already own.
+            self._perf_instr = summ.executed
+            oam = self.machine.read(0x008800, 64 * 4)
+            if oam != self._perf_oam_prev:
+                self._perf_oam_hits += 1
+            self._perf_oam_prev = oam
+            # ⚡ COUNT WHAT THE CORE ACTUALLY DREW, not what the pacer asked for. The
+            # readout used to be handed `due`, and `due` is derived from the wall clock
+            # (`debt += elapsed * 60`) -- so it reported ~60 by construction and could
+            # never show the emulator falling behind, which is the one thing an fps
+            # readout exists for. A frame cut short (breakpoint, crash) does not count.
+            ran += max(0, summ.frame_count - self._core_frames)
+            self._core_frames = summ.frame_count
             if self._real_bios and not self._did_handoff:
                 self._bios_frames += 1        # gate the BIOS->cart hand-off on intro length
             if summ.stop_status in _CRASH_STATUSES and not self._crashed:
@@ -2109,8 +2233,41 @@ class PlayPage(QWidget):
             self._bios_handoff_assist()      # BIOS booted -> jump into the cartridge
         if self._vgm is not None:            # capturing music -> log this tick's PSG writes
             self._vgm.feed(self.machine.apu_write_count(), self.machine.apu_writes())
+        self._perf_wall += time.perf_counter() - emu_t0
+        self._perf_frames += ran
         self._blit()
-        self._update_osd(due)
+        self._update_osd(ran)
+
+    def perf(self) -> dict:
+        """What the emulated CONSOLE is doing -- for the debug tools.
+
+        `speed`    how many times faster than real time the core could run. This is the
+                   honest "is the emulator coping" figure: the on-screen fps is pinned at
+                   60 by the pacer on any machine fast enough, and says nothing.
+        `game_fps` how often the GAME completes a logic update, from the sprite table
+                   changing. 60 means it is keeping up; less means it is slowing down the
+                   way it would on hardware. ⚠️ Reads 0 on a screen where nothing moves --
+                   a menu or a title -- because there is genuinely nothing to update.
+                   Counted per second of CONSOLE time, not of wall time: fast-forward runs
+                   eight console seconds per real one, and the game's rate must not appear
+                   to octuple because the player held Tab.
+        `instr`    instructions the game executed in the last frame, out of a budget of
+                   102 485 cycles. With cartridge wait-states on that is roughly 7 500 for
+                   fetch-bound code; without them about three times more, which is why
+                   emulators that skip the cart bus never show a game struggling.
+        """
+        now = time.perf_counter()
+        dt = now - self._perf_t0
+        if dt >= 0.5 and self._perf_frames:
+            console_seconds = self._perf_frames / 60.0
+            self._perf = {
+                "speed": console_seconds / self._perf_wall if self._perf_wall else 0.0,
+                "game_fps": self._perf_oam_hits / console_seconds,
+                "instr": self._perf_instr,
+            }
+            self._perf_wall = 0.0; self._perf_frames = 0
+            self._perf_oam_hits = 0; self._perf_t0 = now
+        return self._perf
 
     def _update_osd(self, ran: int) -> None:
         if not self.osd.isVisible():
