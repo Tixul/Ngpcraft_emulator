@@ -157,6 +157,13 @@ void store(Machine& m, ngpc_record_t* rec, uint32_t addr, uint32_t value, uint8_
         for (uint8_t i = 0; i < size; ++i)
             io_action_write(m, (addr + i) & kAddrMask, bytes[i]);
 
+    /* A store the bus threw away, that was NOT a flash command. The program has no
+     * way to find out, so nothing goes wrong visibly -- it just silently does not
+     * happen. Counted only for genuinely unmapped space: cart-window writes are the
+     * flash command latch and were already handled above. */
+    if (!writable && m.hygiene_on && region_of(addr) == Region::Unmapped)
+        m.note_lost_write(addr);
+
     if (rec && rec->n_writes < NGPC_MAX_ACCESS) {
         ngpc_access_t& a = rec->writes[rec->n_writes++];
         a.address = addr;

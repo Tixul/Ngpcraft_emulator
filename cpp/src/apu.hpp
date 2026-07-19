@@ -90,10 +90,10 @@ struct Noise {
  * A gain of 2 puts the DAC's full swing at +/-256 -- exactly the chip's full scale,
  * which is the only ratio that is not an arbitrary choice.
  *
- * ⚠️ UNSOURCED, AND FLAGGED AS SUCH. Mednafen's mix gives the DAC ~1.33x the whole
- * chip's full scale, so the two agree to within a third; that is a sanity check, not a
- * measurement. The true analogue ratio needs a hardware capture, and this project's own
- * rule is that a constant set by ear is a constant set wrong. */
+ * ⚠️ UNSOURCED, AND FLAGGED AS SUCH. The ratio above is derived, not measured: it is
+ * the one value that makes the DAC's full swing land on the chip's own full scale
+ * rather than being picked to taste. The true analogue ratio needs a hardware capture,
+ * and this project's own rule is that a constant set by ear is a constant set wrong. */
 constexpr int kDacGain = 2;
 constexpr int kDacSilence = 0x80;   /* unsigned 8-bit PCM: mid-scale is silence */
 

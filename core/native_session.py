@@ -317,7 +317,7 @@ class NativeSession:
         # THE SAVE. The cartridge is the save -- a game erases a block of its own ROM
         # and programs its slot back in -- so restoring one means putting those bytes
         # back into the cart image, which is what taking the cartridge out and putting
-        # it back in does. `.flash` is NeoPop's format, and Mednafen's, and RACE's.
+        # it back in does. `.flash` is the format the scene already shares.
         #
         # ⚠️ Saving needs the BIOS: a game reaches the flash through `swi 1`, and with
         # no BIOS image that vector reads back zero. No BIOS, no saves -- exactly as
@@ -511,7 +511,7 @@ class NativeSession:
         # The BIOS boots, arms INT0, and sleeps. INT0 is the POWER BUTTON, and until it
         # is pressed the machine is behaving perfectly -- it is off. We press it once, on
         # the player's behalf, because they already asked for the console to come on by
-        # launching the emulator. (ares does the same thing, for the same reason.)
+        # launching the emulator.
         if (self.real_bios and not self._power_pressed
                 and summary.stop_status == native.STATUS_HALTED):
             self.machine.raise_irq(INT0_POWER)

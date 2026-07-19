@@ -61,8 +61,8 @@ constexpr uint8_t  kIrqLevelVBlank       = 4;
 /* ⏰ THE RTC ALARM -- vector index 10 (0xFFFF28), the INT0 pin the calendar chip drives.
  *
  * Not the power button, which is index 8: the two are separate lines that this project
- * confused for one, because ares calls index 10 "INT0" while our core calls index 8 the
- * same thing. Settled by reading the retail BIOS's own vector table: index 10 goes to
+ * confused for one, because the name "INT0" is used for index 10 in some register maps
+ * and for index 8 in others. Settled by reading the retail BIOS's vector table: index 10 goes to
  * 0xFF2856, and that handler is the ONLY code in the 64 KiB that references 0x6FC8 --
  * the RAM vector the SDK documents as the RTC alarm hook. Index 8 goes to 0xFF1898, the
  * power/boot handler.
@@ -88,8 +88,7 @@ constexpr unsigned kIrqVectorIndexRtcAlarm = 10;
  * VECTOR WAS WRONG. SNK writes "INTx", we read it as INT0, and INT0 is a different
  * pin. The BIOS itself names the real one: it programs INTE45 = 0xDC, which is INT4 at
  * level 4 (that is VBlank) and **INT5 at level 5** -- and then sits on `ei 5 ; halt`,
- * accepting nothing below 5. It is waiting for INT5. (ares agrees, independently:
- * `case 0xc000: return cpu.int5.raise();`.)
+ * accepting nothing below 5. It is waiting for INT5.
  *
  * 🔑 A REFUTATION IS ONLY AS GOOD AS THE THING IT REFUTED. "Writing 0xC000 raises an
  * interrupt" was never the claim that failed; "it raises INT0" was. */
@@ -162,8 +161,7 @@ constexpr uint32_t kBiosFlashCardType1 = 0x006C59;   /* CS1 -- the development s
  *    RAM kept   -> VECT_SHUTDOWN (0xFFFE00) with XSP = 0x6C00, so the BIOS can finish
  *                  the cleanup it would normally do when you switch cartridges.
  *
- * (Derived here in pass 237 from SNK's own code; ares reaches the identical rule
- * independently -- `ngp/cpu/cpu.cpp::power`, testing `ram[0x2c7a]`.) */
+ * (Derived here in pass 237 from SNK's own code.) */
 constexpr uint32_t kRamStart      = 0x004000;
 constexpr uint32_t kRamSize       = 0x003000;      /* 12 KiB */
 constexpr uint32_t kBiosRamMarker = 0x006C7A;      /* non-zero once it has booted once */
@@ -341,7 +339,7 @@ constexpr uint8_t  kBiosHandoffInte45   = 0xDC;
 
 /* ⚡ THE REGISTERS THE REAL BIOS LEAVES FOR THE CART. MEASURED ON SILICON, TWICE.
  *
- * `04_MY_PROJECTS/hw_entry_regs` freezes all eight registers in its very first
+ * `hw_entry_regs` freezes all eight registers in its very first
  * instruction (it IS the cart entry point) and prints them. Flashed on a real NGPC:
  *
  *      XIX = 00FF23C3   XWA = 000000DD   XSP = 00006C00   <- STABLE across power-ons
@@ -570,7 +568,7 @@ struct Machine {
      * reads it at power-on; a lost/invalid clock is how it decides the coin cell
      * is DEAD -> "SUB BATTERY DEAD" + the first-run wizard, forever (the game
      * never boots). Modelling it as a valid, ticking BCD clock is what lets the
-     * real-BIOS boot reach the cartridge. Layout mirrors ares ngp/cpu (io.cpp):
+     * real-BIOS boot reach the cartridge. Register map (SDK / QUICKREF §3):
      *   0x90 enable(bit0) · 0x91 year · 0x92 month · 0x93 day · 0x94 hour
      *   0x95 minute · 0x96 second · 0x97 weekday(bits0-3) + (year&3)<<4
      * All fields are BCD. Seeded to a valid date at reset so the cell reads good. */
@@ -580,7 +578,7 @@ struct Machine {
         uint8_t year = 0x24, month = 0x01, day = 0x01;   /* 2024-01-01 */
         uint8_t hour = 0x00, minute = 0x00, second = 0x00, weekday = 0x01;
         /* --- THE ALARM, at 0x98-0x9A (+ enable in 0x90 bit 1) ------------------
-         * Undocumented: no datasheet, no ares, no Ghidra loader has these. Found by
+         * Undocumented: no datasheet and no Ghidra loader has these. Found by
          * MEASUREMENT -- running VECT_ALARMSET on the real BIOS and logging the I/O
          * page. The BIOS writes the day to 0x98, the hour to 0x99 and the minute to
          * 0x9A, then sets 0x90 to 0x03 (bit0 clock + bit1 alarm). Verified by varying
@@ -653,8 +651,8 @@ struct Machine {
     void timer_tick(uint32_t cycles);
 
     /* ⚖️ THE CARTRIDGE FLASH IS SLOW. Every instruction is FETCHED from the cart at
-     * 0x200000, and on silicon the flash bus adds wait-states per byte. This core (and
-     * ares, and BizHawk) fetched the cart for FREE, so cart code ran ~3.4x too fast --
+     * 0x200000, and on silicon the flash bus adds wait-states per byte. This core -- like
+     * every emulator measured alongside it -- fetched the cart for FREE, so cart code ran ~3.4x too fast --
      * MEASURED by hw_calibration/cpu_calib_v1.ngc: on a real NGPC the short, fetch-bound
      * ops (BASE/ADD/SHIFT/MEM) run ~3.4x slower than this core, the execution-bound ones
      * (MUL/DIV) ~2.5x -- the exact signature of a per-fetch-byte penalty, while the raster
@@ -805,18 +803,18 @@ struct Machine {
          * write happened to leave in the I/O page. 0x98-0x9A are the alarm's
          * day/hour/minute -- part of the same chip, so they answer from it too. */
         if (a >= 0x90 && a <= 0x9A) return rtc_read(a);
-        /* Port 0xB1 (ares ngp/cpu/io.cpp): bit1 = the CR2032 SUB-BATTERY, bit2 = a
-         * must-be-1 line ("or SNK Gals' Fighter shows a link error"). Leaving them 0
-         * is the whole "SUB BATTERY DEAD" loop -- the BIOS reads a dead coin cell and
-         * never leaves the warning. Both read 1.
+        /* Port 0xB1: bit1 = the CR2032 SUB-BATTERY, bit2 = a must-be-1 line (drop it and
+         * SNK Gals' Fighter reports a link error). Leaving them 0 is the whole
+         * "SUB BATTERY DEAD" loop -- the BIOS reads a dead coin cell and never leaves
+         * the warning. Both read 1.
          *
-         * bit0 is the POWER line read as a LEVEL. ares drives it !power (1 = released),
-         * but MEASURED against this core it must stay 0: with bit0 forced to 1 the BIOS
-         * boot parks blank at 0xFF1127 and never draws its language/clock screens,
-         * whereas at 0 (the I/O page's own value) the boot renders them. This core
-         * models POWER as INT0 rather than the NMI ares uses, and that difference is
-         * exactly why the level polarity it wants is inverted -- the empirical render
-         * wins over copying ares' polarity blind. So force only bits 1 and 2. */
+         * bit0 is the POWER line read as a LEVEL, and it must stay 0 here. MEASURED:
+         * with bit0 forced to 1 the BIOS boot parks blank at 0xFF1127 and never draws
+         * its language/clock screens, whereas at 0 (the I/O page's own value) the boot
+         * renders them. The polarity is model-dependent -- this core models POWER as
+         * INT0 rather than as an NMI, and a core that chose the NMI would want the
+         * opposite level. Trust the render, not a polarity carried over from a
+         * different model. So force only bits 1 and 2. */
         if (a == 0x0000B1) return uint8_t(mem[a] | 0x06);
         /* Slow cart flash: every byte the CPU reads from a cartridge window costs
          * wait-states. Sequential instruction fetch (inside the fetch window) is cheap;
@@ -830,6 +828,8 @@ struct Machine {
              * cart_data_wait, which defaults to 0 (free); no fallback to cart_wait. */
             access_wait += is_fetch ? cart_wait : cart_data_wait;
         }
+        if (a >= rlog_lo && a <= rlog_hi) note_read(a, mem[a]);   // disarmed by default
+        if (hygiene_on) check_uninit_read(a);
         return mem[a];
     }
     inline uint32_t read32(uint32_t a) const {
@@ -875,6 +875,137 @@ struct Machine {
             wlog[wlog_count % kWlogSize] = {pc, a, v};
             ++wlog_count;
         }
+        if (a >= elog_lo && a <= elog_hi) note_event(kEventWrite, a, v, pc);
+        if (hygiene_on) mark_ram_written(a);
+    }
+
+    /* THE EVENT LOG -- WHEN in the frame did that happen?
+     *
+     * A write log says a register changed and who changed it. It cannot say the one
+     * thing that matters for raster work: at which SCANLINE and how far into it. A
+     * mid-frame scroll split, an HBlank HUD, a palette swap on line 100 -- all of
+     * them are correct or broken purely as a function of raster timing, and until
+     * now the only way to check was to guess.
+     *
+     * Every event carries its exact raster position, so the debugger can plot the
+     * frame as a scanline x cycle grid: one pixel per cycle, per line.
+     *
+     * Armed over an address window (the video registers, typically). Off by default. */
+    static constexpr uint8_t kEventWrite = 0;
+    static constexpr uint8_t kEventIrq   = 1;
+
+    struct EventRec {
+        uint32_t pc;
+        uint32_t addr;
+        uint16_t scanline;
+        uint16_t cycle;      /* cycles elapsed INTO that scanline */
+        uint8_t  value;
+        uint8_t  type;       /* kEventWrite / kEventIrq */
+    };
+    static constexpr uint32_t kElogSize = 4096;
+    uint32_t elog_lo = 1;        /* lo > hi  ==  logging off */
+    uint32_t elog_hi = 0;
+    uint64_t elog_count = 0;
+    EventRec elog[kElogSize] = {};
+
+    /* THE HYGIENE COUNTERS -- what a ROM does that hardware tolerates but that is
+     * almost always a bug.
+     *
+     * This core models the machine closely enough to JUDGE a cartridge, not merely
+     * run it, and these are the two findings that need the core's cooperation:
+     *
+     *  - READ BEFORE WRITE. Work RAM comes up as whatever the last game left (or
+     *    garbage on a cold machine). A game that reads a variable it never wrote is
+     *    reading noise; it will look fine on the developer's emulator, whose RAM
+     *    happens to be zeroed, and misbehave on a console that has been playing
+     *    something else. The equivalent check finds real bugs on real games.
+     *    Tracked with one bit per work-RAM byte -- 0x4000..0x7FFF, 2 KB of bitmap.
+     *
+     *  - WRITES THAT GO NOWHERE. A store to unmapped space is discarded by the bus
+     *    and the program never learns. Writes to CART space are NOT counted: that is
+     *    how an AMD flash command latch is addressed, so they are legitimate.
+     *
+     * Both off by default; the analyzer arms them for one boot. */
+    /* ⚠️ USER RAM ONLY -- 0x4000..0x6BFF, not the whole RAM region.
+     *
+     * 0x6C00..0x6FFF is the BIOS SYSTEM PAGE and 0x7000..0x7FFF is the Z80's shared
+     * RAM. Neither belongs to the game: the BIOS fills the system page during its own
+     * boot, and in the hand-off start the analyzer uses that boot never runs. Watching
+     * those ranges reported ~2000 "uninitialised reads" for every ROM, commercial ones
+     * included -- a finding that fires on everything teaches you to ignore it. The
+     * bound matches core/bus.py, which calls 0x4000..0x6BFF the user RAM area. */
+    static constexpr uint32_t kRamLo = 0x004000, kRamHi = 0x006BFF;
+    static constexpr uint32_t kRamSpan = kRamHi - kRamLo + 1;
+
+    struct HygieneRec { uint32_t pc; uint32_t addr; };
+    static constexpr uint32_t kHygSize = 256;
+
+    bool hygiene_on = false;
+    mutable uint64_t uninit_reads = 0;      /* reads of work RAM never written */
+    mutable uint64_t lost_writes = 0;       /* stores to unmapped space */
+    mutable uint32_t hyg_uninit_n = 0;      /* how many samples below are filled */
+    mutable uint32_t hyg_lost_n = 0;
+    mutable HygieneRec hyg_uninit[kHygSize] = {};
+    mutable HygieneRec hyg_lost[kHygSize] = {};
+    mutable uint8_t ram_written[kRamSpan / 8] = {};
+
+    inline void hygiene_reset() {
+        uninit_reads = lost_writes = 0;
+        hyg_uninit_n = hyg_lost_n = 0;
+        for (uint32_t i = 0; i < kRamSpan / 8; ++i) ram_written[i] = 0;
+    }
+
+    inline void mark_ram_written(uint32_t a) const {
+        if (a < kRamLo || a > kRamHi) return;
+        const uint32_t i = a - kRamLo;
+        ram_written[i >> 3] |= uint8_t(1u << (i & 7));
+    }
+
+    inline void check_uninit_read(uint32_t a) const {
+        if (a < kRamLo || a > kRamHi) return;
+        if ((a - fetch_window) < 8u) return;          /* a fetch, not a data read */
+        const uint32_t i = a - kRamLo;
+        if (ram_written[i >> 3] & (1u << (i & 7))) return;
+        ++uninit_reads;
+        if (hyg_uninit_n < kHygSize) hyg_uninit[hyg_uninit_n++] = {cpu.pc, a};
+    }
+
+    inline void note_lost_write(uint32_t a) const {
+        ++lost_writes;
+        if (hyg_lost_n < kHygSize) hyg_lost[hyg_lost_n++] = {cpu.pc, a};
+    }
+
+    /* EXECUTION COVERAGE -- how much of the cartridge actually ran?
+     *
+     * One bit per byte of the cart window, set at the address of every instruction
+     * retired. Without it, "the analyzer looked at this ROM" is an unfalsifiable
+     * claim: a boot that sits on the title screen touches a sliver of the code and
+     * reports just as confidently as one that played a level. With it, the question
+     * "did pressing buttons actually reach more code" has a number.
+     *
+     * Also the foundation for a code/data logger: a byte that has been executed is
+     * code, whatever the disassembler guesses.
+     *
+     * 2 MiB window -> 256 KiB of bitmap. Off by default. */
+    static constexpr uint32_t kCovLo = 0x200000, kCovHi = 0x3FFFFF;
+    static constexpr uint32_t kCovSpan = kCovHi - kCovLo + 1;
+
+    bool coverage_on = false;
+    uint32_t coverage_hits = 0;                  /* distinct addresses executed */
+    std::vector<uint8_t> coverage;               /* allocated on first enable */
+
+    inline void note_exec(uint32_t pc) {
+        if (pc < kCovLo || pc > kCovHi || coverage.empty()) return;
+        const uint32_t i = pc - kCovLo;
+        uint8_t& cell = coverage[i >> 3];
+        const uint8_t bit = uint8_t(1u << (i & 7));
+        if (!(cell & bit)) { cell |= bit; ++coverage_hits; }
+    }
+
+    inline void note_event(uint8_t type, uint32_t a, uint8_t v, uint32_t pc) {
+        elog[elog_count % kElogSize] = {
+            pc, a, uint16_t(scanline), uint16_t(cycle_residue), v, type};
+        ++elog_count;
     }
 
     /* THE WRITE LOG -- who wrote here, and from what code?
@@ -896,6 +1027,99 @@ struct Machine {
     uint32_t wlog_hi = 0;
     uint64_t wlog_count = 0;   /* every write seen, even the ones the ring dropped */
     WriteRec wlog[kWlogSize] = {};
+
+    /* THE READ LOG -- who READ this address?
+     *
+     * The mirror of the write log, and the half that was missing. "Which routine
+     * writes this?" was answerable; "which routine READS this?" was not, and that is
+     * the question you ask about a flag nobody seems to act on, or a table you think
+     * is dead. A debugger that can only watch writes can only see half of any
+     * conversation.
+     *
+     * ⚠️ INSTRUCTION FETCHES ARE NOT LOGGED. Every fetch goes through `read8`, so
+     * logging them all would bury the one data read you care about under thousands
+     * of fetches of the code doing the reading -- and arming a window over ROM would
+     * log essentially every instruction in it. Only reads from OUTSIDE the current
+     * fetch window are recorded, which is exactly the "the program loaded a value"
+     * event. Same test the cart wait-state accounting already uses.
+     *
+     * Off by default (lo > hi): the hot path pays two compares, like the write log. */
+    struct ReadRec { uint32_t pc; uint32_t addr; uint8_t value; };
+    static constexpr uint32_t kRlogSize = 8192;
+    mutable uint32_t rlog_lo = 1;      /* lo > hi  ==  logging off */
+    mutable uint32_t rlog_hi = 0;
+    mutable uint64_t rlog_count = 0;   /* every logged read, including ring-dropped */
+    mutable ReadRec rlog[kRlogSize] = {};
+
+    inline void note_read(uint32_t a, uint8_t v) const {
+        if ((a - fetch_window) < 8u) return;      /* an instruction fetch, not a data read */
+        rlog[rlog_count % kRlogSize] = {cpu.pc, a, v};
+        ++rlog_count;
+    }
+
+    /* THE CALL STACK -- "how did I get here?"
+     *
+     * The one question a breakpoint always raises and that neither a PC nor a
+     * register dump can answer. Every serious console debugger
+     * shows the chain of callers; this core had nothing.
+     *
+     * Kept as a SHADOW stack, updated per instruction, rather than by walking the
+     * real stack afterwards: the T900 pushes no frame pointer, so a value on the
+     * stack that happens to look like a code address is indistinguishable from a
+     * return address. Watching the transitions as they happen is exact.
+     *
+     * Recognition is by SP movement plus the pushed value, not by decoding opcodes
+     * -- the decoder lives in the other language and this must stay on the hot path:
+     *   CALL  SP fell, and the value now on top points just past the instruction we
+     *         were executing (that is what a return address IS).
+     *   RET   SP rose to or past a frame's entry SP; unwind every frame it passed,
+     *         which also handles a routine that pops its own frame and jumps.
+     *
+     * Off by default: enabling costs a couple of compares and one 4-byte read per
+     * call, which is not something a player should pay for. */
+    struct Frame {
+        uint32_t caller_pc;   /* the address of the CALL instruction itself */
+        uint32_t entry_pc;    /* where it went (the routine's first instruction) */
+        uint32_t return_pc;   /* where it will come back to */
+        uint32_t entry_sp;    /* SP just before the call pushed anything */
+    };
+    static constexpr uint32_t kCallDepth = 64;
+    bool callstack_on = false;
+    uint32_t call_depth = 0;
+    uint64_t call_overflow = 0;   /* frames dropped because the array was full */
+    Frame callstack[kCallDepth] = {};
+
+    inline void note_control_flow(uint32_t pc_before, uint32_t sp_before) {
+        const uint32_t sp_now = cpu.regs[7];
+        if (sp_now == sp_before) return;                 /* the common case: no push/pop */
+        if (sp_now < sp_before) {
+            /* Something was pushed. It is a CALL only if the top of the stack now
+             * holds an address just past the instruction we just ran -- a PUSH of
+             * data, or a stack frame being opened, must not become a call.
+             *
+             * ⛔ RAW BYTES, NOT read32(). Going through the normal read path made this
+             * observer generate memory accesses of its own: they landed in the read log
+             * and, worse, tripped the uninitialised-read detector on stack bytes the
+             * PROGRAM never touched. One debug tool was manufacturing findings for
+             * another -- the ROM analyzer reported ten stack addresses as game bugs that
+             * were purely this probe's own reads. An observer must not be observable. */
+            const uint32_t sp = sp_now & kAddrMask;
+            const uint32_t top = (uint32_t(mem[sp]) |
+                                  (uint32_t(mem[(sp + 1) & kAddrMask]) << 8) |
+                                  (uint32_t(mem[(sp + 2) & kAddrMask]) << 16)) & 0x00FFFFFFu;
+            if (top > pc_before && (top - pc_before) <= 8u) {
+                if (call_depth < kCallDepth) {
+                    callstack[call_depth] = {pc_before, cpu.pc, top, sp_before};
+                    ++call_depth;
+                } else {
+                    ++call_overflow;   /* deep recursion: report it, do not corrupt */
+                }
+            }
+        } else {
+            /* The stack shrank: retire every frame whose entry SP it has reached. */
+            while (call_depth && callstack[call_depth - 1].entry_sp <= sp_now) --call_depth;
+        }
+    }
 
     uint32_t rom_entry_point() const {
         if (rom.size() < 0x20) return 0x200000;

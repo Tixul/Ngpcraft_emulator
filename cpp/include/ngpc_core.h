@@ -407,6 +407,117 @@ NGPC_API uint64_t ngpc_write_log_count(ngpc_t*);
 /* Copies up to `n` of the MOST RECENT records, oldest first. Returns how many. */
 NGPC_API uint32_t ngpc_get_write_log(ngpc_t*, ngpc_write_t* out, uint32_t n);
 
+/* -------------------------------------------------------------- read log --
+ * Who READ this address? ABI v11. The write log's missing half: a debugger that
+ * only watches writes can see what sets a flag but never what acts on it.
+ *
+ * Same shape and same rules as the write log. ONE difference, and it matters:
+ * instruction fetches are NOT recorded. They all go through the same read path, so
+ * logging them would drown the one data read you are hunting -- and arming a window
+ * over ROM would log every instruction in it. Only reads from outside the current
+ * fetch window are logged. Pass lo > hi to disarm. */
+typedef struct {
+    uint32_t pc;      /* the PC the core held as the read went through */
+    uint32_t addr;
+    uint8_t  value;   /* the byte handed back */
+} ngpc_read_t;
+
+NGPC_API void     ngpc_set_read_log(ngpc_t*, uint32_t lo, uint32_t hi);
+NGPC_API uint64_t ngpc_read_log_count(ngpc_t*);
+/* Copies up to `n` of the MOST RECENT records, oldest first. Returns how many. */
+NGPC_API uint32_t ngpc_get_read_log(ngpc_t*, ngpc_read_t* out, uint32_t n);
+
+/* ------------------------------------------------------------ call stack --
+ * "How did I get here?" ABI v12.
+ *
+ * A shadow stack maintained per instruction: a CALL is recognised by SP falling
+ * with a return address landing on top, a RET by SP climbing back past a frame's
+ * entry. Exact, unlike walking the real stack afterwards -- the T900 keeps no
+ * frame pointer, so a stack word that looks like a code address is indistinguish-
+ * able from an actual return address once the moment has passed.
+ *
+ * Off by default; enable only while a debugger is attached. Frame 0 is the
+ * OUTERMOST caller, so the innermost is at index (depth - 1). */
+typedef struct {
+    uint32_t caller_pc;   /* address of the CALL instruction */
+    uint32_t entry_pc;    /* the routine it entered */
+    uint32_t return_pc;   /* where it will return to */
+    uint32_t entry_sp;    /* SP before the call pushed anything */
+} ngpc_frame_t;
+
+/* ------------------------------------------------------------ event log --
+ * WHEN in the frame did that happen? ABI v12.
+ *
+ * The write log says a register changed and who changed it; it cannot say at which
+ * SCANLINE. For raster work -- a mid-frame scroll split, an HBlank HUD, a palette
+ * swap on a given line -- the timing IS the behaviour, and it was invisible.
+ *
+ * Every event carries its exact raster position, so a debugger can plot a frame as
+ * a scanline x cycle grid. Armed over an address window (typically the video
+ * registers at 0x8000..0x83FF); interrupt deliveries are logged whenever the window
+ * is armed at all, with `addr` holding the vector index. Pass lo > hi to disarm. */
+#define NGPC_EVENT_WRITE 0
+#define NGPC_EVENT_IRQ   1
+
+typedef struct {
+    uint32_t pc;
+    uint32_t addr;      /* the address written, or the vector index for an IRQ */
+    uint16_t scanline;
+    uint16_t cycle;     /* cycles elapsed into that scanline (0..514) */
+    uint8_t  value;
+    uint8_t  type;      /* NGPC_EVENT_* */
+} ngpc_event_t;
+
+NGPC_API void     ngpc_set_event_log(ngpc_t*, uint32_t lo, uint32_t hi);
+NGPC_API uint64_t ngpc_event_log_count(ngpc_t*);
+NGPC_API uint32_t ngpc_get_event_log(ngpc_t*, ngpc_event_t* out, uint32_t n);
+
+/* -------------------------------------------------------------- hygiene --
+ * What a ROM does that hardware tolerates but that is almost always a bug. ABI v13.
+ *
+ * The core models the machine closely enough to JUDGE a cartridge, not just run it.
+ * Two findings need its cooperation:
+ *
+ *   UNINITIALISED READS -- work RAM comes up holding whatever the previous game
+ *   left. A variable that is read before it is ever written is reading noise: fine
+ *   on a developer's emulator with zeroed RAM, wrong on a console that has been
+ *   playing something else.
+ *
+ *   LOST WRITES -- a store to unmapped space is discarded by the bus and the program
+ *   never learns. (Cart-window writes are NOT counted: those are flash commands.)
+ *
+ * Off by default. Enabling resets both. */
+typedef struct {
+    uint32_t pc;      /* the code that did it */
+    uint32_t addr;
+} ngpc_hygiene_t;
+
+/* ------------------------------------------------------------- coverage --
+ * How much of the cartridge actually executed. ABI v13.
+ *
+ * One bit per byte of the 0x200000..0x3FFFFF window, set at the address of every
+ * instruction retired. Turns "the analyzer looked at this ROM" from an unfalsifiable
+ * claim into a number -- and makes it possible to tell whether driving the input
+ * during an analysis reaches more code or merely takes longer. */
+NGPC_API void     ngpc_set_coverage(ngpc_t*, int enabled);
+NGPC_API uint32_t ngpc_coverage_hits(ngpc_t*);      /* distinct addresses executed */
+/* Copies the raw bitmap (kCovSpan/8 bytes). Pass n=0 to query the size. */
+NGPC_API uint32_t ngpc_get_coverage(ngpc_t*, uint8_t* out, uint32_t n);
+
+NGPC_API void     ngpc_set_hygiene(ngpc_t*, int enabled);
+NGPC_API uint64_t ngpc_uninit_reads(ngpc_t*);
+NGPC_API uint64_t ngpc_lost_writes(ngpc_t*);
+/* Up to `n` distinct early samples of each, so a report can name the code. */
+NGPC_API uint32_t ngpc_get_uninit_reads(ngpc_t*, ngpc_hygiene_t* out, uint32_t n);
+NGPC_API uint32_t ngpc_get_lost_writes(ngpc_t*, ngpc_hygiene_t* out, uint32_t n);
+
+NGPC_API void     ngpc_set_callstack(ngpc_t*, int enabled);
+NGPC_API uint32_t ngpc_callstack_depth(ngpc_t*);
+/* Frames dropped because the shadow stack was full -- non-zero means the view is
+ * truncated, not wrong. */
+NGPC_API uint64_t ngpc_callstack_overflow(ngpc_t*);
+NGPC_API uint32_t ngpc_get_callstack(ngpc_t*, ngpc_frame_t* out, uint32_t n);
+
 /* ------------------------------------------------------------- debugging -- */
 NGPC_API int ngpc_set_breakpoints(ngpc_t*, const uint32_t* pcs, uint32_t n);
 

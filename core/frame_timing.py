@@ -63,7 +63,7 @@ FRAMES_PER_SECOND = 60
 #
 # Two things agree on 515 against that inference:
 #   - the manufacturer's text above;
-#   - NeoPop, whose TIMER_HINT_RATE is 515, "CPU Ticks between horizontal
+#   - the widely-used TIMER_HINT_RATE of 515, "CPU Ticks between horizontal
 #     interrupts" -- i.e. the FULL line, not just the drawing part.
 # And a third, independent: with 517 our frame counter ran one frame behind the
 # reference emulator's by frame ~1869 of Sonic's demo (they were byte-identical

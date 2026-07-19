@@ -1,0 +1,228 @@
+{
+  "database_version": "2026-07-12.v13",
+  "changelog": [
+    "2026-07-12.v13: `cpu.d0_d7_non_immediate` RETIRED. It was a MIS-DIAGNOSIS from the start (hardware said so on 2026-07-03: the flashed hw_test_d0 ROM proved `D0 89` merely consumes operand bytes and mis-aligns -- it does NOT hang), and the matcher outlived the retraction by nine days because narrowing a silicon-broken claim felt like a decision that needed making. It did not; the evidence had already made it. 0xD0..0xD7 is the WORD MEMORY-addressing family, the mirror of 0xC0..0xC7 for bytes. The matcher's whole premise -- that raw[1] is a SUB-OPCODE it can safe-list -- is false for a memory family, where raw[1] is an ADDRESS byte: `addw (0x50),WA` is `D0 50 88`, and the `0x50` it was inspecting is the address 0x50. So it was intercepting ordinary, correctly-decoded, correctly-executed memory instructions and calling them broken silicon. It was stopping three commercial ROMs dead in the trace-equivalence gate. THE ACTIONABLE GUARD SURVIVES, and it belongs to the TOOLCHAIN, not the emulator: never emit a word-REGISTER op with a 0xD0..0xD7 prefix -- that is D8..DF (word reg-direct) or E8..EF (long). The 2026-05-20 hardware crash is fully explained by that mis-encode. The retired entry's sources and hw_validation_history are preserved below under `retired_entries` so the reasoning is not lost.",
+    "2026-07-08.v12: HW-RESOLVED (BYTE r+r). Flashed test ROM `hw_test_bytediv` on a real NGPC proved `div A, C` (`CB 51`, byte mul/div r+r pocket, C8..CF prefix = byte reg-reg, C-source, sub-op 0x50 div) EXECUTES cleanly and is CORRECT (WA before 0x1F64=8036, C=0x64=100, WA after 0x2450 = quotient 80=0x50 in A (low byte), remainder 36=0x24 in W (high byte)). The BYTE `mul/muls/div/divs` register-to-register pocket (C8..CF prefix, sub-op 0x40..0x5F) is therefore NOT silicon-broken -- the byte r+r ALU mirror of the word D9 50 result (v11). This confirms the USER_MANUAL §12.1 quote's own carve-out (`byte r+r (C8..CF) ... are safe; word/long r+r = broken`): all THREE reg-reg sizes are now HW-cleared for the mul/div pocket -- byte C8..CF (this entry), word D8..DF (v11), long E8..EF (already executed). The executor `_try_execute_prefixed_byte_muldiv` already produced the correct result (verified `CB 51` WA=0x1F64,C=0x64 -> XWA=0x00002450, status=executed, not intercepted by any matcher -- no C8..CF quirk exists, the byte family was never blocked). This entry records the HW milestone + adds a regression test (test_execute). `div` is the HW-tested representative; `mul/muls/divs` (same pocket, same silicon path, same byte mul/div helper shared by shmup_demo / mr_robot / a_test_battle) inferred safe by the same logic used for the word pocket. HW-verified this cycle: ONLY `div A, C` (CB 51). Consistent with the USER_MANUAL §12.1 quote's own carve-out that byte r+r (C8..CF) is safe (word/long r+r was the blanket-broken claim, itself already disproven for the mul/div pocket at word size in v11).",
+    "2026-07-06.v11: HW-RESOLVED. Flashed test ROM `hw_test_muldiv` on a real NGPC proved `div WA, BC` (`D9 50`, the mul/div r+r pocket sub-op 0x50) EXECUTES cleanly (GREEN backdrop) and is CORRECT (XWA before 0x000003E8=1000, XBC 0x0000000A=10, XWA after 0x00000064 = quotient 100 in the low word, remainder 0 in the high word). The `mul/muls/div/divs` WORD register-to-register pocket (0x40..0x5F) is therefore NOT silicon-broken, joining the `ld` copies (v7) and the add/adc/sub/sbc/and/xor/or arith-logic r+r family (v10). `cpu.d8_df_register_to_register` safe-lists 0x40..0x5F (range [64,95]); `div` is the HW-tested representative, `mul/muls/divs` (same pocket, same silicon path, same CC900 mul/div helper) inferred safe by the same logic used for the add family. This DEMOLISHES the USER_MANUAL §12.1 blanket `sub-op 0x80..0xFF hangs` rule for the entire D8..DF word r+r family -- ONLY the shift-by-A family (0xF8..0xFF) stays silicon-broken (separate quirk, count=0 edge case). The matcher + d8_df entry prose already reflected this; this entry bumps the DB version to record the milestone.",
+    "2026-07-05.v10: HW-RESOLVED. A flashed test ROM (`hw_test_addrr`, homemade toolchain) on a real NGPC proved `add WA, WA` (`D8 80`) and `add DE, WA` (`D8 82`) EXECUTE cleanly and give the correct 16-bit result (GREEN backdrop: 0x004100=0x99992468, 0x004108=0x88882345, high words preserved). The word register-to-register ARITHMETIC/LOGIC ALU family is therefore NOT silicon-broken -- the USER_MANUAL §12.1 blanket `sub-op 0x80..0xFF hangs` rule is now disproven for `add` just as it was for the `ld` copies (v7). `cpu.d8_df_register_to_register` now safe-lists the arith/logic r+r sub-ops: add (0x80..0x87), adc (0x90..0x97), sub (0xA0..0xA7), sbc (0xB0..0xB7), and (0xC0..0xC7), xor (0xD0..0xD7), or (0xE0..0xE7). `add` is the directly HW-tested representative; the rest of the arith/logic family is safe-listed by the same reasoning that safe-listed the `ld` copies (single disproven blanket source) and is reinforced by the fact that the emulator ALREADY executes the E8..EF LONG mirror of this exact ALU family without issue. The executor needed NO change -- `_try_execute_prefixed_alu_register` already handled these word forms; only this matcher was intercepting them first. STILL BLOCKED (unchanged, pending their own HW test): the `mul/muls/div/divs` r+r pocket (0x40..0x5F) and the shift-by-A family (0xF8..0xFF, separate quirk).",
+    "2026-07-03.v9: `cpu.d0_d7_non_immediate` summary+note REFRAMED (matcher unchanged). HW-corrected: 0xD0..0xD7 is a WORD MEMORY-addressing family, NOT a word register-direct prefix (that is 0xD8..0xDF) -- proven by the flashed hw_test_d0 ROM (`D0 89` mis-aligns, no hang) + ngdis (getmem(0xD0)->decode_zz_mem). The 'D0..D7 silicon-broken' label was a MIS-DIAGNOSIS (mis-decode + toolchain mis-encode, not a silicon bug). The decoder now handles the abs8 word-memory forms (cpw/ldw, pass 155); the remaining forms still mis-decode as word register-direct and are honest-stopped by this matcher pending the full re-decode chantier. The actionable guard (don't emit 0xD0-prefixed word-register ops) is kept, reframed as a mis-encode.",
+    "2026-07-03.v8: HW-RESOLVED SIZING. A flashed test ROM (`hw_test_off`, official cc900 toolchain) on a real NGPC proved the `D8..DF` prefix is WORD (16-bit), NOT long: `ld xbc,xwa` (`D8 89`) returned `AAAA3344` = `ld BC, WA` (16-bit copy, XBC high word preserved), and `djnz xbc` (`D9 1C`) returned `0002FFFF` = `djnz BC` (16-bit decrement). The genuine long-register prefix is `E8..EF` (ngdis masker.h `getzz(0xD8)=1`=word, `getzz(0xE8)=2`=long); the repo previously collapsed `D8..DF` and `E8..EF` both into `long`. The decoder + executor were corrected (`_prefixed_register_info` / `_prefixed_register_execute_info` map `D8..DF`->word, `E8..EF`->long); `D8 89` now decodes `ld BC, WA` and executes a word copy, `D9 1C` decodes `djnz BC` and executes a word djnz. This quirk's MATCHER is unchanged (the same `D8..DF` r+r ALU sub-ops stay silicon-broken, e.g. `D9 50` is now `div WA, BC` (word) and still blocked; the `ld` COPY sub-ops stay safe-listed as word copies). The USER_MANUAL §12.1 wording `32-bit (D8..DF)` is now known WRONG on the size point — those bytes are word, and the real 32-bit r+r family lives at `E8..EF`. The prior `D8 8B` = `ld XHL, XWA` crash attribution is moot on sizing (it is `ld HL, WA` word); no crash reproduced since — downgraded to a minor side-note.",
+    "2026-07-02.v7: `cpu.d8_df_register_to_register` now safe-lists the `ld` register-to-register COPY sub-ops `0x88..0x8F` and `0x98..0x9F`. HW counter-evidence: the retail cartridge `mr_robot` (confirmed booting and playing on a real NGPC, 2026-07-02) executes `ld XBC, XWA` (`D8 89`) in its boot path, and the official CC900 compiler emits the same `ld r+r` copy family (115 occurrences in `x_officiel.ngc`, `D8 89` x12). A shipped game and the 25-year official toolchain cannot contain a CPU-hanging instruction. The only prior source was the USER_MANUAL §12.1 blanket rule; DISASM_CROSSCHECK.md explicitly notes NO direct HW evidence exists for r+r sub-op >= 0x80. OPEN DOUBT (see hw_validation_history): the ALU r+r forms (add/adc/sub/sbc/and/or/xor/mul/div, sub-ops 0x80..0x87 + 0x90..0x97 + 0xA0..0xC7) stay conservatively broken, and the original `D8 8B` = `ld XHL, XWA` crash attribution is now suspect and needs a dedicated flashed test ROM to confirm/deny.",
+    "2026-05-26.v6: `cpu.d8_df_register_to_register` no longer safe-lists the `0x40..0x5F` sub-op pocket. Those are prefixed `mul/muls/div/divs` register-to-register forms (for example `D9 50 = div XWA, XBC`) and must stop as silicon-broken instead of falling through to `unsupported-decoded-instruction` once decoded.",
+    "2026-05-22.v5: `cpu.d8_df_register_to_register` now carries a targeted safe exact-pair exception for `D8 83` (`add XHL, XWA` / cc900 `add HL,WA`). Toolchain v2 verified-findings note marks this exact encoding safe-in-practice and used by CC900; the matcher stays conservative for the rest of the D8..DF r+r family.",
+    "2026-05-20.v4: `cpu.d0_d7_non_immediate` matcher: removed safe_second_ranges [200, 207] (0xC8..0xCF). HW crash 2026-05-20 on stargunner_j16_C4_phase4_BROKEN_HW_20260520.ngc confirmed `D0 + ALU-imm sub-op` is silicon-broken, despite the previous matcher version marking it safe. CC900 emits 0 instances of `<alu> WA, imm` in f_code, corroborating. See `hw_validation_history` in that entry.",
+    "2026-04-22.v3: prior version (see git history for full content)."
+  ],
+  "entries": [
+    {
+      "quirk_id": "cpu.d8_df_register_to_register",
+      "category": "broken-opcode-family",
+      "confidence": "documented",
+      "summary": "D8..DF working-bank WORD prefix: only the shift-by-A family (0xF8..0xFF, separate quirk) still stops as silicon-broken. The arith/logic ALU r+r family (add/adc/sub/sbc/and/xor/or, hw_test_addrr 2026-07-05) AND the mul/muls/div/divs r+r pocket 0x40..0x5F (hw_test_muldiv 2026-07-06: `div WA,BC`/`D9 50` runs and is correct) are HW-confirmed executable, matching the `ld` copies (v7) and the already-trusted E8..EF long mirror.",
+      "note": "This is the D8..DF working-bank WORD register prefix. USER_MANUAL_EN.md §12.1 claimed a blanket `r+r sub-op 0x80..0xFF hangs the CPU`; that blanket rule is now DISPROVEN on hardware for the `ld` copies (v7, retail mr_robot) and for `add` (v10, hw_test_addrr GREEN). Executable (safe-listed): sub-ops 0x00..0x3F (inc/dec/scc, non-r+r loads, extz/exts, multu/muls imm, ldc, cpl/neg); 0x60..0x7F; the arith/logic ALU r+r family add 0x80..0x87 / adc 0x90..0x97 / sub 0xA0..0xA7 / sbc 0xB0..0xB7 / and 0xC0..0xC7 / xor 0xD0..0xD7 / or 0xE0..0xE7; the `ld` r+r copies 0x88..0x8F + 0x98..0x9F; the compact immediate load family 0xA8..0xAF; the ALU-immediate family 0xC8..0xCF; the cp r,imm3 family 0xD8..0xDF; the shift/rotate-with-imm-count family 0xE8..0xEF; the CP r+r family 0xF0..0xF7; and the mul/muls/div/divs r+r pocket 0x40..0x5F (hw_test_muldiv 2026-07-06 GREEN). STILL silicon-broken: only the shift-by-A family 0xF8..0xFF (separate quirk for the count=0 edge case). Reference execution stops there instead of inventing a post-state.",
+      "execution_stop_status": "silicon-broken",
+      "sources": [
+        {
+          "document": "../NgpCraft_toolchain/USER_MANUAL_EN.md",
+          "section": "Section 12.1 Bug #1 - r+r 16/32-bit Operations (D0..D7 prefix, sub-op >= 0x80)",
+          "quote": "Register-to-register 16-bit (D0..D7) and 32-bit (D8..DF) operations with sub-opcodes 0x80..0xFF hang the CPU on real NGPC hardware. Rule: byte r+r (C8..CF) and all immediates are safe. Word/long r+r = broken. Exception: cp XWA, XHL (D8 F3) is safe as CP has no sub-op >= 0x80. Examples: ld XWA, XDE (D8 82) = BROKEN; cp XWA, XHL (D8 F3) = OK."
+        },
+        {
+          "document": "../NgpCraft_toolchain/T900_DENSE_REF.md",
+          "section": "broken opcodes",
+          "quote": "D8..DF working-bank prefix hangs the CPU on r+r ALU sub-ops; immediate forms stay safe and CP r+r is the documented exception."
+        },
+        {
+          "document": "../NgpCraft_toolchain/DISASM_CROSSCHECK.md",
+          "section": "Section 2 - D8..DF prefix family",
+          "quote": "D8..DF (working bank) is OK in the direct hardware evidence available locally, but the only concrete test is `d8 61` (inc 0x1, WA, sub-op 0x61) which sits in the safe zone; the document does not exercise any r+r sub-op ≥ 0x80 and therefore does not contradict the USER_MANUAL rule."
+        },
+        {
+          "document": "../NgpCraft_toolchain/NgpCraft_Toolchain_v2/docs/08_VERIFIED_FINDINGS.md",
+          "section": "D8 83 = add XHL,XWA (alu reg-reg) → SAFE, CC900 l'utilise",
+          "quote": "CC900 émet `add HL,WA` → assemblé en `D8 83` (instruction 2-byte unique)."
+        },
+        {
+          "document": "hardware-observation (2026-07-02)",
+          "section": "retail mr_robot boots on real NGPC and uses `ld XBC, XWA` (D8 89)",
+          "quote": "mr_robot (retail cartridge) boots and plays correctly on a real NGPC. Its boot code at 0x00202E04 executes an aligned `ld XBC, XWA` (`D8 89`), and the official CC900 compiler emits 115 `ld r+r` copies (D8 89 x12) in x_officiel.ngc. Therefore the `ld` register-to-register COPY sub-ops (0x88..0x8F, 0x98..0x9F) are NOT silicon-broken and are now executed."
+        }
+      ],
+      "hw_validation_history": [
+        {
+          "date": "2026-07-06",
+          "outcome": "MUL/DIV r+r CLEARED on real hardware. Flashed test ROM `hw_test_muldiv` on a real NGPC: `div WA, BC` (`D9 50`, sub-op 0x50, the exact frontier where menu_test_project honest-stopped) EXECUTES cleanly (GREEN backdrop) and is CORRECT (XWA before 0x000003E8=1000, XBC 0x0000000A=10, XWA after 0x00000064 = quotient 100 in the low word, remainder 0 in the high word). The mul/muls/div/divs r+r pocket (0x40..0x5F) is therefore NOT silicon-broken and is now safe-listed, completing the demolition of the USER_MANUAL blanket rule (only the shift-by-A family 0xF8..0xFF stays broken, via its own quirk). div was the HW-tested representative; mul/muls/divs (same pocket, same silicon path, same CC900 mul/div helper) are inferred safe by the same logic used for the add family. Executor mul/muls/div/divs r+r word implementation added alongside this reclassification."
+        },
+        {
+          "date": "2026-07-05",
+          "outcome": "ARITH/LOGIC ALU r+r CLEARED on real hardware. Flashed test ROM `hw_test_addrr` (homemade toolchain) on a real NGPC: `add WA, WA` (`D8 80`) and `add DE, WA` (`D8 82`) both EXECUTE and give the correct 16-bit result (GREEN backdrop; RAM 0x004100=0x99992468, 0x004108=0x88882345, high words preserved -> confirms 16-bit width too). The word arith/logic r+r family (add/adc/sub/sbc/and/xor/or) is therefore NOT silicon-broken and is now safe-listed; only mul/div r+r (0x40..0x5F) and shift-by-A (0xF8..0xFF) remain blocked pending their own tests. No executor change was needed (`_try_execute_prefixed_alu_register` already handled these word forms); only the matcher was intercepting them first. This is the exact frontier where several engine cart ROMs honest-stopped inside the shared mul/div helper."
+        },
+        {
+          "date": "2026-07-03",
+          "outcome": "SIZING RESOLVED on real hardware. Flashed test ROM `hw_test_off` (official cc900) proved `D8..DF` is the WORD (16-bit) prefix, not long: `D8 89` -> AAAA3344 (`ld BC, WA`, 16-bit copy, high preserved); `D9 1C` -> 0002FFFF (`djnz BC`, 16-bit). The genuine long prefix is `E8..EF`. Decoder + executor corrected accordingly; real BIOS boot advanced 143 -> 189 instructions. The D8 8B doubt is closed on sizing (it is `ld HL, WA` word); no crash reproduced -> minor side-note only. This quirk's matcher is unchanged: the `D8..DF` r+r ALU sub-ops stay silicon-broken (e.g. `D9 50` = `div WA, BC` word, still blocked), the `ld` copy sub-ops stay safe-listed (now understood as word copies)."
+        },
+        {
+          "date": "2026-07-02",
+          "outcome": "safe-listed the `ld` r+r COPY sub-ops (0x88..0x8F, 0x98..0x9F) after retail mr_robot was confirmed booting on real hardware while executing `D8 89` (thought at the time to be the 32-bit `ld XBC, XWA`; 2026-07-03 HW test proved it is the 16-bit `ld BC, WA`). The ALU r+r forms remain conservatively broken pending their own evidence."
+        }
+      ],
+      "matcher": {
+        "kind": "prefixed_range_non_immediate",
+        "prefix_start": 216,
+        "prefix_end": 223,
+        "safe_second_values": [],
+        "safe_exact_pairs": [],
+        "safe_second_ranges": [
+          [
+            0,
+            63
+          ],
+          [
+            64,
+            95
+          ],
+          [
+            96,
+            127
+          ],
+          [
+            128,
+            135
+          ],
+          [
+            136,
+            143
+          ],
+          [
+            144,
+            151
+          ],
+          [
+            152,
+            159
+          ],
+          [
+            160,
+            167
+          ],
+          [
+            168,
+            175
+          ],
+          [
+            176,
+            183
+          ],
+          [
+            192,
+            199
+          ],
+          [
+            200,
+            207
+          ],
+          [
+            208,
+            215
+          ],
+          [
+            216,
+            223
+          ],
+          [
+            224,
+            231
+          ],
+          [
+            232,
+            239
+          ],
+          [
+            240,
+            255
+          ]
+        ]
+      }
+    },
+    {
+      "quirk_id": "cpu.link_xiy_large_frame",
+      "category": "broken-opcode-form",
+      "confidence": "documented",
+      "summary": "LINK XIY with a large frame is broken on real NGPC silicon.",
+      "note": "This LINK XIY form is documented as broken on NGPC silicon once the frame size reaches 5 or more. Reference execution stops here instead of pretending the stack-frame side effects are valid.",
+      "execution_stop_status": "silicon-broken",
+      "sources": [
+        {
+          "document": "../NgpCraft_toolchain/DEVLOG.md",
+          "section": "Jalon 8 silicon bugs",
+          "quote": "link XIY, N with N>=5 BROKEN on silicon. Absolute limit N<=4. Bisect z10(N=8)/z11(N=6)/z12(N=5) all KO. Fix: link XIY,4 max."
+        },
+        {
+          "document": "../NgpCraft_toolchain/T900_DENSE_REF.md",
+          "section": "LINK XIY",
+          "quote": "LINK XIY with a large frame size is documented broken on NGPC silicon; t900cc caps the frame to N<=4 in generated prologues."
+        },
+        {
+          "document": "../NgpCraft_toolchain/DECISIONS.md",
+          "section": "prologue shape",
+          "quote": "Reference prologue uses link XIY, 0 (N=0 safe); larger N values trip the NGPC silicon LINK XIY bug."
+        }
+      ],
+      "matcher": {
+        "kind": "warning_contains",
+        "pattern": "!BROKEN LINK XIY"
+      }
+    }
+  ],
+  "retired_entries": [
+    {
+      "quirk_id": "cpu.d0_d7_non_immediate",
+      "category": "broken-opcode-family",
+      "confidence": "documented",
+      "summary": "MIS-DIAGNOSIS (HW-corrected 2026-07-03): 0xD0..0xD7 is a WORD MEMORY-addressing family, NOT a word register-direct prefix (that is 0xD8..0xDF). This matcher still honest-stops the D0..D7 forms the decoder currently mis-reads as word register-direct, pending the full word-memory re-decode.",
+      "note": "0xD0..0xD7 is the WORD MEMORY-addressing family (parallel of 0xC0..0xC7 byte memory) -- HW-confirmed via the flashed hw_test_d0 ROM (`D0 89` consumes operand bytes / mis-aligns, does NOT hang) + ngdis (getmem(0xD0)->decode_zz_mem). It was mis-decoded as word register-direct and mis-labeled silicon-broken. The 2026-05-20 `D0 C8` HW crash is explained: the toolchain peephole emitted a 0xD0-prefixed op intending word-register-immediate, but 0xD0 is a memory-addressing byte -> malformed instruction -> crash (a mis-encode, not a silicon bug). The decoder now reads the abs8 word-memory forms (cpw/ldw) correctly (pass 155); the remaining D0..D7 forms still mis-decode as word register-direct and are honest-stopped here until the full re-decode lands. ACTIONABLE GUARD kept: the toolchain must never emit a word-register op with a 0xD0..0xD7 prefix -- emit D8..DF (word reg-direct) / E8..EF (long) instead.",
+      "execution_stop_status": "silicon-broken",
+      "sources": [
+        {
+          "document": "../NgpCraft_toolchain/DISASM_CROSSCHECK.md",
+          "section": "D0..D7 prefix family",
+          "quote": "D0 prefix (all sub-ops) broken on real NGPC silicon; D1..D7 standalone SAFE (CC900 uses them in production). The earlier blanket 'D0..D7 all broken' diagnosis was too broad."
+        },
+        {
+          "document": "../NgpCraft_toolchain/T900_DENSE_REF.md",
+          "section": "broken opcodes",
+          "quote": "D0..D7 non-immediate forms lock up on hardware; documented immediate-safe forms (ld r,imm, ALU-imm, ld r,#3, multu/muls r,imm) remain executable."
+        },
+        {
+          "document": "../NgpCraft_Disasm/MANUAL.md",
+          "section": "silicon-broken opcode families",
+          "quote": "D0..D7 prefix outside the documented immediate-safe exception set is treated as silicon-broken on real NGPC."
+        }
+      ],
+      "matcher": {
+        "kind": "prefixed_range_non_immediate",
+        "prefix_start": 208,
+        "prefix_end": 215,
+        "safe_second_values": [
+          3,
+          8,
+          9
+        ],
+        "safe_second_ranges": [
+          [
+            168,
+            175
+          ]
+        ]
+      },
+      "hw_validation_history": [
+        {
+          "date": "2026-05-20",
+          "rom": "stargunner_j16_C4_phase4_BROKEN_HW_20260520.ngc",
+          "outcome": "crash-on-real-NGPC",
+          "note": "Chantier 4 P-4 peephole emitted `add WA, imm16` (encoding `D0 C8 lo hi`, prefix 0xD0 + ALU-imm sub-op 0xC8). Console crashed directly at boot. The previous matcher version included `safe_second_ranges: [[200, 207]]` (0xC8..0xCF) marking ALU-imm sub-ops as safe, but the DISASM_CROSSCHECK.md source quote (line 15 of this entry) was correct: 'D0 prefix (all sub-ops) broken on real NGPC silicon'. Cross-check confirmed: CC900's `a_stargunner_j16.ngc` emits 0 instances of `<alu> WA, imm` in f_code — the official compiler has avoided this family for 25+ years. Matcher updated 2026-05-20 to remove [200, 207]. D1..D7 + ALU-imm theoretically might still work (CC900 uses standalone D1..D7 in production per the same quote), but no production t900cc output exercises them; the conservative `safe_second_ranges` keeps only the `[168, 175]` compact-imm3 range which is documented safe."
+        }
+      ]
+    }
+  ]
+}

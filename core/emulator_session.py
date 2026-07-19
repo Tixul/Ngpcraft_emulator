@@ -338,7 +338,7 @@ class EmulatorSession:
 
         Returns a new `NgpcCpuState` that matches what the real NGPC BIOS
         posts to the cart entry point. **Reference-confirmed (2026-07-09):**
-        the native NeoPop co-simulator (`oracle_tools/cosim.exe --dump-reset`)
+        a reference reset dump (`--dump-reset`)
         reports the exact cart-entry state as `wa=bc=de=hl=ix=iy=iz=0`,
         `sp=0x6C00`, `sr=0xF800` (iff_level=7, rfp=0, flags clear), which also
         agrees with the real-hardware findings reverse-engineered from the SNK

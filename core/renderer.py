@@ -100,7 +100,7 @@ def resolve_backdrop_color(
 
     The Tech Ref reads "D7=1 D6=0 valid, else black", and this used to enforce
     it. Real games disagree: Ogre Battle Gaiden writes a blue into 0x83E0[0],
-    sets BGC=0x00, and expects a blue sky. NeoPop's author hit the same wall
+    sets BGC=0x00, and expects a blue sky. The game is the authority here
     ("HACK: 01 AUG 2002 - Always on!", commenting out `(bgc & 0xC0) == 0x80`).
     So the backdrop is the palette entry unconditionally; a game that wants
     black leaves 0x83E0[index] black (empty-memory cold start still resolves to

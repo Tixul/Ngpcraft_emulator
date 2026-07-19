@@ -203,6 +203,63 @@ class WriteRec(Structure):
     ]
 
 
+EVENT_WRITE = 0
+EVENT_IRQ = 1
+
+
+class HygieneRec(Structure):
+    """One instance of a ROM doing something hardware tolerates but that is a bug.
+    Mirrors `ngpc_hygiene_t`."""
+
+    _fields_ = [("pc", c_uint32), ("addr", c_uint32)]
+
+
+class EventRec(Structure):
+    """One logged event WITH its raster position. Mirrors `ngpc_event_t`.
+
+    `scanline` and `cycle` are what make this different from the write log: for a
+    raster effect the timing IS the behaviour.
+    """
+
+    _fields_ = [
+        ("pc", c_uint32),
+        ("addr", c_uint32),      # address written, or the vector index for an IRQ
+        ("scanline", c_uint16),
+        ("cycle", c_uint16),     # cycles into that scanline (0..514)
+        ("value", c_uint8),
+        ("type", c_uint8),       # EVENT_WRITE / EVENT_IRQ
+        ("_pad", c_uint8 * 2),
+    ]
+
+
+class Frame(Structure):
+    """One call-stack frame. Mirrors `ngpc_frame_t`.
+
+    Index 0 is the OUTERMOST caller; the routine currently executing is the last.
+    """
+
+    _fields_ = [
+        ("caller_pc", c_uint32),   # the CALL instruction's own address
+        ("entry_pc", c_uint32),    # where it went
+        ("return_pc", c_uint32),   # where it will come back to
+        ("entry_sp", c_uint32),    # SP before the call pushed anything
+    ]
+
+
+class ReadRec(Structure):
+    """One logged memory READ: who read, where, what came back. Mirrors `ngpc_read_t`.
+
+    Instruction fetches are not logged -- see `set_read_log`.
+    """
+
+    _fields_ = [
+        ("pc", c_uint32),
+        ("addr", c_uint32),
+        ("value", c_uint8),
+        ("_pad", c_uint8 * 3),
+    ]
+
+
 class RtcState(Structure):
     """The calendar IC at I/O 0x90-0x97. Mirrors `ngpc_rtc_t`.
 
@@ -281,6 +338,10 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_set_write_log.restype = None
     lib.ngpc_write_log_count.argtypes = [c_void_p]
     lib.ngpc_write_log_count.restype = c_uint64
+    lib.ngpc_set_read_log.argtypes = [c_void_p, c_uint32, c_uint32]
+    lib.ngpc_set_read_log.restype = None
+    lib.ngpc_read_log_count.argtypes = [c_void_p]
+    lib.ngpc_read_log_count.restype = c_uint64
     lib.ngpc_get_framebuffer.argtypes = [c_void_p, POINTER(c_uint16), c_uint32]
     lib.ngpc_get_framebuffer.restype = c_uint32
     lib.ngpc_set_battery_ram.argtypes = [c_void_p, POINTER(c_uint8), c_uint32]
@@ -311,6 +372,38 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_flash_restore.restype = c_int
     lib.ngpc_get_write_log.argtypes = [c_void_p, POINTER(WriteRec), c_uint32]
     lib.ngpc_get_write_log.restype = c_uint32
+    lib.ngpc_get_read_log.argtypes = [c_void_p, POINTER(ReadRec), c_uint32]
+    lib.ngpc_get_read_log.restype = c_uint32
+    lib.ngpc_set_coverage.argtypes = [c_void_p, c_int]
+    lib.ngpc_set_coverage.restype = None
+    lib.ngpc_coverage_hits.argtypes = [c_void_p]
+    lib.ngpc_coverage_hits.restype = c_uint32
+    lib.ngpc_get_coverage.argtypes = [c_void_p, POINTER(c_uint8), c_uint32]
+    lib.ngpc_get_coverage.restype = c_uint32
+    lib.ngpc_set_hygiene.argtypes = [c_void_p, c_int]
+    lib.ngpc_set_hygiene.restype = None
+    lib.ngpc_uninit_reads.argtypes = [c_void_p]
+    lib.ngpc_uninit_reads.restype = c_uint64
+    lib.ngpc_lost_writes.argtypes = [c_void_p]
+    lib.ngpc_lost_writes.restype = c_uint64
+    lib.ngpc_get_uninit_reads.argtypes = [c_void_p, POINTER(HygieneRec), c_uint32]
+    lib.ngpc_get_uninit_reads.restype = c_uint32
+    lib.ngpc_get_lost_writes.argtypes = [c_void_p, POINTER(HygieneRec), c_uint32]
+    lib.ngpc_get_lost_writes.restype = c_uint32
+    lib.ngpc_set_event_log.argtypes = [c_void_p, c_uint32, c_uint32]
+    lib.ngpc_set_event_log.restype = None
+    lib.ngpc_event_log_count.argtypes = [c_void_p]
+    lib.ngpc_event_log_count.restype = c_uint64
+    lib.ngpc_get_event_log.argtypes = [c_void_p, POINTER(EventRec), c_uint32]
+    lib.ngpc_get_event_log.restype = c_uint32
+    lib.ngpc_set_callstack.argtypes = [c_void_p, c_int]
+    lib.ngpc_set_callstack.restype = None
+    lib.ngpc_callstack_depth.argtypes = [c_void_p]
+    lib.ngpc_callstack_depth.restype = c_uint32
+    lib.ngpc_callstack_overflow.argtypes = [c_void_p]
+    lib.ngpc_callstack_overflow.restype = c_uint64
+    lib.ngpc_get_callstack.argtypes = [c_void_p, POINTER(Frame), c_uint32]
+    lib.ngpc_get_callstack.restype = c_uint32
     lib.ngpc_abi_version.restype = c_uint32
     lib.ngpc_create.restype = c_void_p
     lib.ngpc_destroy.argtypes = [c_void_p]
@@ -484,6 +577,129 @@ class NativeMachine:
         """The most recent logged writes, oldest first."""
         buf = (WriteRec * limit)()
         got = self._lib.ngpc_get_write_log(self._h, buf, limit)
+        return list(buf[:got])
+
+    READ_LOG_SIZE = 8192
+
+    def set_read_log(self, lo: int, hi: int) -> None:
+        """Log every DATA read landing in `[lo, hi]`, with the PC that made it.
+
+        The write log's missing half: "which routine writes this?" was answerable,
+        "which routine READS this?" was not -- and that is the question you ask about
+        a flag nobody seems to act on.
+
+        ⚠️ Instruction FETCHES are deliberately excluded. They go through the same
+        read path, so logging them would bury the one data read you are after under
+        every instruction of the code doing the reading. Pass `lo > hi` to disarm;
+        arming also resets the count.
+        """
+        self._lib.ngpc_set_read_log(self._h, lo, hi)
+
+    def read_log_count(self) -> int:
+        """Every logged read the window saw -- INCLUDING any the ring had to drop."""
+        return int(self._lib.ngpc_read_log_count(self._h))
+
+    def read_log(self, limit: int = READ_LOG_SIZE) -> list[ReadRec]:
+        """The most recent logged reads, oldest first."""
+        buf = (ReadRec * limit)()
+        got = self._lib.ngpc_get_read_log(self._h, buf, limit)
+        return list(buf[:got])
+
+    COVERAGE_LO, COVERAGE_HI = 0x200000, 0x3FFFFF
+
+    def set_coverage(self, enabled: bool) -> None:
+        """Record the address of every instruction executed in the cart window.
+
+        Without this, "the analyzer looked at this ROM" cannot be checked. With it,
+        "driving the buttons reached more code" is a number rather than a hope.
+        Enabling allocates 256 KiB and resets the count.
+        """
+        self._lib.ngpc_set_coverage(self._h, 1 if enabled else 0)
+
+    def coverage_hits(self) -> int:
+        """Distinct instruction addresses executed since coverage was enabled."""
+        return int(self._lib.ngpc_coverage_hits(self._h))
+
+    def coverage_bitmap(self) -> bytes:
+        size = int(self._lib.ngpc_get_coverage(self._h, None, 0))
+        if not size:
+            return b""
+        buf = (c_uint8 * size)()
+        got = self._lib.ngpc_get_coverage(self._h, buf, size)
+        return bytes(buf[:got])
+
+    HYGIENE_SAMPLES = 256
+
+    def set_hygiene(self, enabled: bool) -> None:
+        """Watch for work-RAM reads that precede any write, and stores into unmapped
+        space. Both are things hardware tolerates silently and that are almost always
+        bugs. Enabling resets the counters. Off by default."""
+        self._lib.ngpc_set_hygiene(self._h, 1 if enabled else 0)
+
+    def uninit_reads(self) -> int:
+        return int(self._lib.ngpc_uninit_reads(self._h))
+
+    def lost_writes(self) -> int:
+        return int(self._lib.ngpc_lost_writes(self._h))
+
+    def uninit_read_samples(self, limit: int = HYGIENE_SAMPLES) -> list[HygieneRec]:
+        buf = (HygieneRec * limit)()
+        got = self._lib.ngpc_get_uninit_reads(self._h, buf, limit)
+        return list(buf[:got])
+
+    def lost_write_samples(self, limit: int = HYGIENE_SAMPLES) -> list[HygieneRec]:
+        buf = (HygieneRec * limit)()
+        got = self._lib.ngpc_get_lost_writes(self._h, buf, limit)
+        return list(buf[:got])
+
+    EVENT_LOG_SIZE = 4096
+    # The K2GE video registers: scroll, palette, window, raster control. The default
+    # window for the event viewer, because this is where every raster trick lands.
+    VIDEO_REGS = (0x008000, 0x0083FF)
+
+    def set_event_log(self, lo: int, hi: int) -> None:
+        """Log writes in `[lo, hi]` WITH the scanline and cycle they happened on, plus
+        every interrupt delivery.
+
+        The write log answers "who wrote this"; this answers "when in the frame", which
+        is the only question that matters for a scroll split or an HBlank HUD. Pass
+        `lo > hi` to disarm; arming resets the count.
+        """
+        self._lib.ngpc_set_event_log(self._h, lo, hi)
+
+    def event_log_count(self) -> int:
+        return int(self._lib.ngpc_event_log_count(self._h))
+
+    def event_log(self, limit: int = EVENT_LOG_SIZE) -> list[EventRec]:
+        """The most recent events, oldest first."""
+        buf = (EventRec * limit)()
+        got = self._lib.ngpc_get_event_log(self._h, buf, limit)
+        return list(buf[:got])
+
+    CALLSTACK_DEPTH = 64
+
+    def set_callstack(self, enabled: bool) -> None:
+        """Track the call stack as a shadow stack, per instruction.
+
+        Answers the one question a breakpoint always raises and that no register
+        dump can: how did execution get here. Off by default -- it costs a couple
+        of compares per instruction plus a 4-byte read per call, which a player has
+        no reason to pay. Disabling also clears the stack.
+        """
+        self._lib.ngpc_set_callstack(self._h, 1 if enabled else 0)
+
+    def callstack_depth(self) -> int:
+        return int(self._lib.ngpc_callstack_depth(self._h))
+
+    def callstack_overflow(self) -> int:
+        """Frames dropped because the shadow stack was full. Non-zero means the view
+        is TRUNCATED (deep recursion), not that it is wrong."""
+        return int(self._lib.ngpc_callstack_overflow(self._h))
+
+    def callstack(self, limit: int = CALLSTACK_DEPTH) -> list[Frame]:
+        """Frames outermost-first; the routine executing now is the last one."""
+        buf = (Frame * limit)()
+        got = self._lib.ngpc_get_callstack(self._h, buf, limit)
         return list(buf[:got])
 
     RASTER_LINES = 152

@@ -9,11 +9,18 @@ the cartridge flash, silicon-measured MUL/DIV and LDIR costs — so self-timed g
 (Cool Boarders Pocket, Densha de Go) run at their true 30 fps instead of the ~2× too
 fast that most emulators show.
 
+Instruction coverage is checked the same way: a sweep of a 90-cartridge corpus, each
+driven for 400 frames, currently finds **no ROM stopped by a missing opcode**. That sweep
+is a feature you can run yourself — see [ROM analysis](#rom-analysis).
+
 <img width="1076" height="761" alt="emulateur01" src="https://github.com/user-attachments/assets/24dd060d-5b35-4ef6-83dd-916a618ba244" />
 
 ## Features
 
-- **Library** with cover thumbnails (grid / list / compact), live-reflowing.
+- **Library** with cover thumbnails (grid / list / compact), live-reflowing — plus
+  **search**, **sort** (name, last played, most played, playtime, recently added, size,
+  with a direction toggle), **favourites** ★ and a **never-played** filter. Play count,
+  playtime and last-played are tracked per game.
 - **Console boot** — with a real BIOS, *Boot BIOS* powers the console on for real: the
   Neo Geo Pocket intro plays and the game then boots on its own, exactly like hardware.
 - **Video**: integer / fit / stretch scaling, scanline / LCD-grid / CRT filters,
@@ -26,10 +33,16 @@ fast that most emulators show.
 - **Rewind** — hold `,` (or the ⏪ toolbar button) to run the game backward; release to
   resume. `.` steps one frame forward. Buffer length configurable (Off / 10 / 20 / 30 s).
 - **Screenshots** (`F12`, folder configurable), **FPS overlay**, a hideable **player toolbar**.
-- **Debug tools** (`F1`) — CPU, disassembly, memory (with poke), palette, tiles, sprites;
-  **named watchpoints** (break-on-value / break-on-write / freeze), **execution breakpoints**
-  (with conditions), **RAM search**, and an **audio** panel (per-channel note/volume,
-  oscilloscope, mute/solo, **VGM export**); everything exportable and saved per ROM.
+- **Controller support** — an Xbox-style (XInput) pad alongside the keyboard, plus
+  **turbo / autofire** on A and B at 5–20 presses per second.
+- **Fully remappable** — console buttons *and* every in-game hotkey, with a warning when
+  a binding would collide.
+- **Debug tools** (`F1`) — a real debugger: symbols, instruction stepping, call stack,
+  raster event timeline, read *and* write watchpoints, an editable hex view with access
+  highlighting, RAM search, and audio analysis with **VGM export**. See
+  [Debugging](#debugging-f1).
+- **ROM analysis** — right-click a game to boot it, drive it, and report what is wrong
+  with it. See [ROM analysis](#rom-analysis).
 - **Crash reports** — a ROM fault writes a detailed `crashes/*.txt` (reason, PC, opcode,
   registers, memory & stack dumps).
 
@@ -114,8 +127,7 @@ Three different things, kept separate:
   the cartridge's flash. Choose how it is stored in **Settings ▸ General ▸ "In-game save"**:
   - **In the ROM (.ngc)** — written back into the cartridge file itself, exactly like the
     flash chip on a real cartridge. The save travels with the ROM. *(default)*
-  - **Separate file** — a `saves/<rom>.flash` beside it; the ROM is never modified
-    (standard NeoPop / Mednafen / RACE format).
+  - **Separate file** — a `saves/<rom>.flash` beside it; the ROM is never modified.
   - **Both** — into the ROM and a `.flash` backup.
 
   Commercial games reach the flash through the **BIOS**, so they need a real `bios.bin`.
@@ -178,7 +190,7 @@ It asks first. **Your games and their saves are not touched** — those live in 
 
 | Key | Action |
 |-----|--------|
-| Arrows / Z / X / Enter / Backspace | D-pad / A / B / Option / — (remap in Settings) |
+| Arrows / X / C / Enter | D-pad / A / B / Option |
 | `Esc` | Pause menu · `P` pause · `F5` reset |
 | `F2` / `F4` / `F3` | save / load state · change slot |
 | `Tab` (hold) · `[` / `]` | fast-forward · slower / faster |
@@ -186,29 +198,156 @@ It asks first. **Your games and their saves are not touched** — those live in 
 | hold `,` · `.` | rewind while held (release to resume) · step one frame forward |
 | `F1` · `H` | debug tools · toggle player toolbar |
 
+**Everything above is rebindable** in **Settings ▸ Controls** (the console buttons) and
+**Settings ▸ Hotkeys** (the rest). `Ctrl+1…5` is the one exception — it needs a modifier,
+so it can never shadow a console button. Because the hotkeys are matched *before* the
+joypad, binding a console button to a hotkey's key would silently kill that button; both
+panels detect that and say so instead of letting you wonder.
+
+**Controller** (Settings ▸ Controls) — an XInput pad is read alongside the keyboard:
+d-pad *and* left stick move, A/X and B/Y are the two console buttons, Start or Back is
+Option. Windows only; elsewhere it does nothing and the keyboard is unaffected.
+
+**Turbo** — A and B can autofire while held, at 5 / 10 / 15 / 20 presses per second. The
+rate is counted in *console frames*, so it stays the same under fast-forward.
+
 ## Debugging (F1)
 
 Built for people writing NGPC games by hand. Everything below is saved **per ROM**, so
 your map of a game survives across sessions.
 
-- **Watch** — give memory addresses logical names and see their live value (1/2/4 bytes,
-  hex or signed/unsigned). Each row can also:
+### Symbols
+
+Drop your linker map beside the ROM (`game.map` next to `game.ngc`) and it is loaded
+automatically — the disassembly, the breakpoints, the CPU panel and the analysis reports
+all show `player_update+2E` instead of `20A31C`, and you can **type a symbol name
+anywhere an address is asked for**. Both map formats are read: the clean-room `t900ld`
+form and the **Toshiba `tulink`** map the official cc900 chain emits (bare hex addresses,
+long names wrapped onto the next line).
+
+### Stepping and the disassembly
+
+- **Step** `F7` · **Step over** `F8` · **Step out** `Shift+F8` · **Run to cursor** `F4` —
+  real instruction-level stepping. Step-over runs a call to completion and uses the stack
+  pointer to know it is genuinely back, so recursion does not fool it.
+- The listing is **navigable**: `Ctrl+G` or the *Go to* box (address or symbol), page
+  up/down, and a *follow PC* toggle. Click the left gutter (or `F9`) to **arm a breakpoint
+  on that line**.
+- An undecodable byte shows as `??` and the listing resyncs and carries on, instead of
+  stopping dead and hiding the rest of the routine.
+
+### Call stack
+
+How execution got here — the chain of callers with their return addresses, and
+double-click to jump to any frame. Tracked as a shadow stack while the debug window is
+open (about 1 % of emulation speed, nothing while you are just playing): a call is
+recognised by the return address landing on the stack and a return by the stack unwinding
+past it, so a plain `push` is never mistaken for a call.
+
+### Events — the raster timeline
+
+Every video-register write and every interrupt, plotted at the **scanline and cycle** it
+happened on. This is the view for raster work: a mid-frame scroll split, an HBlank HUD or
+a palette swap on a given line is correct or broken purely as a function of timing, and no
+write log can show that.
+
+### Watch, breakpoints, memory
+
+- **Watch** — name memory addresses and see their live value (1/2/4 bytes, hex or
+  signed/unsigned). Each row can also:
   - **break on value** — pause when it hits a condition (`=`, `≠`, `<`, `>`, `change`);
   - **break on write** — pause when *any* code writes it, naming the **PC that did it**;
+  - **break on read** — the same for reads, which answers "does anything actually *use*
+    this?" (instruction fetches are excluded, so it means the code really loaded the value);
   - **lock** — freeze the address to a value each frame (test "what if HP never drops").
-- **Breakpoints** — pause when PC reaches an address, with an optional guard condition
-  (`4812 = 0`, `4a00.2 > 0x100`): it only fires when the condition holds.
+- **Breakpoints** — pause when PC reaches an address (or a symbol name), with an optional
+  guard written in C:
+
+  ```
+  a == $44 && fz            [$4812] == 0 && pc < $202000            {_score} > 1000
+  ```
+
+  Registers (`a wa xhl pc sp`…), flags (`fz fc fs fh fv fn`), memory (`[x]` 1 byte, `{x}`
+  2, `[x,4]` 4), symbols, and `&& || ! + - * & | << >>`. A condition that does not compile
+  is **named as you type** — it still fires (a guard that silences a breakpoint you asked
+  for would be worse), but you are told why instead of wondering. Old
+  `ADDR.size OP VALUE` conditions keep their original meaning.
+- **Memory** — an **editable** hex grid: click a byte, type two hex digits. Symbol names
+  work in the address box. **Highlight accesses** tints bytes the game just read (blue) or
+  wrote (red), fading over about a second. The core has one read-log and one write-log
+  window, so while highlighting is on it owns them and read/write watchpoints are
+  suspended — the panel says so rather than letting them silently clobber each other.
 - **RAM Search** — find *where* a value lives: start a search, let the game change it, then
-  filter (`=`, `≠`, `>`, `<`, `changed`, `=prev`, `▲`, `▼`) until one address remains.
-  Double-click a hit to name and watch it.
+  filter. Absolute (`=` `≠` `>` `<` `≥` `≤`), relative (`changed`, `=prev`, `▲`, `▼`),
+  **by amount** (`+N` `−N` `±N` — "a hit always costs 3 HP" is a far sharper filter than
+  "it decreased"), and **by change count** — tick *count changes*, hold right for six
+  frames, then ask for the addresses that changed exactly six times. **Undo** takes back a
+  bad pass, and **unaligned** finds a 16/32-bit value that does not sit on a multiple of
+  its size. Double-click a hit to name and watch it.
+- **Trace to file** — every instruction with, optionally, the registers it wrote and every
+  memory address it read or wrote.
 - **Audio** — live per-channel monitor (3 square + noise): period → frequency → **note**,
   L/R volume, plus an oscilloscope of the output and the sound Z80's state. **Mute / solo**
   any channel to isolate it, watch the raw chip-write log, and **record the music** — save it
   as a **`.vgm`** (Furnace / VGM players) or as a **`.ngps` song** for the NGPC sound creator.
-- Plus the live viewers: CPU, disassembly + trace-to-file, memory (with poke), palette,
-  tiles, sprites — each with an Export button.
+- Plus the live viewers: CPU, palette, tiles, sprites — each with an Export button.
 
-### Rewind — how it works and its limits
+## ROM analysis
+
+Right-click a game in the Library ▸ **Analyze ROM…**. Because the core models the machine
+closely enough to *judge* a cartridge rather than merely run it, it can check a build the
+way hardware would. Two passes, about a second:
+
+**Static** — the header a real console validates before it will boot a cart (the copyright
+string, the 24-bit entry vector, the mode byte), the image size against real 4/8/16 Mbit
+flash parts, and how much of the image is erased padding. This is the "it works in my
+emulator but the console does nothing" class, and it costs nothing to check.
+
+**Dynamic** — it boots the ROM at its entry vector with cartridge wait-states modelled, and
+**plays**: a fixed script presses A, Option, B and directions, held for several frames and
+released, so it gets past a title screen into real code. It then reports:
+
+- **globals read before they were written** — work RAM holds whatever the previous game
+  left, so such a variable returns the last game's data on hardware while reading zero on
+  most emulators. The report gives the **frame of the first write**, which is what makes
+  the finding triageable: written by the same instruction that read it is usually a counter
+  and harmless; written much later, or never, means real code ran on a value that did not
+  exist yet;
+- **stack bytes read before written** (locals used before assignment) — reported
+  *separately*, because it is much weaker evidence than a global;
+- **writes into unmapped space**, which the bus discards without the program ever knowing;
+- crashes, whether the cartridge code ever ran, and whether the game fits the frame budget;
+- **code reached** — how many distinct instruction addresses executed, so "the analyzer
+  looked at this ROM" is a number instead of a claim.
+
+### ⚠️ What the analysis cannot tell you
+
+**This is a dredging tool, not a proof of correctness. Read its output as leads, not
+verdicts.**
+
+- **The robot plays blind.** It presses buttons on a fixed schedule with no idea what is on
+  screen. It roughly **doubles to triples** the code reached (measured: +119 %, +213 %,
+  +100 % on three games) — but a game that needs a real sequence, a menu navigated or a
+  password entered, will simply not be reached. A large majority of most cartridges is
+  never executed, and **anything never executed is never checked**.
+- **"No findings" means "nothing found on the path that ran."** It is not a clean bill of
+  health.
+- **A finding is a signal, not a diagnosis.** When one report was traced back to its source
+  code, of the issues it raised: some were real and harmless (a counter incremented from an
+  uninitialised value, used only differentially), one was real and worth fixing (a flag
+  polled by the vblank interrupt for seven frames before anything wrote it) — and some were
+  **the debugger's own instrumentation contaminating the measurement**, since fixed. Expect
+  to have to confirm things yourself; the disassembler and symbols are there for that.
+- **Unmapped writes are usually not yours to fix.** Several commercial carts do it from what
+  looks like one shared SDK routine, and in every case measured nothing ever reads the
+  address back. It only matters if something depends on the value.
+- **A stop is not always the ROM's fault.** If the core meets an instruction it does not
+  implement, the report says so *and names the emulator*, because reporting it as a
+  cartridge defect would send you hunting a bug in your own game.
+- **None of this is hardware-validated.** The checks follow the documented behaviour of the
+  machine and this core's model of it. A real console is the arbiter.
+
+## Rewind — how it works and its limits
 
 Rewind keeps a ring of recent frame snapshots so you can step **back** (`,`) and **forward**
 (`.`) through what just happened. Buffer length is set in **Settings ▸ General ▸ Rewind

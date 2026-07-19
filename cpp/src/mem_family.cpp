@@ -12,10 +12,11 @@
  *   - cycles      -> Toshiba TLCS-900/L1 instruction lists (4)/(5)/(10)
  *   - flags       -> the datasheet's per-instruction SYMBOL rows
  *
- * The third-party emulators are NOT a reference here and were not used as one:
- * NeoPop's cycles disagree with the datasheet on JR (8/4 vs 5/2), on MUL/DIV
- * (18/26 vs 13/16), and on nearly every addressing-mode adder. They are useful
- * only as a hint about the SHAPE of the dispatch.
+ * The datasheet is the ONLY reference here. Cycle figures that circulate in the
+ * wider NGP scene disagree with it on JR (8/4 vs 5/2), on MUL/DIV (18/26 vs
+ * 13/16), and on nearly every addressing-mode adder; where they conflict, the
+ * Toshiba list wins. Do not "fix" a cycle count to match a figure found
+ * elsewhere without a datasheet row, or a calibration-ROM measurement, behind it.
  *
  * CYCLE MODEL — the part our Python reference gets wrong:
  *     cycles = base(instruction) + extra(addressing mode)
@@ -86,8 +87,8 @@ uint8_t alu_logic_flags(uint8_t sz, uint32_t res, bool is_and) {
     /* Toshiba symbol rows are SIZE-INDEPENDENT: AND = `* * 1 P 0 0`,
      * OR/XOR = `* * 0 P 0 0`. So V is the parity of the result at EVERY size
      * (including 32-bit), and H is set by AND / cleared by OR-XOR at every size.
-     * (NeoPop has no 32-bit parity and leaves V alone in long mode -- another
-     * place where it loses to the datasheet.) */
+     * ⚠️ The common shortcut is to skip parity in long mode and leave V alone.
+     * The symbol rows do not license that, so we compute it at all three sizes. */
     const uint8_t bits = sz == 0 ? 8 : sz == 1 ? 16 : 32;
     if (alu_even_parity(res & mask, bits)) out |= F_V;
     if (is_and) out |= F_H;
@@ -135,7 +136,8 @@ static inline uint32_t ea_base_reg(const ngpc_cpu_t& c, uint8_t data) {
 /* Toshiba instruction list (10) "Addressing mode":
  *   (R) +0 · (R+d8) +1 · (#8) +1 · (#16) +2 · (#24) +3
  *   (r) +1 · (r+d16) +3 · (r+r8) +3 · (r+r16) +3 · (-r) +1 · (r+) +1
- * NeoPop uses 0/2/2/2/3/5/8/3/3 here and is simply wrong. */
+ * ⚠️ A 0/2/2/2/3/5/8/3/3 adder set circulates in the scene; it is not what list
+ * (10) says, and adopting it silently inflates every memory-op cycle count. */
 static Ea decode_ea(const Machine& m, uint32_t pc, uint8_t mem) {
     Ea e;
     const ngpc_cpu_t& c = m.cpu;
@@ -221,9 +223,10 @@ static Ea decode_ea(const Machine& m, uint32_t pc, uint8_t mem) {
             case 0: step = 1; break;
             case 1: step = 2; break;
             case 2: step = 4; break;
-            /* `data & 3 == 3` is not a defined step. NeoPop silently reuses the
-             * PREVIOUS instruction's address here, which is a latent bug in it.
-             * We refuse: an undefined encoding must trap, not guess. */
+            /* `data & 3 == 3` is not a defined step. The tempting shortcut is to
+             * fall through and silently reuse the PREVIOUS instruction's address;
+             * that turns a bad encoding into a plausible wrong answer. We refuse:
+             * an undefined encoding must trap, not guess. */
             default: return e;                          // e.ok == false
         }
         /* NOTE: the step comes from the OPERAND BYTE (1/2/4), *not* from the
@@ -535,7 +538,8 @@ static bool exec_source(Machine& m, ngpc_record_t* rec, uint32_t pc,
     }
 
     /* PUSH (mem)  (sub 0x04).  Byte and word only; state **6. 6. -**.
-     * (NeoPop says 7. The datasheet says 6, and so does our reference.)
+     * (A figure of 7 circulates for this; the datasheet says 6, and so does our
+     * own reference. 6 it is.)
      * `d2 a0 27 ff 04` (`pushw (0xFF27A0)`) stops 23 of the 66 commercial ROMs. */
     if (sub == 0x04) {
         if (sz == 2) return false;

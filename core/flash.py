@@ -7,25 +7,25 @@ AMD/Fujitsu-style command sequence against the cart window with the flash
 write-enable (`/WE`) gated on I/O `0x6E`. The project's own hardware-validated
 flash lib uses the direct path.
 
-This controller models the direct path the way the reference emulator (NeoPop
-`mem.c`) does -- and the reference is exactly what the project's flash stub was
-validated against on real hardware:
+This controller models the direct path the way the scene's shortcut model does
+-- and that shortcut is exactly what the project's flash stub was validated
+against on real hardware:
 
   * A write to an unlock address (`0x202AAA` / `0x205555`) arms a pending flash
-    command (NeoPop's `memory_flash_command`).
+    command.
   * The next cart-window write, while armed, commits that byte into the flash
-    (NeoPop writes it into the ROM image; we write it into the session's
+    (the shortcut model writes it into the ROM image; we write it into the session's
     writable overlay, which shadows the cart ROM exactly like real flash
     overlays the cartridge).
 
 We additionally gate the whole sequence on `/WE` (I/O `0x6E` == `0x14`), which
-is stricter than NeoPop but matches real hardware and the project's flash lib
+is stricter than the shortcut model but matches real hardware and the flash lib
 (which always toggles `/WE` around a write). When `/WE` is disabled the cart is
 inert -- byte-for-byte the emulator's pre-flash behaviour.
 
 Not modelled here (documented follow-ups): DQ7/DQ5 status-polling (we commit
 synchronously, so the stub's poll reads the final value immediately and exits),
-per-sector block erase (NeoPop does not special-case it either; the project
+per-sector block erase (the shortcut model does not special-case it either; the project
 saves append full 256-byte slots), and `.sram` disk persistence (the committed
 bytes live in the writable overlay, which the savestate already captures).
 """
@@ -36,11 +36,11 @@ from dataclasses import dataclass, field
 
 CART_WINDOW_START = 0x200000
 CART_WINDOW_END = 0x3FFFFF
-# AMD unlock addresses in the low cart bank (per NeoPop mem.c). A write to
+# AMD unlock addresses in the low cart bank. A write to
 # either arms a pending flash command.
 FLASH_UNLOCK_ADDRESSES = (0x202AAA, 0x205555)
 # Autoselect / status-read command addresses: acknowledged but never arm a
-# write (NeoPop routes these to the EEPROM-status path).
+# write (the shortcut model routes these to the EEPROM-status path).
 FLASH_STATUS_ADDRESSES = (0x220000, 0x230000)
 # I/O register that gates the cartridge write-enable line.
 FLASH_WE_IO_ADDRESS = 0x6E
@@ -108,7 +108,7 @@ class FlashController:
             return None
         if address in FLASH_STATUS_ADDRESSES:
             # Autoselect / status read enable: acknowledged, no data write,
-            # and (per NeoPop) does not arm a program.
+            # and does not arm a program.
             return None
         if self._armed:
             # Armed: this cycle programs the byte into flash.

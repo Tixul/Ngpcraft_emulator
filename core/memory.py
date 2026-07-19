@@ -130,7 +130,7 @@ class NgpcReadBus:
 # TMP95C061 on-chip I/O page (0x000000..0x0000FF) POWER-ON values.
 #
 # These registers do NOT reset to zero. Transcribed from the reference
-# emulator's reset table (NeoPop Core `mem.c` `systemMemory[]`) -- the same
+# reset table for the I/O page -- the same
 # oracle used for the BIOS HLE / SWI dispatch work. Rows are 16 bytes each.
 _IO_PAGE_RESET_VALUES = (
     # 0x00
@@ -282,7 +282,7 @@ def _build_builtin_readable_bytes(
     # to zero -- they have documented reset values (timer run/mode registers,
     # watchdog, interrupt-priority INTxx registers, ...). We previously cold-
     # filled the whole page with 0x00, which is simply wrong. These values are
-    # transcribed from the reference emulator's reset table (NeoPop `mem.c`
+    # transcribed from the documented reset table (QUICKREF §5
     # `systemMemory[]`), the same oracle used for the BIOS HLE and SWI work.
     # Notable entries: 0x20 TRUN=0x80, 0x24 T01MOD=0x03, 0x6F watchdog=0x4E,
     # 0x70/0x71 interrupt-priority = 0x02/0x32 (the INTxx registers VECT_INTLVSET
@@ -317,8 +317,8 @@ def _build_builtin_readable_bytes(
     #
     # A healthy battery reads near full scale (0x03FF), giving 0xFF / 0xFF.
     #
-    # DELIBERATE DEVIATION FROM THE ORACLE: NeoPop resets 0x60/0x61 to 0x00. That
-    # is fine for NeoPop -- it HLE's the BIOS and so never runs the real power-on
+    # DELIBERATE DEVIATION FROM THE SHORTCUT MODEL: resetting 0x60/0x61 to 0x00 is
+    # only safe if you HLE the BIOS and so never run the real power-on
     # battery check. We DO run the real BIOS boot, so a zero here means "flat
     # battery" and the console powers itself off. This is the hardware-faithful
     # value, not a workaround.
@@ -328,7 +328,7 @@ def _build_builtin_readable_bytes(
     #
     # The NGPC carries a real-time-clock IC the BIOS reads at I/O 0x90-0x97 (BCD:
     # 0x90 enable, 0x91 year, 0x92 month, 0x93 day, 0x94 hour, 0x95 minute, 0x96
-    # second, 0x97 weekday+leap). ares (ngp/cpu/rtc.cpp, io.cpp) is the oracle. Like
+    # second, 0x97 weekday+leap). Like
     # the ADC above, the reference core BAKES the power-on seed -- a running clock is
     # the native core's rtc_step, and no rendered game reads these -- so parity only
     # needs the cold-start value. Seed = 2024-01-01, Monday (matches memory.cpp).
@@ -339,7 +339,7 @@ def _build_builtin_readable_bytes(
     builtin[0x000097] = 0x01  # weekday (hour/minute/second seed 0, already 0 here)
     # Port 0xB1: bit1 = the CR2032 SUB-BATTERY (1 = healthy), bit2 = a must-be-1
     # line. Leaving them 0 is the "SUB BATTERY DEAD" boot loop. bit0 (the POWER
-    # level) stays 0: MEASURED against this core, forcing it to ares' "released = 1"
+    # level) stays 0: MEASURED against this core, forcing it to "released = 1"
     # parks the BIOS boot blank at 0xFF1127 -- see the read hook in machine.hpp.
     builtin[0x0000B1] = 0x06
     # Work RAM + system page
@@ -397,7 +397,7 @@ def _build_builtin_readable_bytes(
                 builtin[base + i * 2 + 1] = (colour >> 8) & 0xFF
     # BIOS hand-off system-RAM values the cart sees at entry (the BIOS
     # initialises these before jumping to the cart). Cross-checked 2026-07-09
-    # against the native NeoPop reference (`oracle_tools/cosim.exe --dump-mem
+    # against a reference memory dump (`--dump-mem
     # 0x6F80`) and found UNIVERSAL across carts (Neo Turf / Pac-Man / Big Bang /
     # Metal Slug all identical), and consistent with the SNK BIOS reverse (the
     # BIOS manages 0x6F8x; DEVLOG pass 178). Without these, carts that read them

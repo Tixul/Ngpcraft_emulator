@@ -6,8 +6,8 @@
  * Here the whole 24-bit space is one flat array and a read is an array index.
  *
  * Every power-on value below is transcribed from core/memory.py, which cites
- * its own sources (TMP95C061 datasheet, NGPC_HW_QUICKREF.md §5, and the
- * NeoPop reset table). Do not "tidy" these values: a wrong one boots a
+ * its own sources (TMP95C061 datasheet, NGPC_HW_QUICKREF.md §5). Do not
+ * "tidy" these values: a wrong one boots a
  * plausible-but-wrong machine, which is worse than not booting.
  */
 #include <cstring>
@@ -45,6 +45,15 @@ Region region_of(uint32_t addr) {
     if (addr >= 0x008000 && addr <= 0x008FFF) return Region::K2ge;     /* video regs + palette   */
     if (addr >= 0x009000 && addr <= 0x00BFFF) return Region::Vram;     /* SCR1/SCR2/CHAR RAM     */
     if (addr >= 0x200000 && addr <= 0x3FFFFF) return Region::CartRom;  /* read-only -> flash     */
+    /* THE SECOND DIE. A 4 MiB cartridge is two chips and the hardware maps the second
+     * at 0x800000 -- the copy loop below fills it, read8() answers flash IDs from it,
+     * and flash_command() accepts its unlock sequence. This function never learned
+     * about it and kept calling the window "unmapped", which was harmless while nobody
+     * asked (CartRom and Unmapped are equally non-writable) and became wrong the moment
+     * something did: the ROM analyzer reported the BIOS's perfectly normal cartridge
+     * probe -- 0xAA to 0x805555, 0x55 to 0x802AAA, the AMD unlock sequence -- as
+     * "writes into unmapped space", on every 4 MiB cart. */
+    if (addr >= 0x800000 && addr <= 0x9FFFFF) return Region::CartRom;
     if (addr >= 0xFF0000)                     return Region::Bios;     /* read-only              */
     return Region::Unmapped;
 }
@@ -100,8 +109,8 @@ void Machine::reset_memory() {
 
     for (uint32_t a = 0; a < 0x100; ++a) mem[a] = kIoPageReset[a];
 
-    /* A/D data register = the BATTERY gauge. NeoPop resets these to 0 because it
-     * HLEs the BIOS and never runs the real power-on battery check; we DO run it,
+    /* A/D data register = the BATTERY gauge. Resetting these to 0 is only safe if you
+     * HLE the BIOS and never run the real power-on battery check; we DO run it,
      * and 0 means "flat battery" -> the BIOS powers the console off (DEVLOG 183).
      * TMP95C061 Fig. 3.12(3-1): ADREG = (result << 6) | 0x3F, unused bits read 1.
      * Full scale 0x03FF = healthy. */
@@ -168,14 +177,14 @@ void Machine::reset_memory() {
     }
 
     /* BIOS hand-off system RAM the cart sees at entry. Cross-checked 2026-07-09
-     * against cosim --dump-mem 0x6F80 and found UNIVERSAL across carts. Without
+     * against a reference dump at 0x6F80 and found UNIVERSAL across carts. Without
      * these, carts diverge at instruction ~1 (Neo Turf reads 0x6F84). */
     mem[0x006F80] = 0xFF;  /* ADC/contrast reading, 0x03FF full-scale (low)  */
     mem[0x006F81] = 0x03;  /*                                        (high)  */
     mem[0x006F84] = 0x40;  /* BIOS system status byte                        */
     mem[0x006F87] = 0x01;  /* BIOS system status byte                        */
 
-    /* K2GE power-on values (NGPC_HW_QUICKREF.md §5 + NeoPop reset_memory()).
+    /* K2GE power-on values (NGPC_HW_QUICKREF.md §5).
      * 0x8000 = 0xC0 is load-bearing: VBlank+HBlank interrupts are ENABLED at
      * reset. An all-zero default booted a console with interrupts OFF. */
     mem[0x008000] = 0xC0;  /* control: VBlank (b7) + HBlank (b6) IRQ enabled */
@@ -387,8 +396,8 @@ void Machine::timer_tick(uint32_t cycles) {
 }
 
 /* --- the calendar IC (RTC), I/O 0x90..0x97 --------------------------------
- * Transcribed from ares ngp/cpu/rtc.cpp + io.cpp: BCD fields that tick once a
- * second. Modelling this is what stops the BIOS deciding the coin cell is dead.
+ * BCD fields that tick once a second, per the SDK's register map. Modelling
+ * this is what stops the BIOS deciding the coin cell is dead.
  * The CPU runs at ~6.144 MHz, so one RTC second is that many cycles. */
 static constexpr uint32_t kRtcCyclesPerSecond = 6144000u;
 
@@ -443,8 +452,20 @@ static uint8_t rtc_days_in_month(uint8_t bcd_month, uint8_t bcd_year) {
     }
 }
 
-/* ONE SECOND on the calendar chip: the BCD carry chain, byte for byte per ares. Each
- * `return` is "the carry stopped here", which is what the original wrote as `continue`. */
+/* ONE SECOND on the calendar chip: the BCD carry chain.
+ *
+ * Standard BCD adjust, and there is only one shape it can take: increment, and if the
+ * low nibble has passed 9 add 6 to carry it into the high nibble; if the field has
+ * passed its limit, zero it and carry into the next. The limits are the calendar's, not
+ * a choice -- 0x59 seconds, 0x59 minutes, 0x23 hours, 0x12 months, 0x99 years. Each
+ * `return` means "the carry stopped here".
+ *
+ * ⚠️ TWO PLACES WHERE THE OBVIOUS TRANSLATION IS WRONG. Both are easy slips that
+ * survive casual testing, and both have been found in the wild:
+ *   - the month length must be indexed by the MONTH, not the day. Indexing by the day
+ *     agrees with the right answer for much of the month, so it hides.
+ *   - the year rollover must compare the FULL BYTE against 0x99. Comparing a 4-bit
+ *     field against 0x99 is always true, and the year then never rolls over at all. */
 void Machine::rtc_tick_one_second() {
     rtc.second++;
     if ((rtc.second & 0x0Fu) <= 0x09) return;

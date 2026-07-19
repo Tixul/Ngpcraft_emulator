@@ -13,6 +13,8 @@ venv/
 /saves/
 system_ram.bin
 *.state
+# play history (per-user: play counts, playtime, favourites)
+/library.json
 
 # user content (never distribute ROMs/BIOS)
 /roms/*.ngc

@@ -220,6 +220,24 @@ def thumb_size(s: QSettings) -> int:
     return max(80, min(240, int(s.value("library/thumb_size", 160, type=int))))
 
 
+def library_sort(s: QSettings) -> str:
+    import ngpc_library as lib
+    v = str(s.value("library/sort", lib.SORT_NAME, type=str))
+    return v if v in lib.SORT_KEYS else lib.SORT_NAME
+
+
+def library_reverse(s: QSettings) -> bool:
+    """Flip the sort. Each key already sorts the useful way round (A->Z, most
+    played first), so this is where "least played" and "Z->A" come from."""
+    return bool(s.value("library/sort_reverse", False, type=bool))
+
+
+def library_filter(s: QSettings) -> str:
+    import ngpc_library as lib
+    v = str(s.value("library/filter", lib.FILTER_ALL, type=str))
+    return v if v in lib.FILTERS else lib.FILTER_ALL
+
+
 def language(s: QSettings) -> str:
     lang = s.value("general/language", "en", type=str)
     return lang if lang in dict(LANGUAGES) else "en"
@@ -239,6 +257,139 @@ def key_bindings(s: QSettings) -> dict[int, int]:
 
 def set_binding(s: QSettings, label: str, code: int) -> None:
     s.setValue(f"input/{label}", int(code))
+
+
+# --- turbo (autofire) -----------------------------------------------------
+# Only the four action buttons can sensibly autofire; a turbo D-pad is a way to
+# make a game unplayable, not a feature, so it is not offered.
+TURBO_BUTTONS: tuple[str, ...] = ("A", "B")
+TURBO_RATES: tuple[int, ...] = (5, 10, 15, 20)   # presses per second
+
+
+def turbo_hz(s: QSettings) -> int:
+    v = int(s.value("input/turbo_hz", 10, type=int))
+    return v if v in TURBO_RATES else 10
+
+
+def turbo_on(s: QSettings, label: str) -> bool:
+    return bool(s.value(f"input/turbo_{label}", False, type=bool))
+
+
+def set_turbo(s: QSettings, label: str, on: bool) -> None:
+    s.setValue(f"input/turbo_{label}", bool(on))
+
+
+def turbo_mask(s: QSettings) -> int:
+    """The joypad bits that should autofire while held."""
+    masks = dict(JOYPAD_BUTTONS)
+    out = 0
+    for label in TURBO_BUTTONS:
+        if turbo_on(s, label):
+            out |= masks.get(label, 0)
+    return out
+
+
+# --- gamepad --------------------------------------------------------------
+def gamepad_enabled(s: QSettings) -> bool:
+    """Read an XInput controller alongside the keyboard. On by default: a pad
+    that is not plugged in costs one cheap poll and changes nothing."""
+    return bool(s.value("input/gamepad", True, type=bool))
+
+
+# --- hotkeys --------------------------------------------------------------
+# The in-game hotkeys. Each is (action id, default key, name string). The action
+# id is the settings key AND what `PlayPage` dispatches on, so adding one here is
+# half the work of adding a hotkey -- the other half is a handler in the player.
+#
+# Hotkeys are matched BEFORE the joypad bindings, so a console button bound to a
+# hotkey's key is silently dead: the hotkey eats the press and the game never
+# sees it. `conflicts()` below exists to say so out loud.
+#
+# Ctrl+1..5 (window size) is deliberately absent: it needs a modifier, so it can
+# never shadow a plain joypad key, and there is nothing to protect it from.
+HK_MENU, HK_DEBUG, HK_PAUSE, HK_RESET = "menu", "debug", "pause", "reset"
+HK_SAVE, HK_LOAD, HK_SLOT = "save", "load", "slot"
+HK_FS, HK_SHOT, HK_TOOLBAR = "fs", "shot", "toolbar"
+HK_FF, HK_FASTER, HK_SLOWER = "ff", "faster", "slower"
+HK_REWIND, HK_STEP = "rewind", "step"
+
+HOTKEYS: tuple[tuple[str, int, str], ...] = (
+    (HK_MENU, int(Qt.Key.Key_Escape), "hkn_menu"),
+    (HK_PAUSE, int(Qt.Key.Key_P), "hkn_pause"),
+    (HK_RESET, int(Qt.Key.Key_F5), "hkn_reset"),
+    (HK_SAVE, int(Qt.Key.Key_F2), "hkn_save"),
+    (HK_LOAD, int(Qt.Key.Key_F4), "hkn_load"),
+    (HK_SLOT, int(Qt.Key.Key_F3), "hkn_slot"),
+    (HK_FF, int(Qt.Key.Key_Tab), "hkn_ff"),
+    (HK_FASTER, int(Qt.Key.Key_BracketRight), "hkn_faster"),
+    (HK_SLOWER, int(Qt.Key.Key_BracketLeft), "hkn_slower"),
+    (HK_REWIND, int(Qt.Key.Key_Comma), "hkn_rewind"),
+    (HK_STEP, int(Qt.Key.Key_Period), "hkn_step"),
+    (HK_FS, int(Qt.Key.Key_F11), "hkn_fs"),
+    (HK_SHOT, int(Qt.Key.Key_F12), "hkn_shot"),
+    (HK_TOOLBAR, int(Qt.Key.Key_H), "hkn_toolbar"),
+    (HK_DEBUG, int(Qt.Key.Key_F1), "hkn_debug"),
+)
+
+# Hotkeys that act on HOLD rather than on press: they need the key-release too.
+HOLD_HOTKEYS = frozenset({HK_FF, HK_REWIND})
+
+DEFAULT_HOTKEYS: dict[str, int] = {a: k for a, k, _n in HOTKEYS}
+HOTKEY_NAMES: dict[str, str] = {a: n for a, _k, n in HOTKEYS}
+
+
+def hotkey_code(s: QSettings, action: str) -> int:
+    return int(s.value(f"hotkey/{action}", DEFAULT_HOTKEYS.get(action, 0), type=int))
+
+
+def set_hotkey(s: QSettings, action: str, code: int) -> None:
+    s.setValue(f"hotkey/{action}", int(code))
+
+
+def hotkey_bindings(s: QSettings) -> dict[int, str]:
+    """{Qt key code -> action id}. A key bound to two actions keeps the FIRST in
+    HOTKEYS order, which is also the order the conflict report lists them in --
+    so what the warning says matches what the player actually does."""
+    out: dict[int, str] = {}
+    for action, _default, _name in HOTKEYS:
+        code = hotkey_code(s, action)
+        if code and code not in out:
+            out[code] = action
+    return out
+
+
+def hotkey_label(s: QSettings, action: str, lang: str) -> str:
+    """'F5 (reset)' for the conflict messages."""
+    key = QKeySequence(hotkey_code(s, action)).toString() or "?"
+    return f"{key} ({tr(lang, HOTKEY_NAMES.get(action, action))})"
+
+
+def conflicts(s: QSettings, lang: str) -> tuple[list[str], list[str]]:
+    """Every ambiguous binding, as (joypad-vs-hotkey, hotkey-vs-hotkey) text.
+
+    Both matter and they fail differently: a joypad button that collides with a
+    hotkey never reaches the game, and two hotkeys on one key means one of them
+    is unreachable.
+    """
+    hk = hotkey_bindings(s)
+    pad_clashes = []
+    for label, _mask in JOYPAD_BUTTONS:
+        code = int(s.value(f"input/{label}", DEFAULT_KEYS.get(label, 0), type=int))
+        action = hk.get(code)
+        if action:
+            pad_clashes.append(f"{label} → {hotkey_label(s, action, lang)}")
+
+    seen: dict[int, str] = {}
+    dupes = []
+    for action, _default, _name in HOTKEYS:
+        code = hotkey_code(s, action)
+        if not code:
+            continue
+        if code in seen:
+            dupes.append(f"{tr(lang, HOTKEY_NAMES[action])} → {hotkey_label(s, seen[code], lang)}")
+        else:
+            seen[code] = action
+    return pad_clashes, dupes
 
 
 # --- a button that captures the next keypress -----------------------------
@@ -351,12 +502,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "m_video": "Video & filters", "m_audio": "Audio", "m_controls": "Controls",
         "m_debug": "Debug tools", "m_quit": "Quit to library", "cat_hotkeys": "Hotkeys",
         "m_savestate": "Save state (slot {n})", "m_loadstate": "Load state (slot {n})",
-        "hk_intro": "In game:", "hk_menu": "Esc — pause menu", "hk_pause": "P — pause",
-        "hk_reset": "F5 — reset", "hk_fs": "F11 — fullscreen",
-        "hk_size": "Ctrl+1…5 — window size 1×…5×", "hk_debug": "F1 — debug tools",
-        "hk_state": "F2/F4 — save/load state · F3 — slot",
-        "hk_speed": "Tab — fast-forward (hold) · [ ] — slower/faster",
-        "hk_shot": "F12 — screenshot",
+        # (the old hk_* cheat-sheet lines named their keys literally -- "F5 — reset".
+        # The Hotkeys panel now BINDS them and shows the live key, so those strings
+        # would have become quietly wrong the first time anyone rebound anything.)
         "shot_saved": "Saved {name}", "screenshots": "Screenshots folder",
         "show_fps": "Show FPS overlay",
         "save_mode": "In-game save", "save_rom": "In the ROM (.ngc)",
@@ -369,6 +517,38 @@ STRINGS: dict[str, dict[str, str]] = {
         "state_loaded": "State {n} loaded", "state_empty": "Slot {n} empty",
         "speed": "Speed {x}x",
         "saves_folder": "Saves folder",
+        # -- library: search / sort / filter
+        "search": "Search…", "sort": "Sort",
+        "sort_name": "Name", "sort_last": "Last played", "sort_plays": "Most played",
+        "sort_time": "Playtime", "sort_added": "Recently added", "sort_size": "Size",
+        "sort_reverse": "Reverse the order",
+        "filter_all": "All", "filter_fav": "Favourites", "filter_never": "Never played",
+        "no_match": "No game matches this search.",
+        "fav_add": "Add to favourites", "fav_remove": "Remove from favourites",
+        "never_played": "Never played", "plays_n": "{n}×",
+        # -- turbo / gamepad
+        "turbo": "Turbo (autofire) on {btn}",
+        "turbo_rate": "Turbo rate",
+        "turbo_hz": "{n} per second",
+        "turbo_hint": "Holding a turbo button fires it repeatedly. The rate is counted "
+        "in console frames, so it stays the same under fast-forward.",
+        "gamepad": "Use a controller",
+        "gamepad_hint": "Reads an Xbox-style (XInput) controller alongside the keyboard. "
+        "D-pad and left stick move; A/X and B/Y are the two console buttons; Start or "
+        "Back is Option. Windows only — elsewhere this does nothing.",
+        "pad_on": "Controller detected", "pad_off": "No controller detected",
+        "pad_none": "Controller support unavailable on this system",
+        "key_conflict": "⚠ This key is already {hk}. In game the hotkey wins and this "
+        "button will not respond.",
+        # short hotkey names, for the conflict warning above
+        "hkn_menu": "menu", "hkn_debug": "debug tools", "hkn_save": "save state",
+        "hkn_slot": "slot", "hkn_load": "load state", "hkn_reset": "reset",
+        "hkn_fs": "fullscreen", "hkn_shot": "screenshot", "hkn_pause": "pause",
+        "hkn_toolbar": "toolbar", "hkn_ff": "fast-forward", "hkn_slower": "slower",
+        "hkn_faster": "faster", "hkn_rewind": "rewind", "hkn_step": "frame step",
+        "hotkeys_hint": "Click a hotkey, then press the key to bind it. "
+        "Ctrl+1…5 always sets the window size and cannot be rebound.",
+        "hk_dupe": "⚠ Two hotkeys share a key: {hk}. Only the first one will fire.",
     },
     "fr": {
         "library": "Bibliothèque", "settings": "Réglages", "no_roms":
@@ -437,13 +617,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "m_video": "Vidéo & filtres", "m_audio": "Audio", "m_controls": "Commandes",
         "m_debug": "Outils debug", "m_quit": "Retour à la bibliothèque",
         "m_savestate": "Sauvegarder l'état (empl. {n})", "m_loadstate": "Charger l'état (empl. {n})",
-        "cat_hotkeys": "Raccourcis", "hk_intro": "En jeu :", "hk_menu": "Échap — menu pause",
-        "hk_pause": "P — pause", "hk_reset": "F5 — réinitialiser",
-        "hk_fs": "F11 — plein écran", "hk_size": "Ctrl+1…5 — taille fenêtre 1×…5×",
-        "hk_debug": "F1 — outils debug",
-        "hk_state": "F2/F4 — sauver/charger l'état · F3 — emplacement",
-        "hk_speed": "Tab — avance rapide (maintenir) · [ ] — plus lent/rapide",
-        "hk_shot": "F12 — capture d'écran",
+        "cat_hotkeys": "Raccourcis",
+        # (voir la note côté anglais : les anciennes lignes hk_* citaient les touches
+        # en dur et seraient devenues fausses dès le premier remap.)
         "shot_saved": "Enregistré {name}", "screenshots": "Dossier des captures",
         "show_fps": "Afficher le FPS",
         "save_mode": "Sauvegarde du jeu", "save_rom": "Dans la ROM (.ngc)",
@@ -456,6 +632,38 @@ STRINGS: dict[str, dict[str, str]] = {
         "state_loaded": "État {n} chargé", "state_empty": "Emplacement {n} vide",
         "speed": "Vitesse {x}x",
         "saves_folder": "Dossier des sauvegardes",
+        # -- bibliothèque : recherche / tri / filtre
+        "search": "Rechercher…", "sort": "Trier",
+        "sort_name": "Nom", "sort_last": "Dernier joué", "sort_plays": "Plus joué",
+        "sort_time": "Temps de jeu", "sort_added": "Ajouté récemment", "sort_size": "Taille",
+        "sort_reverse": "Inverser l'ordre",
+        "filter_all": "Tous", "filter_fav": "Favoris", "filter_never": "Jamais joué",
+        "no_match": "Aucun jeu ne correspond à cette recherche.",
+        "fav_add": "Ajouter aux favoris", "fav_remove": "Retirer des favoris",
+        "never_played": "Jamais joué", "plays_n": "{n}×",
+        # -- turbo / manette
+        "turbo": "Turbo (tir auto) sur {btn}",
+        "turbo_rate": "Cadence du turbo",
+        "turbo_hz": "{n} par seconde",
+        "turbo_hint": "Maintenir un bouton turbo l'enchaîne automatiquement. La cadence "
+        "est comptée en images console : elle reste la même en avance rapide.",
+        "gamepad": "Utiliser une manette",
+        "gamepad_hint": "Lit une manette de type Xbox (XInput) en plus du clavier. Croix "
+        "directionnelle et stick gauche pour se déplacer ; A/X et B/Y sont les deux boutons "
+        "de la console ; Start ou Back fait Option. Windows uniquement — ailleurs, sans effet.",
+        "pad_on": "Manette détectée", "pad_off": "Aucune manette détectée",
+        "pad_none": "Manette non prise en charge sur ce système",
+        "key_conflict": "⚠ Cette touche est déjà {hk}. En jeu le raccourci gagne et ce "
+        "bouton ne répondra pas.",
+        # noms courts des raccourcis, pour l'avertissement ci-dessus
+        "hkn_menu": "menu", "hkn_debug": "outils debug", "hkn_save": "sauver l'état",
+        "hkn_slot": "emplacement", "hkn_load": "charger l'état", "hkn_reset": "réinitialiser",
+        "hkn_fs": "plein écran", "hkn_shot": "capture", "hkn_pause": "pause",
+        "hkn_toolbar": "barre d'outils", "hkn_ff": "avance rapide", "hkn_slower": "ralentir",
+        "hkn_faster": "accélérer", "hkn_rewind": "rembobiner", "hkn_step": "image par image",
+        "hotkeys_hint": "Cliquez un raccourci, puis appuyez sur la touche à assigner. "
+        "Ctrl+1…5 règle toujours la taille de la fenêtre et n'est pas remappable.",
+        "hk_dupe": "⚠ Deux raccourcis partagent une touche : {hk}. Seul le premier agira.",
     },
 }
 

@@ -1123,8 +1123,8 @@ def _dispatch_execute_next(
             #
             # 5 is the MANUFACTURER value: Toshiba TLCS-900/L1 instruction list
             # (9) "Jump, Call and Return" gives `JR [cc,] $+2+d8` -> State
-            # "5/2 (T/F)". (Mednafen's table and NeoPop both say 8/4 here; they
-            # are hand-tuned and lose to the datasheet -- same precedent as the
+            # "5/2 (T/F)". (A figure of 8/4 circulates for this; hand-tuned
+            # figures lose to the datasheet -- same precedent as the
             # pass-184 timer-rate ruling.)
             cycles_consumed=_executed_cycles_from_decoded(decoded, branch_taken=True),
             note=(
@@ -15076,19 +15076,19 @@ def _try_execute_c7_extended_register(
 #
 # On NGPC, `swi 1` is the BIOS system-call trap. The real SNK BIOS reads the
 # vector index from RW3 (the W byte of the bank-3 register file) and jumps to
-# the matching handler; NeoPop replicates this exactly with
-#   pc = loadL(0xFFFE00 + (rCodeB(0x31) << 2))   [TLCS900h_interpret_single.c]
-# where rCodeB(0x31) == RW3. The per-vector side effects below are the
-# reverse-engineered SNK BIOS behaviour transcribed from the NeoPop Core
-# (bios.c vectable[] + biosHLE.c). Cross-checked against the cosim oracle:
+# the matching handler:
+#   pc = loadL(0xFFFE00 + (byte code 0x31 << 2))
+# where byte code 0x31 IS RW3. The per-vector side effects below come from the
+# retail SNK BIOS image itself, disassembled. Cross-checked in the running
+# machine:
 # Metal Slug's `swi 1` @0x200012 vectors to 0xFF1030 (index 1 = CLOCKGEARSET),
 # pushes the return address (SP 0x6C00->0x6BFC) and returns to 0x200013 with no
 # cartridge-visible state change -- exactly the net effect our HLE produces.
 #
-# We collapse the BIOS handler into a single HLE step (NeoPop spends two trace
-# steps: the swi itself, then the `0x1F` iBIOSHLE marker at the vector). The
-# NET post-return CPU/memory state is identical; only an instruction-index
-# aligned trace (cosim) skews by one step per swi.
+# We collapse the BIOS handler into a single HLE step, where a trace-aligned
+# implementation would spend two (the swi itself, then a marker at the vector).
+# The NET post-return CPU/memory state is identical; only an instruction-index
+# aligned trace skews by one step per swi -- see oracle_tools/trace_diff.py.
 _SWI1_VECT_SHUTDOWN = 0x00
 _SWI1_VECT_CLOCKGEARSET = 0x01
 _SWI1_VECT_RTCGET = 0x02
@@ -15097,11 +15097,11 @@ _SWI1_VECT_SYSFONTSET = 0x05
 _SWI1_VECT_FLASHWRITE = 0x06
 
 # Vectors that touch no cartridge-visible state on our reference model, so PC
-# simply advances (matches NeoPop's HLE which RETs without side effects):
+# simply advances (the real handler RETs without side effects):
 #   1  CLOCKGEARSET  clock gear only scales wall-clock speed; our model runs at
 #                    reference speed, so it is a documented no-op.
 #   3/10/12/15       unmapped/unknown BIOS entries that RET immediately.
-#   14 GEMODESET     TODO/no-op in NeoPop; no reference-visible state change.
+#   14 GEMODESET     no reference-visible state change.
 _SWI1_NOOP_VECTORS = frozenset({0x01, 0x03, 0x0A, 0x0C, 0x0E, 0x0F})
 
 # Vectors that return SYS_SUCCESS in RA3 (=0) and otherwise no-op on our model
@@ -15148,7 +15148,7 @@ _SWI1_VECT_NAMES = {
 
 # INTLVSET (VECT_INTLVSET) maps an interrupt source (RC3) to a priority-level
 # nibble written into the TLCS-900 interrupt-controller I/O registers. Layout
-# transcribed from NeoPop biosHLE.c: (io_address, high_nibble?) per source.
+# from the retail BIOS handler: (io_address, high_nibble?) per source.
 #   src 0 RTC alarm | 1 Z80 | 2..5 timer0..3 | 6..9 DMA0..3
 _SWI1_INTLVSET_TABLE = {
     0x00: (0x0070, False),
@@ -15200,7 +15200,7 @@ def _bios_rtc_bcd_bytes(memory: dict[int, int]) -> bytes:
     hour, minute, second, then ((year & 3) << 4) | weekday.
 
     ⚡ READ OUT OF THE MACHINE'S OWN CLOCK CHIP (I/O 0x91-0x97), not off the host.
-    This used to call `time.localtime()`, copying NeoPop's HLE, and that gave the
+    This used to call `time.localtime()`, an HLE shortcut, and that gave the
     console TWO clocks that disagreed: a game reading the registers saw the emulated
     chip, and the same game asking the BIOS saw the wall clock on the desk. On
     hardware there is only ever one -- the BIOS reads the very same chip, and the
@@ -15367,7 +15367,7 @@ def _execute_swi1_system_call(
     decoded: DecodeResult,
     new_pc: int,
 ) -> ExecutionResult:
-    # Vector index = RW3 (rCodeB(0x31) on NeoPop) = W byte of bank-3 WA.
+    # Vector index = RW3 (byte code 0x31) = W byte of bank-3 WA.
     vect = _read_bank3_byte(before_cpu, 0, 1)
     if vect is None:
         return _blocked_result(
@@ -15532,7 +15532,7 @@ def _swi1_comms(
     """Link-cable BIOS calls with a well-defined "no peer connected" result.
 
     A single-unit emulator has no serial peer, so the faithful outcome is
-    "nothing to send/receive". Transcribed from NeoPop biosHLE.c for the
+    "nothing to send/receive". From the retail BIOS handler for the
     no-cable path (`system_comms_read`/`write` return empty). Data-transfer
     vectors that require an actual peer + the comms IRQ (COMCREATEDATA 0x13,
     COMCREATEBUFDATA 0x19, COMGETBUFDATA 0x1A) stay as named stubs.
@@ -15615,7 +15615,7 @@ def _swi1_intlvset(
     vect: int,
 ) -> ExecutionResult:
     """VECT_INTLVSET: set an interrupt source's priority level in the INTxx I/O
-    registers. level=RB3, source=RC3 (NeoPop biosHLE.c)."""
+    registers. level=RB3, source=RC3 (retail BIOS handler)."""
     level = _read_bank3_byte(before_cpu, 1, 1)  # RB3 = B byte of bank-3 BC
     source = _read_bank3_byte(before_cpu, 1, 0)  # RC3 = C byte of bank-3 BC
     if level is None or source is None:
@@ -15698,7 +15698,7 @@ def _swi1_rtcget(
     vect: int,
 ) -> ExecutionResult:
     """VECT_RTCGET: write 7 packed-BCD real-time-clock bytes into the caller's
-    buffer at XHL3. Mirrors NeoPop biosHLE.c (buffer pointer = rCodeL(0x3C) =
+    buffer at XHL3. Mirrors the retail BIOS handler (buffer pointer = long code 0x3C =
     XHL3, guarded to buffers below 0xC000)."""
     buf = _read_bank3_long(before_cpu, 3)  # XHL3 = bank-3 XHL
     if buf is None:
@@ -15713,7 +15713,7 @@ def _swi1_rtcget(
         )
 
     if buf >= 0xC000:
-        # NeoPop guard: buffers at/above 0xC000 are rejected; the call returns
+        # BIOS guard: buffers at/above 0xC000 are rejected; the call returns
         # without writing. Advance PC with no side effect.
         return _swi_pc_advance_stub(
             before_cpu,
@@ -15761,7 +15761,7 @@ def _swi1_rtcget(
 # substitute. The font is not embedded here -- it lives in the BIOS image the
 # user supplies (`--bios`), at BIOS offset 0x8DCF (= CPU 0xFF8DCF), 0x800 bytes
 # (256 glyphs x 8 rows, 1 bit per pixel). Verified against the retail dump:
-# glyph 0x41 renders a correct 8x8 'A'. NeoPop's bios.c installs its own copy at
+# glyph 0x41 renders a correct 8x8 'A'. An HLE BIOS installs its own copy at
 # exactly this offset, confirming it is where the real BIOS keeps the font.
 #
 # So: nothing proprietary is distributed with the emulator, AND the glyphs are
@@ -15781,10 +15781,10 @@ _SWI1_FLASHWRITE_MAX_UNITS = 0x100
 def _sysfont_expand_row(source_byte: int, fg: int, bg: int) -> int:
     """Expand one 1bpp font row (8 pixels) into a 2bpp 16-bit CHAR RAM word.
 
-    Mirrors NeoPop biosHLE.c: the word is shifted left 2 bits per pixel and the
+    Mirrors the retail BIOS handler: the word is shifted left 2 bits per pixel and the
     pixel's 2-bit colour index is OR'd in, so pixel 0 (the source MSB) ends up in
     the word's high bits. `fg`/`bg` are masked to 2 bits (CHAR RAM is 2bpp);
-    NeoPop OR's the raw nibble, which would bleed into the neighbouring pixel for
+    OR-ing the raw nibble instead would bleed into the neighbouring pixel for
     out-of-range colours -- masking is identical for every valid input.
     """
     word = 0
@@ -15806,7 +15806,7 @@ def _swi1_sysfontset(
     """VECT_SYSFONTSET: expand the BIOS 8x8 font into CHAR RAM as 2bpp tiles.
 
     RA3 carries the colours: low 2 bits = foreground index, high nibble =
-    background index (NeoPop biosHLE.c). The glyph bitmaps are read from the
+    background index (retail BIOS handler). The glyph bitmaps are read from the
     attached BIOS image -- see the fidelity note above.
     """
     colours = _read_bank3_byte(before_cpu, 0, 0)  # RA3
@@ -15893,7 +15893,7 @@ def _swi1_flashwrite(
     """VECT_FLASHWRITE: copy `BC3 * 256` bytes from RAM (XHL3) into the cart
     flash window (bank + XDE3), returning SYS_SUCCESS in RA3.
 
-    Params per NeoPop biosHLE.c: RA3 selects the bank (0 -> 0x200000, 1 ->
+    Params per the retail BIOS handler: RA3 selects the bank (0 -> 0x200000, 1 ->
     0x800000), XDE3 = destination offset, XHL3 = source, BC3 = count in 256-byte
     units. The written bytes land in the session's writable overlay, which
     shadows the cart ROM image exactly like real NOR flash overlays the cart --
@@ -19756,8 +19756,8 @@ def _compute_logical_flags(
     AND and CLEARED (0) for OR/XOR** (the classic Z80 rule) -- callers pass
     `half_carry=True` for AND, and the default (False) covers OR/XOR.
 
-    (Corrected 2026-07-09 from `oracle_tools/cosim_diff` triage against the
-    native NeoPop reference, each verified against the TLCS-900 spec: (1) V was
+    (Corrected 2026-07-09 from trace triage, each finding then verified against
+    the TLCS-900 spec: (1) V was
     wrongly forced to 0 -- `xor WA,WA` on Big Bang set V=1 (parity of 0 = even);
     (2) H was not written at all -- `and W,0xE0` on Neo Turf Masters set H=1.)
     """

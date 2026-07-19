@@ -24,13 +24,14 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QSize, QObject, QThread, QEvent, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap, QKeyEvent, QFont, QIcon
+from PyQt6.QtGui import QImage, QPixmap, QKeyEvent, QKeySequence, QFont, QIcon
 from PyQt6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QGridLayout, QScrollArea, QStackedWidget, QListWidget,
     QListWidgetItem, QComboBox, QCheckBox, QSlider, QSpinBox, QLineEdit,
-    QFileDialog, QSizePolicy, QFrame, QMessageBox,
+    QFileDialog, QSizePolicy, QFrame, QMessageBox, QMenu, QDialog,
+    QPlainTextEdit, QDialogButtonBox,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,6 +49,8 @@ from core.watches import WatchSet  # noqa: E402
 from core.exec_breaks import ExecBreakSet  # noqa: E402
 import ngpc_settings as cfg  # noqa: E402
 import ngpc_video  # noqa: E402
+import ngpc_library as lib  # noqa: E402
+import ngpc_input  # noqa: E402
 from ngpc_debug import DebugWindow  # noqa: E402
 
 # A 'no cartridge' image for the BIOS-alone boot: 64 KiB of erased flash (0xFF).
@@ -72,6 +75,7 @@ BIOS_INTRO_FRAMES = 400
 DEFAULT_ROM_DIR = REPO / "roms"          # drop your .ngc/.ngp files here (or pick a folder)
 DEFAULT_BIOS = REPO / "bios.bin"         # optional: a real NGPC BIOS enables "Boot BIOS"
 THUMB_DIR = REPO / "thumbnails"
+LIBRARY_DB = REPO / "library.json"       # play counts / last played / favourites
 APP_ICON = BUNDLE / "assets" / "icone_ngpcraft.ico"
 STATE_DIR = REPO / "savestates"
 WATCH_DIR = REPO / "watches"             # per-ROM named memory watches (debugger)
@@ -302,12 +306,44 @@ class _ArtLabel(QLabel):
         self.setText("")
 
 
-class GameCard(QFrame):
-    """A grid cover: art on top, name under it."""
+class _FavStar(QPushButton):
+    """The favourite toggle. A button, not a click on the card, so pressing it
+    never launches the game underneath it."""
+
+    def __init__(self, on: bool, tip: str) -> None:
+        super().__init__("★" if on else "☆")
+        self.setObjectName("favStar")
+        self.setFixedSize(22, 22)
+        self.setToolTip(tip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet(
+            "QPushButton#favStar { border: none; background: transparent; font-size: 15px;"
+            f" color: {'#ffcc55' if on else '#5a6270'}; }}"
+            "QPushButton#favStar:hover { color: #ffcc55; }")
+
+
+class _RomMenuMixin:
+    """Right-click on a game: the actions that are about the FILE rather than about
+    playing it. Both the grid card and the list row need exactly this."""
+
+    analyze_requested = None      # re-declared as a signal on each concrete class
+
+    def contextMenuEvent(self, e) -> None:  # type: ignore[override]
+        menu = QMenu(self)
+        act = menu.addAction("🔍  Analyze ROM…")
+        act.triggered.connect(lambda: self.analyze_requested.emit(str(self.rom)))
+        menu.exec(e.globalPos())
+
+
+class GameCard(_RomMenuMixin, QFrame):
+    """A grid cover: art on top, name and play stats under it."""
 
     clicked = pyqtSignal(str)
+    fav_toggled = pyqtSignal(str)
+    analyze_requested = pyqtSignal(str)
 
-    def __init__(self, rom: Path, long_edge: int) -> None:
+    def __init__(self, rom: Path, long_edge: int, sub: str, fav: bool, fav_tip: str) -> None:
         super().__init__()
         self.setObjectName("card")
         self.rom = rom
@@ -316,7 +352,7 @@ class GameCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 10)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
         self.art = _ArtLabel(w, h)
         name = QLabel(_pretty(rom.stem))
         name.setObjectName("cardName")
@@ -327,6 +363,15 @@ class GameCard(QFrame):
         name.setFixedHeight(2 * name.fontMetrics().lineSpacing() + 6)
         lay.addWidget(self.art, 0, Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(name)
+        # Stats line + star share one row so the card height stays uniform.
+        foot = QHBoxLayout(); foot.setContentsMargins(0, 0, 0, 0); foot.setSpacing(4)
+        self._sub = QLabel(sub); self._sub.setObjectName("hint")
+        self._sub.setStyleSheet("font-size:11px;")
+        foot.addWidget(self._sub); foot.addStretch()
+        self.star = _FavStar(fav, fav_tip)
+        self.star.clicked.connect(lambda: self.fav_toggled.emit(str(self.rom)))
+        foot.addWidget(self.star)
+        lay.addLayout(foot)
 
     def set_image(self, img: QImage) -> None:
         self.art.set_image(img)
@@ -336,12 +381,15 @@ class GameCard(QFrame):
             self.clicked.emit(str(self.rom))
 
 
-class GameRow(QFrame):
-    """A list row: a small cover (optional) + the name, full width."""
+class GameRow(_RomMenuMixin, QFrame):
+    """A list row: a small cover (optional) + the name and play stats, full width."""
 
     clicked = pyqtSignal(str)
+    fav_toggled = pyqtSignal(str)
+    analyze_requested = pyqtSignal(str)
 
-    def __init__(self, rom: Path, long_edge: int, show_art: bool) -> None:
+    def __init__(self, rom: Path, long_edge: int, show_art: bool,
+                 sub: str, fav: bool, fav_tip: str) -> None:
         super().__init__()
         self.setObjectName("card")
         self.rom = rom
@@ -361,6 +409,12 @@ class GameRow(QFrame):
         name.setObjectName("cardName")
         h.addWidget(name)
         h.addStretch()
+        self._sub = QLabel(sub); self._sub.setObjectName("hint")
+        self._sub.setStyleSheet("font-size:11px;")
+        h.addWidget(self._sub)
+        self.star = _FavStar(fav, fav_tip)
+        self.star.clicked.connect(lambda: self.fav_toggled.emit(str(self.rom)))
+        h.addWidget(self.star)
 
     def set_image(self, img: QImage) -> None:
         if self.art is not None:
@@ -378,21 +432,48 @@ def _pretty(stem: str) -> str:
 
 
 # ---------------------------------------------------------------- library
+class RomReportDialog(QDialog):
+    """The ROM analysis, as text you can read and save."""
+
+    def __init__(self, parent, title: str, text: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"ROM analysis — {title}")
+        self.resize(760, 560)
+        lay = QVBoxLayout(self)
+        view = QPlainTextEdit(text); view.setReadOnly(True)
+        view.setFont(QFont("Consolas", 10))
+        lay.addWidget(view)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
+                                   QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Save).clicked.connect(
+            lambda: self._save(text, title))
+        lay.addWidget(buttons)
+
+    def _save(self, text: str, title: str) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save report",
+                                              f"{title}_analysis.txt", "Text (*.txt)")
+        if path:
+            Path(path).write_text(text, encoding="utf-8")
+
+
 class LibraryPage(QWidget):
     play_requested = pyqtSignal(str)
     boot_bios_requested = pyqtSignal()
 
-    def __init__(self, settings) -> None:
+    def __init__(self, settings, library: lib.Library) -> None:
         super().__init__()
         self.setObjectName("page")
         self._settings = settings
+        self._lib = library
         self._items: dict[str, QWidget] = {}     # rom -> current card/row widget
         self._images: dict[str, QImage] = {}      # rom -> thumbnail, kept for reflow
         self._grid = None                         # QGridLayout when in grid view
         self._grid_cards: list[QWidget] = []      # cards in order, for re-flow
         self._grid_cols = 0
         self._grid_card_w = 0
-        self._roms: list[Path] = []
+        self._all_roms: list[Path] = []           # everything the scan found
+        self._roms: list[Path] = []               # ...after search / filter / sort
         self._thread: QThread | None = None
         self._worker: ThumbWorker | None = None
 
@@ -437,6 +518,34 @@ class LibraryPage(QWidget):
         self._size.valueChanged.connect(self._on_size)
         controls.addWidget(self._size)
         controls.addStretch()
+
+        # search / filter / sort -- the three things a listing of more than a
+        # dozen ROMs needs and the old one had none of.
+        self._search = QLineEdit()
+        self._search.setFixedWidth(190)
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._on_search)
+        controls.addWidget(self._search)
+
+        self._filterbox = QComboBox()
+        for fid in (lib.FILTER_ALL, lib.FILTER_FAV, lib.FILTER_NEVER):
+            self._filterbox.addItem("", fid)
+        self._filterbox.currentIndexChanged.connect(self._on_filter)
+        controls.addWidget(self._filterbox)
+
+        self._sortbox = QComboBox()
+        for sid in lib.SORT_KEYS:
+            self._sortbox.addItem("", sid)
+        self._sortbox.currentIndexChanged.connect(self._on_sort)
+        controls.addWidget(self._sortbox)
+
+        # One direction toggle instead of a duplicate menu entry per key: this is
+        # what turns "most played" into "least played" and A->Z into Z->A.
+        self._revbtn = QPushButton("↓")
+        self._revbtn.setObjectName("ghost"); self._revbtn.setCheckable(True)
+        self._revbtn.setFixedWidth(34)
+        self._revbtn.clicked.connect(self._on_reverse)
+        controls.addWidget(self._revbtn)
         root.addLayout(controls)
 
         self._empty = QLabel()
@@ -467,7 +576,30 @@ class LibraryPage(QWidget):
         self._view_btns[cfg.VIEW_LIST].setText(cfg.tr(lang, "view_list"))
         self._view_btns[cfg.VIEW_COMPACT].setText(cfg.tr(lang, "view_compact"))
         self._size_lbl.setText(cfg.tr(lang, "thumb_size"))
+        self._search.setPlaceholderText(cfg.tr(lang, "search"))
+        self._revbtn.setToolTip(cfg.tr(lang, "sort_reverse"))
+        # Re-label the combos in place; blocking the signal keeps a language switch
+        # from looking like the user re-picked a sort key (which would re-lay out).
+        for box, keys in ((self._filterbox, (lib.FILTER_ALL, lib.FILTER_FAV, lib.FILTER_NEVER)),
+                          (self._sortbox, lib.SORT_KEYS)):
+            box.blockSignals(True)
+            for i, sid in enumerate(keys):
+                box.setItemText(i, cfg.tr(lang, f"{'filter' if box is self._filterbox else 'sort'}_{sid}"))
+            box.blockSignals(False)
         self._sync_view_buttons()
+        self._sync_arrange_controls()
+
+    def _sync_arrange_controls(self) -> None:
+        """Push the saved search/sort/filter into the widgets without re-triggering
+        their handlers (which would save them straight back and re-lay out)."""
+        for box, value in ((self._sortbox, cfg.library_sort(self._settings)),
+                           (self._filterbox, cfg.library_filter(self._settings))):
+            idx = box.findData(value)
+            if idx >= 0 and idx != box.currentIndex():
+                box.blockSignals(True); box.setCurrentIndex(idx); box.blockSignals(False)
+        rev = cfg.library_reverse(self._settings)
+        self._revbtn.setChecked(rev)
+        self._revbtn.setText("↑" if rev else "↓")
 
     def _rom_dir(self) -> Path | None:
         d = cfg.rom_folder(self._settings)
@@ -486,7 +618,7 @@ class LibraryPage(QWidget):
     def reload(self) -> None:
         self._stop_worker()
         d = self._rom_dir()
-        self._roms = []
+        self._all_roms = []
         if d:
             # Recurse: point it at a whole projects tree and it finds every ROM inside.
             roms: set[Path] = set()
@@ -495,11 +627,78 @@ class LibraryPage(QWidget):
                     roms.update(d.rglob(pat))
                 except (OSError, ValueError):
                     pass
-            self._roms = sorted(p for p in roms if p.is_file())
+            self._all_roms = sorted(p for p in roms if p.is_file())
         self._images.clear()
-        self._rebuild()
-        if self._roms:
-            self._start_worker(self._roms)
+        self._arrange()
+        # Render covers for EVERY ROM, not just the visible ones: filtering to
+        # favourites and back must not leave the rest of the library blank.
+        if self._all_roms:
+            self._start_worker(self._all_roms)
+
+    # ---- search / filter / sort
+    def _arrange(self, rebuild: bool = True) -> None:
+        self._roms = self._lib.arrange(
+            self._all_roms,
+            cfg.library_sort(self._settings), cfg.library_reverse(self._settings),
+            cfg.library_filter(self._settings), self._search.text(), _pretty)
+        if rebuild:
+            self._rebuild()
+
+    def _on_search(self, _text: str) -> None:
+        self._arrange()
+
+    def _on_filter(self, _idx: int) -> None:
+        self._settings.setValue("library/filter", self._filterbox.currentData())
+        self._arrange()
+
+    def _on_sort(self, _idx: int) -> None:
+        self._settings.setValue("library/sort", self._sortbox.currentData())
+        self._arrange()
+
+    def _on_reverse(self) -> None:
+        rev = self._revbtn.isChecked()
+        self._settings.setValue("library/sort_reverse", rev)
+        self._revbtn.setText("↑" if rev else "↓")
+        self._arrange()
+
+    def analyze_rom(self, rom_str: str) -> None:
+        """Boot the ROM in a throwaway core with the hygiene counters armed and report
+        what is wrong with it. The thumbnail worker must be stopped first -- two native
+        cores at once is the crash `_stop_worker` exists to prevent."""
+        from core import romcheck
+        rom = Path(rom_str)
+        self._stop_worker()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            report = romcheck.analyse(rom, bios=self._bios(), frames=300)
+            text = report.text()
+        except Exception as exc:
+            text = f"The analysis itself failed:\n\n{type(exc).__name__}: {exc}"
+        finally:
+            QApplication.restoreOverrideCursor()
+        RomReportDialog(self, rom.stem, text).exec()
+
+    def _on_fav(self, rom_str: str) -> None:
+        self._lib.toggle_favorite(Path(rom_str))
+        # Re-arrange rather than just repaint the star: under the Favourites
+        # filter, un-starring a game must actually drop it out of the view.
+        self._arrange()
+
+    def _subtitle(self, rom: Path) -> str:
+        """The small stats line under a title: what the new sort keys are sorting on,
+        shown so the ordering is legible instead of mysterious."""
+        lang = cfg.language(self._settings)
+        plays = self._lib.plays(rom)
+        if not plays:
+            return cfg.tr(lang, "never_played")
+        bits = [cfg.tr(lang, "plays_n").format(n=plays)]
+        played = lib.format_playtime(self._lib.playtime(rom))
+        if played != "—":
+            bits.append(played)
+        last = lib.format_last(self._lib.last_played(rom), lang)
+        if last:
+            bits.append(last)
+        return " · ".join(bits)
 
     def _rebuild(self) -> None:
         """Lay the library out for the current view mode + size, reusing any
@@ -508,7 +707,16 @@ class LibraryPage(QWidget):
         host = QWidget(); host.setObjectName("page")
         view = cfg.library_view(self._settings)
         size = cfg.thumb_size(self._settings)
+        lang = cfg.language(self._settings)
+        # Two different empties: no ROMs at all (point me at a folder) vs. a search
+        # or filter that matched nothing (your library is fine, the query is not).
         self._empty.setVisible(not self._roms)
+        self._empty.setText(cfg.tr(lang, "no_roms" if not self._all_roms else "no_match"))
+        fav_add, fav_rm = cfg.tr(lang, "fav_add"), cfg.tr(lang, "fav_remove")
+
+        def decorate(rom: Path) -> tuple[str, bool, str]:
+            fav = self._lib.is_favorite(rom)
+            return self._subtitle(rom), fav, (fav_rm if fav else fav_add)
 
         if view == cfg.VIEW_GRID:
             grid = QGridLayout(host)
@@ -519,8 +727,10 @@ class LibraryPage(QWidget):
             cols = self._cols_for_width(self._scroll.viewport().width())
             cards = []
             for i, rom in enumerate(self._roms):
-                card = GameCard(rom, size)
+                card = GameCard(rom, size, *decorate(rom))
                 card.clicked.connect(self.play_requested.emit)
+                card.fav_toggled.connect(self._on_fav)
+                card.analyze_requested.connect(self.analyze_rom)
                 self._items[str(rom)] = card
                 cards.append(card)
                 grid.addWidget(card, i // cols, i % cols)
@@ -533,8 +743,10 @@ class LibraryPage(QWidget):
             show_art = (view == cfg.VIEW_LIST)
             row_size = min(size, 96)     # list covers are capped so rows stay tidy
             for rom in self._roms:
-                row = GameRow(rom, row_size, show_art)
+                row = GameRow(rom, row_size, show_art, *decorate(rom))
                 row.clicked.connect(self.play_requested.emit)
+                row.fav_toggled.connect(self._on_fav)
+                row.analyze_requested.connect(self.analyze_rom)
                 self._items[str(rom)] = row
                 col.addWidget(row)
 
@@ -565,12 +777,6 @@ class LibraryPage(QWidget):
     def resizeEvent(self, e) -> None:  # type: ignore[override]
         super().resizeEvent(e)
         self._reflow_grid()
-
-    def showEvent(self, e) -> None:  # type: ignore[override]
-        # At construction the scroll area has no real width yet, so the first layout uses
-        # a fallback and may not fill the window. Re-flow once we are actually on screen.
-        super().showEvent(e)
-        QTimer.singleShot(0, self._reflow_grid)
 
     def _set_view(self, mode: str) -> None:
         self._settings.setValue("library/view", mode)
@@ -631,12 +837,20 @@ class LibraryPage(QWidget):
             self.play_requested.emit(path)
 
     def showEvent(self, e) -> None:  # type: ignore[override]
-        # Coming back to the library (e.g. a game just closed) -> resume rendering the
-        # covers we have not made yet. It was stopped on hide so it never shared the
-        # native core with a running game.
+        # NOTE: this used to be declared TWICE in this class -- the second definition
+        # silently replaced the first, so the re-flow below never ran and the grid kept
+        # the column count it guessed before it had a real width. One handler now.
         super().showEvent(e)
-        if self._worker is None and self._roms:
-            todo = [r for r in self._roms if str(r) not in self._images]
+        # A game just ended: its play count / playtime / last-played changed, so the
+        # cards are stale -- and under "Last played" so is the whole ordering.
+        self._arrange()
+        # At construction the scroll area has no real width yet, so the first layout
+        # uses a fallback and may not fill the window. Re-flow now we are on screen.
+        QTimer.singleShot(0, self._reflow_grid)
+        # Resume rendering the covers we have not made yet. It was stopped on hide so
+        # it never shared the native core with a running game.
+        if self._worker is None and self._all_roms:
+            todo = [r for r in self._all_roms if str(r) not in self._images]
             if todo:
                 self._start_worker(todo)
 
@@ -953,31 +1167,145 @@ class SettingsPage(QWidget):
             def persist(new_code: int, lbl=label) -> None:
                 cfg.set_binding(self._settings, lbl, int(new_code))
                 self._settings.sync()      # flush to disk/registry so it survives a crash
+                self._refresh_conflicts()
                 self.changed.emit()
             btn.captured.connect(persist)
             self._keybtns[label] = btn
             lab = QLabel(label)
             v.addWidget(_row(lab, btn))
+
+        # In game the hotkeys are matched BEFORE the joypad bindings, so a button
+        # bound to Esc/Tab/P/F5... is simply dead and nothing says why. Say why.
+        self._conflict = QLabel(); self._conflict.setObjectName("hint")
+        self._conflict.setWordWrap(True)
+        self._conflict.setStyleSheet("color:#ffb454;")
+        v.addWidget(self._conflict)
+
         self._restore = QPushButton(); self._restore.setObjectName("ghost")
         self._restore.clicked.connect(self._restore_keys)
         v.addWidget(self._restore)
+
+        # -- turbo (autofire)
+        self._turbo_hint = QLabel(); self._turbo_hint.setObjectName("hint")
+        self._turbo_hint.setWordWrap(True)
+        v.addWidget(self._turbo_hint)
+        self._turbo_boxes: dict[str, QCheckBox] = {}
+        self._turbo_labels: dict[str, QLabel] = {}
+        for label in cfg.TURBO_BUTTONS:
+            box = QCheckBox(); box.setChecked(cfg.turbo_on(self._settings, label))
+
+            def on_turbo(state: bool, lbl=label) -> None:
+                cfg.set_turbo(self._settings, lbl, state)
+                self.changed.emit()
+            box.toggled.connect(on_turbo)
+            lab = QLabel()
+            self._turbo_boxes[label] = box
+            self._turbo_labels[label] = lab
+            v.addWidget(_row(lab, box))
+        self._turbo_rate = QComboBox()
+        for hz in cfg.TURBO_RATES:
+            self._turbo_rate.addItem("", hz)
+        idx = self._turbo_rate.findData(cfg.turbo_hz(self._settings))
+        self._turbo_rate.setCurrentIndex(max(0, idx))
+        self._turbo_rate.currentIndexChanged.connect(
+            lambda _i: (self._settings.setValue("input/turbo_hz", self._turbo_rate.currentData()),
+                        self.changed.emit()))
+        self._lbl_turbo_rate = QLabel()
+        v.addWidget(_row(self._lbl_turbo_rate, self._turbo_rate))
+
+        # -- controller
+        self._pad_hint = QLabel(); self._pad_hint.setObjectName("hint")
+        self._pad_hint.setWordWrap(True)
+        v.addWidget(self._pad_hint)
+        self._pad_box = QCheckBox(); self._pad_box.setChecked(cfg.gamepad_enabled(self._settings))
+        self._pad_box.toggled.connect(
+            lambda b: (self._settings.setValue("input/gamepad", b), self.changed.emit()))
+        self._lbl_pad = QLabel()
+        v.addWidget(_row(self._lbl_pad, self._pad_box))
+        self._pad_state = QLabel(); self._pad_state.setObjectName("hint")
+        v.addWidget(self._pad_state)
+        # A pad can be plugged in while this page is open, so the readout polls.
+        self._pad_probe = ngpc_input.XInputPad()
+        self._pad_timer = QTimer(self)
+        self._pad_timer.timeout.connect(self._refresh_pad_state)
+        self._pad_timer.start(1000)
         return w
 
-    # -- Hotkeys (reference list; the bindings live under Controls)
+    def _refresh_conflicts(self) -> None:
+        """Report both ways a binding can be ambiguous: a joypad button shadowed by
+        a hotkey (the button goes dead), and two hotkeys on one key (one never
+        fires). Reads the SETTINGS, so it is right whichever panel made the mess."""
+        lang = cfg.language(self._settings)
+        pad_clashes, dupes = cfg.conflicts(self._settings, lang)
+        pad_text = (cfg.tr(lang, "key_conflict").format(hk="; ".join(pad_clashes))
+                    if pad_clashes else "")
+        for label in (self._conflict, self._hk_conflict):
+            label.setText(pad_text)
+            label.setVisible(bool(pad_clashes))
+        self._hk_dupe.setText(
+            cfg.tr(lang, "hk_dupe").format(hk="; ".join(dupes)) if dupes else "")
+        self._hk_dupe.setVisible(bool(dupes))
+
+    def _refresh_pad_state(self) -> None:
+        lang = cfg.language(self._settings)
+        if not self._pad_probe.available:
+            key = "pad_none"
+        else:
+            # Reading the mask is what updates `connected`; the value is discarded.
+            self._pad_probe.poll()
+            key = "pad_on" if self._pad_probe.connected else "pad_off"
+        self._pad_state.setText(cfg.tr(lang, key))
+
+    # -- Hotkeys (rebindable; this panel used to be a read-only cheat sheet)
     def _hotkeys_panel(self) -> QWidget:
         w, v = self._panel()
         self._hk_intro = QLabel(); self._hk_intro.setObjectName("hint")
+        self._hk_intro.setWordWrap(True)
         v.addWidget(self._hk_intro)
+        self._hkbtns: dict[str, cfg.KeyCaptureButton] = {}
         self._hk_labels: list[tuple[QLabel, str]] = []
-        for key in ("hk_menu", "hk_pause", "hk_reset", "hk_fs", "hk_size",
-                    "hk_state", "hk_speed", "hk_shot", "hk_debug"):
+        for action, _default, name_key in cfg.HOTKEYS:
+            btn = cfg.KeyCaptureButton(cfg.hotkey_code(self._settings, action))
+            btn.setObjectName("ghost"); btn.setFixedWidth(140)
+
+            # Same contract as the joypad buttons: persist on `captured`, which
+            # fires AFTER the new code is stored (see KeyCaptureButton).
+            def persist(new_code: int, act=action) -> None:
+                cfg.set_hotkey(self._settings, act, int(new_code))
+                self._settings.sync()
+                self._refresh_conflicts()
+                self.changed.emit()
+            btn.captured.connect(persist)
+            self._hkbtns[action] = btn
             lab = QLabel()
-            row = QFrame(); row.setObjectName("settingRow")
-            h = QHBoxLayout(row); h.setContentsMargins(14, 10, 14, 10)
-            h.addWidget(lab); h.addStretch()
-            v.addWidget(row)
-            self._hk_labels.append((lab, key))
+            self._hk_labels.append((lab, name_key))
+            v.addWidget(_row(lab, btn))
+
+        self._hk_dupe = QLabel(); self._hk_dupe.setObjectName("hint")
+        self._hk_dupe.setWordWrap(True)
+        self._hk_dupe.setStyleSheet("color:#ffb454;")
+        v.addWidget(self._hk_dupe)
+        # The joypad-vs-hotkey clash is shown in BOTH panels: you can create it
+        # from either side, and you should not have to guess which one to open.
+        self._hk_conflict = QLabel(); self._hk_conflict.setObjectName("hint")
+        self._hk_conflict.setWordWrap(True)
+        self._hk_conflict.setStyleSheet("color:#ffb454;")
+        v.addWidget(self._hk_conflict)
+
+        self._hk_restore = QPushButton(); self._hk_restore.setObjectName("ghost")
+        self._hk_restore.clicked.connect(self._restore_hotkeys)
+        v.addWidget(self._hk_restore)
         return w
+
+    def _restore_hotkeys(self) -> None:
+        for action, btn in self._hkbtns.items():
+            code = cfg.DEFAULT_HOTKEYS.get(action, 0)
+            btn._key = code           # noqa: SLF001
+            btn._render()             # noqa: SLF001
+            cfg.set_hotkey(self._settings, action, code)
+        self._settings.sync()
+        self._refresh_conflicts()
+        self.changed.emit()
 
     def _restore_keys(self) -> None:
         for label, btn in self._keybtns.items():
@@ -986,6 +1314,7 @@ class SettingsPage(QWidget):
             btn._render()             # noqa: SLF001
             cfg.set_binding(self._settings, label, code)
         self._settings.sync()
+        self._refresh_conflicts()
         self.changed.emit()
 
     def _pick_bios(self) -> None:
@@ -1014,9 +1343,12 @@ class SettingsPage(QWidget):
                                  "cat_controls", "cat_hotkeys")):
             self._cats.item(i).setText(t(key))
         self._resume_banner.setText("▶  " + t("m_resume"))
-        self._hk_intro.setText(t("hk_intro"))
+        self._hk_intro.setText(t("hotkeys_hint"))
+        self._hk_restore.setText(t("restore"))
         for lab, key in self._hk_labels:
             lab.setText(t(key))
+        for b in self._hkbtns.values():
+            b._render()  # noqa: SLF001
         self._lbl_lang.setText(t("language")); self._lbl_bios.setText(t("bios"))
         self._lbl_realbios.setText(t("console_boot")); self._bios_browse.setText(t("browse"))
         self._lbl_shots.setText(t("screenshots")); self._shot_browse.setText(t("browse"))
@@ -1052,14 +1384,24 @@ class SettingsPage(QWidget):
         self._ctrl_hint.setText(t("controls_hint")); self._restore.setText(t("restore"))
         for b in self._keybtns.values():
             b._render()  # noqa: SLF001
+        # turbo + controller
+        self._turbo_hint.setText(t("turbo_hint"))
+        for label, lab in self._turbo_labels.items():
+            lab.setText(t("turbo").format(btn=label))
+        self._lbl_turbo_rate.setText(t("turbo_rate"))
+        for i, hz in enumerate(cfg.TURBO_RATES):
+            self._turbo_rate.setItemText(i, t("turbo_hz").format(n=hz))
+        self._pad_hint.setText(t("gamepad_hint")); self._lbl_pad.setText(t("gamepad"))
+        self._refresh_pad_state()
+        self._refresh_conflicts()
 
 
 # ---------------------------------------------------------------- in-game menu
 class OverlayMenu(QWidget):
     """A translucent full-page pause menu over the running game, keyboard- and
     mouse-navigable. It emits `chosen(action_id)`; the owner keeps the game alive
-    and acts on it. Modelled on RetroArch's Quick Menu -- the game never unloads
-    until you explicitly quit."""
+    and acts on it. The game never unloads until you explicitly quit -- pausing
+    is not a reason to throw machine state away."""
 
     chosen = pyqtSignal(str)
 
@@ -1144,10 +1486,12 @@ class PlayPage(QWidget):
     debug_requested = pyqtSignal()
     options_requested = pyqtSignal(str)   # "video" | "audio" | "controls"
 
-    def __init__(self, settings) -> None:
+    def __init__(self, settings, library: lib.Library) -> None:
         super().__init__()
         self.setObjectName("page")
         self._settings = settings
+        self._lib = library
+        self._play_t0: float | None = None   # wall clock since the game last resumed
         self.session: NativeSession | None = None
         self.machine = None
         self._raw = None                 # a bare machine for the BIOS-alone boot
@@ -1181,9 +1525,30 @@ class PlayPage(QWidget):
         self._aspect = cfg.aspect_mode(settings)
         self._fullscreen = cfg.fullscreen(settings)
         self._bindings: dict[int, int] = {}
+        self._hotkeys: dict[int, str] = {}   # key code -> hotkey action id
+        # -- input beyond the keyboard: a controller, and autofire.
+        self._pad = ngpc_input.XInputPad()
+        self._pad_on = True                # the setting; the pad may still be absent
+        self._pad_held = 0                 # controller mask, merged with `self.held`
+        self._turbo_mask = 0               # joypad bits that autofire while held
+        self._turbo_hz = 10
+        self._frame = 0                    # free-running EMULATED frame counter
         self.pending = bytearray()
         self.watches = WatchSet()          # named memory watches, loaded per-ROM
         self.breaks = ExecBreakSet()       # PC execution breakpoints, loaded per-ROM
+        # Debug tools that need to sample state once per EMULATED frame rather than at
+        # the UI's refresh rate -- the RAM-search change counter is meaningless unless
+        # it is counting frames. Empty (and free) unless a tool subscribes.
+        self.frame_hooks: list = []
+        # The memory viewer's access-highlighting probe. The core has ONE read-log and
+        # ONE write-log window, so a viewer that wants to colour accesses and a
+        # watchpoint that wants to break on them are competing for the same instrument.
+        # Rather than let them silently clobber each other, the viewer sets this and the
+        # debug UI says out loud that watchpoints are suspended while it is on.
+        self.access_probe: tuple[int, int] | None = None
+        # Symbol table for breakpoint CONDITIONS, so a guard can say `[_player_hp] == 0`.
+        # The debug window owns the loading and pushes it here.
+        self.symbols = None
         self.pacer = FramePacer()
         self.sink = None
         self.audio = None
@@ -1223,7 +1588,9 @@ class PlayPage(QWidget):
         outer.addWidget(self.toolbar, 0)
         # A little always-visible tab to bring the bar back when it is hidden.
         self._bar_show = QPushButton("▴", self); self._bar_show.setObjectName("barShow")
-        self._bar_show.setFixedSize(30, 18); self._bar_show.setToolTip("Show toolbar (H)")
+        self._bar_show.setFixedSize(30, 18)
+        self._bar_tips.append((self._bar_show, "Show toolbar", cfg.HK_TOOLBAR))
+        self._refresh_toolbar_tips()
         self._bar_show.clicked.connect(lambda: self._toggle_toolbar(True))
         self._bar_show.hide()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1235,6 +1602,7 @@ class PlayPage(QWidget):
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
+        self._check_hotkey_table()
 
     # ---- lifecycle
     def _watch_path(self) -> Path:
@@ -1270,12 +1638,17 @@ class PlayPage(QWidget):
             self.machine.set_breakpoints(self.breaks.enabled_pcs())
         except Exception:
             pass
-        rng = self.watches.write_range()
+        # The access probe (memory-viewer highlighting) WINS when it is on: it is an
+        # explicit, visible mode, and pretending both can own the log window would mean
+        # one of them quietly returning nothing.
+        wrng = self.access_probe or self.watches.write_range()
+        rrng = self.access_probe or self.watches.read_range()
         try:
-            if rng is not None:
-                self.machine.set_write_log(rng[0], rng[1])
-            else:
-                self.machine.set_write_log(1, 0)    # lo > hi disarms
+            self.machine.set_write_log(*(wrng if wrng else (1, 0)))   # lo > hi disarms
+        except Exception:
+            pass
+        try:
+            self.machine.set_read_log(*(rrng if rrng else (1, 0)))
         except Exception:
             pass
 
@@ -1319,6 +1692,7 @@ class PlayPage(QWidget):
         self.apply_debug()                 # arm breakpoints + write-log for this ROM
         self._rebuild_rewind_buffer()      # pick up any rewind-length change
         self._did_handoff = False; self._menu_ticks = 0; self._bios_frames = 0
+        self._lib.note_launch(self._rom_path)   # one more play, and the most recent
         self._begin_run()
 
     def start_bios(self) -> None:
@@ -1331,6 +1705,9 @@ class PlayPage(QWidget):
             return
         self._real_bios = True
         self._power_pressed = False
+        # No cartridge: clear the last game's path, or the console's own BIOS screen
+        # would be credited as playtime to whatever was played before it.
+        self._rom_path = None
         self._raw = native.NativeMachine(_NO_CART, bios=bios.read_bytes())
         if _SYSTEM_RAM.exists():
             self._raw.set_battery_ram(_SYSTEM_RAM.read_bytes())
@@ -1345,9 +1722,19 @@ class PlayPage(QWidget):
         self.machine = self._raw
         self._begin_run()
 
+    # ---- play history
+    def _commit_playtime(self) -> None:
+        """Bank the wall time since the game last started or resumed. Called on every
+        exit from running -- suspend (a menu) as well as stop -- so time spent sitting
+        in the settings screen is not counted as time spent playing."""
+        if self._play_t0 is not None and self._rom_path is not None:
+            self._lib.add_playtime(self._rom_path, time.perf_counter() - self._play_t0)
+        self._play_t0 = None
+
     def _begin_run(self) -> None:
         self.held = 0
         self.paused = False
+        self._play_t0 = time.perf_counter()
         self.overlay.setText("")
         self.apply_settings()
         if cfg.audio_enabled(self._settings):
@@ -1357,6 +1744,7 @@ class PlayPage(QWidget):
 
     def stop(self) -> None:
         self.timer.stop()
+        self._commit_playtime()
         if self._rom_path is not None:    # keep this ROM's watches + breakpoints
             try:
                 self.watches.save(self._watch_path())
@@ -1392,6 +1780,13 @@ class PlayPage(QWidget):
 
     def apply_settings(self) -> None:
         self._bindings = cfg.key_bindings(self._settings)
+        self._hotkeys = cfg.hotkey_bindings(self._settings)
+        self._refresh_toolbar_tips()      # a rebind must not leave the bar naming the old key
+        self._turbo_mask = cfg.turbo_mask(self._settings)
+        self._turbo_hz = cfg.turbo_hz(self._settings)
+        self._pad_on = cfg.gamepad_enabled(self._settings)
+        if not self._pad_on:
+            self._pad_held = 0        # drop anything the pad was holding
         self._scale = cfg.lcd_scale(self._settings)
         self._smooth = cfg.smoothing(self._settings)
         self._filter = cfg.video_filter(self._settings)
@@ -1441,58 +1836,90 @@ class PlayPage(QWidget):
 
     # ---- input
     def event(self, e) -> bool:  # type: ignore[override]
-        # Tab is the fast-forward key; grab it before Qt uses it for focus traversal.
+        # Qt eats Tab (and Shift+Tab) for focus traversal before any key handler sees
+        # it. Grab both here unconditionally: focus traversal is meaningless in the
+        # game view, and this must not depend on Tab still being the fast-forward key
+        # -- it is rebindable now, and something else may have been bound TO Tab.
         if e.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) \
-                and e.key() == int(Qt.Key.Key_Tab):
+                and e.key() in (int(Qt.Key.Key_Tab), int(Qt.Key.Key_Backtab)):
             (self.keyPressEvent if e.type() == QEvent.Type.KeyPress
              else self.keyReleaseEvent)(e)
             return True
         return super().event(e)
 
+    def _toggle_pause(self) -> None:
+        self.paused = not self.paused
+        self.overlay.setText(
+            cfg.tr(cfg.language(self._settings), "paused") if self.paused else "")
+
+    def _begin_fast_forward(self) -> None:
+        self._ff = True
+        self.wall_last = time.perf_counter(); self.debt = 0.0
+
+    def _hotkey_actions(self) -> dict:
+        """action id -> what it does. Every entry must exist in cfg.HOTKEYS, and
+        every id in cfg.HOTKEYS must appear here -- `_check_hotkey_table` asserts
+        both at startup so a half-added hotkey cannot ship as a dead key."""
+        return {
+            cfg.HK_MENU: self.open_menu,               # PAUSE, don't quit
+            cfg.HK_DEBUG: self.debug_requested.emit,
+            cfg.HK_FS: self._toggle_fullscreen,
+            cfg.HK_PAUSE: self._toggle_pause,
+            cfg.HK_RESET: self._do_reset,
+            cfg.HK_SAVE: self.save_state,
+            cfg.HK_LOAD: self.load_state,
+            cfg.HK_SLOT: lambda: self.set_slot((self._slot + 1) % STATE_SLOTS),
+            cfg.HK_SHOT: self.screenshot,
+            cfg.HK_TOOLBAR: self._toggle_toolbar,
+            cfg.HK_FASTER: lambda: self.cycle_speed(True),
+            cfg.HK_SLOWER: lambda: self.cycle_speed(False),
+            cfg.HK_STEP: self.step_forward,
+            # hold-style (see cfg.HOLD_HOTKEYS): press starts, release ends
+            cfg.HK_FF: self._begin_fast_forward,
+            cfg.HK_REWIND: self.start_rewind,
+        }
+
+    def _check_hotkey_table(self) -> None:
+        """Fail loudly if the hotkey LIST and the hotkey HANDLERS have drifted apart.
+        A key in cfg.HOTKEYS with no handler is a rebindable key that does nothing --
+        exactly the sort of thing that ships unnoticed because nobody presses it."""
+        listed = {a for a, _k, _n in cfg.HOTKEYS}
+        handled = set(self._hotkey_actions())
+        if listed != handled:
+            raise RuntimeError(
+                f"hotkey table mismatch: no handler for {sorted(listed - handled)}, "
+                f"handler for unlisted {sorted(handled - listed)}")
+        if not cfg.HOLD_HOTKEYS <= set(self._release_actions()):
+            raise RuntimeError("hold hotkeys with no release handler: "
+                               f"{sorted(cfg.HOLD_HOTKEYS - set(self._release_actions()))}")
+
+    def _release_actions(self) -> dict:
+        """What ends a held hotkey. Only cfg.HOLD_HOTKEYS need an entry."""
+        return {
+            # releasing fast-forward returns to whatever the toolbar's toggle says
+            cfg.HK_FF: lambda: (setattr(self, "_ff", self._ff_btn.isChecked()),
+                                setattr(self, "wall_last", time.perf_counter()),
+                                setattr(self, "debt", 0.0)),
+            cfg.HK_REWIND: self.stop_rewind,
+        }
+
     def keyPressEvent(self, e: QKeyEvent) -> None:  # noqa: N802
         k = e.key()
-        if k == int(Qt.Key.Key_Escape):
-            self.open_menu(); return                       # PAUSE, don't quit
-        if k == int(Qt.Key.Key_F1):
-            self.debug_requested.emit(); return
-        if k == int(Qt.Key.Key_F11):
-            self._toggle_fullscreen(); return
+        # Window size is the one hotkey that is not rebindable -- it needs Ctrl, so
+        # it can never shadow a joypad key. Checked first so a plain digit stays free.
         if (e.modifiers() & Qt.KeyboardModifier.ControlModifier) and \
                 int(Qt.Key.Key_1) <= k <= int(Qt.Key.Key_5):
             self.set_window_scale(k - int(Qt.Key.Key_1) + 1); return
-        if k == int(Qt.Key.Key_P):
-            self.paused = not self.paused
-            self.overlay.setText(cfg.tr(cfg.language(self._settings), "paused")
-                                 if self.paused else ""); return
-        if k == int(Qt.Key.Key_F5):
-            self._do_reset(); return
-        # save states: F2 save, F4 load, F3 cycle slot
-        if k == int(Qt.Key.Key_F2):
-            self.save_state(); return
-        if k == int(Qt.Key.Key_F4):
-            self.load_state(); return
-        if k == int(Qt.Key.Key_F3):
-            self.set_slot((self._slot + 1) % STATE_SLOTS); return
-        if k == int(Qt.Key.Key_F12):
-            self.screenshot(); return
-        if k == int(Qt.Key.Key_H):
-            self._toggle_toolbar(); return
-        # speed: Tab (hold) = fast-forward; [ / ] step slower/faster
-        if k == int(Qt.Key.Key_Tab):
-            if not e.isAutoRepeat():
-                self._ff = True; self.wall_last = time.perf_counter(); self.debt = 0.0
+        action = self._hotkeys.get(k)
+        if action is not None:
+            # A held hotkey must fire once, not once per auto-repeat: fast-forward
+            # would keep resetting its own pacing clock and rewind would restart.
+            if action in cfg.HOLD_HOTKEYS and e.isAutoRepeat():
+                return
+            handler = self._hotkey_actions().get(action)
+            if handler is not None:
+                handler()
             return
-        if k == int(Qt.Key.Key_BracketRight):
-            self.cycle_speed(True); return
-        if k == int(Qt.Key.Key_BracketLeft):
-            self.cycle_speed(False); return
-        # rewind: ',' one frame back, '.' one frame forward ("what did I just see?")
-        if k == int(Qt.Key.Key_Comma):          # HOLD to rewind; release resumes
-            if not e.isAutoRepeat():
-                self.start_rewind()
-            return
-        if k == int(Qt.Key.Key_Period):
-            self.step_forward(); return
         bit = self._bindings.get(k)
         if bit and not e.isAutoRepeat():
             self.held |= bit
@@ -1598,6 +2025,116 @@ class PlayPage(QWidget):
         # down mid-tick was killing in-game sound. The sink flows straight from BIOS to game.
         self._reset_pacing()
 
+    # ---- instruction-level stepping (the debugger's primitives) -----------
+    # A runaway backstop for "run until we get somewhere". A whole frame is a few
+    # tens of thousands of instructions, so this is several frames' worth: enough
+    # for any call to return, small enough that a wrong guess does not hang the UI.
+    STEP_LIMIT = 2_000_000
+
+    def step_instruction(self, count: int = 1) -> int:
+        """Execute exactly `count` instructions and stop. Nothing to do with frames:
+        the core keeps its own raster/timer state, so the screen simply shows whatever
+        was drawn last until enough instructions have passed to finish a frame.
+
+        Returns how many instructions actually retired.
+        """
+        if self.machine is None:
+            return 0
+        self.paused = True
+        # Standing ON an enabled breakpoint must not stop us before we move: the core
+        # skips a breakpoint on the first instruction of a batch, which is exactly the
+        # behaviour we want here, but we clear the flag anyway so a later resume does
+        # not step off a second time.
+        self._bp_step_off = False
+        summ, _ = self.machine.run(max(1, count), record=False)
+        self._blit()
+        return int(summ.executed)
+
+    def run_until_pc(self, targets, limit: int | None = None) -> tuple[bool, int]:
+        """Run until PC reaches one of `targets`, a user breakpoint fires, or `limit`
+        instructions pass. Returns (reached_a_target, instructions_run).
+
+        The temporary targets are merged into the core's breakpoint list and removed
+        again in a `finally`, so an exception mid-run cannot leave phantom breakpoints
+        armed on the machine.
+        """
+        if self.machine is None:
+            return (False, 0)
+        targets = {int(t) & 0xFFFFFF for t in targets}
+        limit = self.STEP_LIMIT if limit is None else limit
+        self.paused = True
+        saved = self.breaks.enabled_pcs()
+        ran = 0
+        try:
+            self.machine.set_breakpoints(sorted(set(saved) | targets))
+            while ran < limit:
+                summ, _ = self.machine.run(min(4096, limit - ran), record=False)
+                ran += int(summ.executed)
+                if summ.stop_status == native.STATUS_BREAKPOINT:
+                    return (int(summ.stop_pc) in targets, ran)
+                if summ.stop_status in _CRASH_STATUSES:
+                    return (False, ran)
+                if int(summ.executed) == 0:
+                    return (False, ran)      # halted and going nowhere
+        finally:
+            try:
+                self.machine.set_breakpoints(saved)
+            except Exception:
+                pass
+            self._blit()
+        return (False, ran)
+
+    def step_over(self, next_pc: int | None, is_call: bool) -> int:
+        """One instruction, but a call runs to completion. `next_pc`/`is_call` come
+        from the caller's disassembly -- the player does not decode.
+
+        The stack pointer is the guard: a recursive routine hits its own return
+        address before it is really done, so 'we are back' means the PC is right AND
+        the stack has unwound to at least where it started.
+        """
+        if self.machine is None:
+            return 0
+        if not is_call or next_pc is None:
+            return self.step_instruction(1)
+        entry_sp = self.machine.cpu().regs[7]
+        total = 0
+        while total < self.STEP_LIMIT:
+            reached, ran = self.run_until_pc([next_pc], self.STEP_LIMIT - total)
+            total += ran
+            if not reached:
+                return total                       # breakpoint, crash, or gave up
+            if self.machine.cpu().regs[7] >= entry_sp:
+                return total                       # really back, not mid-recursion
+            self.step_instruction(1)               # move off it and keep waiting
+            total += 1
+        return total
+
+    def step_out(self) -> int:
+        """Run until the current routine returns, i.e. until the stack pointer climbs
+        back above where it is now. Stepping one at a time is the only honest way --
+        we do not know the return address without reading the frame, and a leaf that
+        never pushed one would send us somewhere arbitrary."""
+        if self.machine is None:
+            return 0
+        self.paused = True
+        entry_sp = self.machine.cpu().regs[7]
+        ran = 0
+        try:
+            # ONE instruction per crossing, on purpose. Batching would only tell us the
+            # stack had unwound at the end of the batch, landing us up to a batch-length
+            # PAST the return -- which is not a step-out, it is a jump into the middle of
+            # the caller. A crossing is ~0.3 us, so even a long routine costs milliseconds.
+            while ran < self.STEP_LIMIT:
+                summ, _ = self.machine.run(1, record=False)
+                ran += int(summ.executed)
+                if summ.stop_status in _CRASH_STATUSES or int(summ.executed) == 0:
+                    break
+                if self.machine.cpu().regs[7] > entry_sp:
+                    break
+        finally:
+            self._blit()
+        return ran
+
     def _do_reset(self) -> None:
         if self.session is not None:
             self.session.reboot()
@@ -1636,45 +2173,63 @@ class PlayPage(QWidget):
         bar = QFrame(); bar.setObjectName("playbar")
         h = QHBoxLayout(bar); h.setContentsMargins(8, 4, 8, 4); h.setSpacing(6)
 
-        def btn(text, tip, slot, checkable=False):
-            b = QPushButton(text); b.setObjectName("barBtn"); b.setToolTip(tip)
+        # (button, base tooltip, hotkey action). The key part of each tooltip is
+        # filled in by `_refresh_toolbar_tips` from the CURRENT binding -- these
+        # used to name Esc/F5/F12 literally, which a rebind turned into a lie.
+        self._bar_tips: list[tuple[QPushButton, str, str | None]] = []
+
+        def btn(text, tip, slot, checkable=False, action=None):
+            b = QPushButton(text); b.setObjectName("barBtn")
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus); b.setCheckable(checkable)
             if checkable:
                 b.toggled.connect(slot)
             else:
                 b.clicked.connect(slot)
+            self._bar_tips.append((b, tip, action))
             h.addWidget(b); return b
 
-        btn("☰", "Menu (Esc)", self.open_menu)
-        btn("⟲", "Reset (F5)", self._do_reset)
+        btn("☰", "Menu", self.open_menu, action=cfg.HK_MENU)
+        btn("⟲", "Reset", self._do_reset, action=cfg.HK_RESET)
         h.addSpacing(10)
         h.addWidget(QLabel("Slot"))
         self._slot_spin = QSpinBox(); self._slot_spin.setRange(1, STATE_SLOTS)
         self._slot_spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._slot_spin.valueChanged.connect(lambda v: setattr(self, "_slot", v - 1))
         h.addWidget(self._slot_spin)
-        btn("💾", "Save state (F2)", lambda: self.save_state())
-        btn("📂", "Load state (F4)", lambda: self.load_state())
+        btn("💾", "Save state", lambda: self.save_state(), action=cfg.HK_SAVE)
+        btn("📂", "Load state", lambda: self.load_state(), action=cfg.HK_LOAD)
         h.addSpacing(10)
-        btn("📷", "Screenshot (F12)", self.screenshot)
+        btn("📷", "Screenshot", self.screenshot, action=cfg.HK_SHOT)
         h.addSpacing(10)
         rw = QPushButton("⏪"); rw.setObjectName("barBtn")
-        rw.setToolTip("Hold to rewind ( , )"); rw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        rw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         rw.pressed.connect(self.start_rewind); rw.released.connect(self.stop_rewind)
+        self._bar_tips.append((rw, "Hold to rewind", cfg.HK_REWIND))
         h.addWidget(rw)
-        btn("⏵", "Step one frame forward ( . )", self.step_forward)
+        btn("⏵", "Step one frame forward", self.step_forward, action=cfg.HK_STEP)
         h.addSpacing(10)
-        btn("−", "Slower ( [ )", lambda: self.cycle_speed(False))
+        btn("−", "Slower", lambda: self.cycle_speed(False), action=cfg.HK_SLOWER)
         self._speed_lbl = QLabel("1×"); self._speed_lbl.setObjectName("barSpeed")
         self._speed_lbl.setFixedWidth(36)
         self._speed_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h.addWidget(self._speed_lbl)
-        btn("+", "Faster ( ] )", lambda: self.cycle_speed(True))
-        self._ff_btn = btn("⏩", "Fast-forward toggle (or hold Tab)", self._set_ff, checkable=True)
+        btn("+", "Faster", lambda: self.cycle_speed(True), action=cfg.HK_FASTER)
+        self._ff_btn = btn("⏩", "Fast-forward toggle (or hold)", self._set_ff,
+                           checkable=True, action=cfg.HK_FF)
         h.addStretch()
-        btn("⛶", "Fullscreen (F11)", self._toggle_fullscreen)
-        btn("▾", "Hide toolbar (H)", lambda: self._toggle_toolbar(False))
+        btn("⛶", "Fullscreen", self._toggle_fullscreen, action=cfg.HK_FS)
+        btn("▾", "Hide toolbar", lambda: self._toggle_toolbar(False), action=cfg.HK_TOOLBAR)
+        self._refresh_toolbar_tips()
         return bar
+
+    def _refresh_toolbar_tips(self) -> None:
+        """Re-stamp each toolbar tooltip with the key that is actually bound now."""
+        for button, base, action in self._bar_tips:
+            if action is None:
+                button.setToolTip(base)
+                continue
+            key = QKeySequence(cfg.hotkey_code(self._settings, action)).toString()
+            button.setToolTip(f"{base} ({key})" if key else base)
 
     def _toggle_toolbar(self, show: bool | None = None) -> None:
         show = (not self.toolbar.isVisible()) if show is None else show
@@ -2021,6 +2576,7 @@ class PlayPage(QWidget):
             return
         self.paused = True
         self.timer.stop()
+        self._commit_playtime()
         if self.sink is not None:
             self.sink.stop(); self.sink = None; self.audio = None
         self.pending.clear()
@@ -2030,6 +2586,7 @@ class PlayPage(QWidget):
             return
         self.menu.hide(); self._menu_open = False
         self.paused = False
+        self._play_t0 = time.perf_counter()   # the clock restarts (see _commit_playtime)
         self.apply_settings()
         if cfg.audio_enabled(self._settings) and self.sink is None:
             self._open_audio()
@@ -2051,13 +2608,11 @@ class PlayPage(QWidget):
         super().resizeEvent(e)
 
     def keyReleaseEvent(self, e: QKeyEvent) -> None:  # noqa: N802
-        if e.key() == int(Qt.Key.Key_Tab) and not e.isAutoRepeat():
-            # releasing Tab returns to whatever the toolbar's FF toggle says
-            self._ff = self._ff_btn.isChecked()
-            self.wall_last = time.perf_counter(); self.debt = 0.0
+        action = self._hotkeys.get(e.key())
+        if action is not None:
+            if action in cfg.HOLD_HOTKEYS and not e.isAutoRepeat():
+                self._release_actions()[action]()
             return
-        if e.key() == int(Qt.Key.Key_Comma) and not e.isAutoRepeat():
-            self.stop_rewind(); return       # releasing rewind -> resume forward
         bit = self._bindings.get(e.key())
         if bit and not e.isAutoRepeat():
             self.held &= ~bit
@@ -2086,10 +2641,12 @@ class PlayPage(QWidget):
         """A core PC breakpoint fired. Pause if its guard holds; otherwise step past it
         so the frame can continue. Returns True when we paused (caller must stop)."""
         bp = self.breaks.at(pc)
-        if bp is not None and bp.cond_true(self.machine):
+        if bp is not None and bp.cond_true(self.machine, self.symbols):
             self.paused = True
             self._bp_step_off = True         # step off it when the user resumes
             where = f"{pc:06X}" + (f"  [{bp.cond}]" if bp.cond else "")
+            if bp.error:
+                where += f"  ⚠ {bp.error}"     # fired because the guard is broken
             self.overlay.setText(f"⏸ breakpoint — {where}")
             self._blit()
             return True
@@ -2111,6 +2668,28 @@ class PlayPage(QWidget):
             except Exception:
                 pass
 
+    def _check_read_break(self) -> bool:
+        """After a frame, see if anything READ a watched address; pause on the first,
+        naming the PC that read it. The mirror of `_check_write_break` -- note that
+        instruction fetches are not logged by the core, so this only fires on a real
+        data read, not on the CPU walking over the address as code."""
+        try:
+            if self.machine.read_log_count() == 0:
+                return False
+            recs = self.machine.read_log()
+        except Exception:
+            return False
+        for rec in recs:
+            w = self.watches.read_hit(rec.addr)
+            if w is not None:
+                self.paused = True
+                who = w.name or f"{w.addr:06X}"
+                self.overlay.setText(
+                    f"⏸ watchpoint R — {who} read ={rec.value:02X} by PC {rec.pc:06X}")
+                self._blit()
+                return True
+        return False
+
     def _check_write_break(self) -> bool:
         """After a frame, see if any 'write' watch's address was written; pause on the
         first, naming the PC that did it (from the core write-log)."""
@@ -2131,9 +2710,25 @@ class PlayPage(QWidget):
                 return True
         return False
 
+    # ---- controller + autofire
+    def _poll_pad(self) -> None:
+        """Refresh the controller mask. Cheap when no pad is plugged in -- XInputPad
+        rate-limits the probe itself (querying an empty slot is slow)."""
+        self._pad_held = self._pad.poll() if self._pad_on else 0
+
+    def _joypad_byte(self) -> int:
+        """What the console should see on 0xB0 for THIS frame: keyboard and
+        controller merged, with the turbo-flagged buttons chopped into a press
+        train. Only the low 7 bits are joypad -- 0x80 is POWER."""
+        held = (self.held | self._pad_held) & 0x7F
+        if self._turbo_mask:
+            held = ngpc_input.apply_turbo(held, self._turbo_mask, self._frame, self._turbo_hz)
+        return held & 0x7F
+
     def _tick(self) -> None:
         if self.machine is None:
             return
+        self._poll_pad()
         if self._rewinding:                  # held rewind: run the game BACKWARD
             self._rw_accum += 1
             if self._rw_accum >= 4:          # ~60 fps reverse (the timer ticks ~4 ms)
@@ -2170,14 +2765,29 @@ class PlayPage(QWidget):
                 self._restart_audio()
             return
         self._stall_ticks = 0
-        self.machine.write(0x00B0, bytes([self.held & 0x7F]))
-        wrange = self.watches.write_range()      # break-on-write window, if any
+        # While the access probe owns the logs, watchpoints are suspended (see
+        # apply_debug) -- so do not try to match against a window it is not watching.
+        probing = self.access_probe is not None
+        wrange = None if probing else self.watches.write_range()
+        rrange = None if probing else self.watches.read_range()
         locked = self.watches.locked()
         ran = 0
         emu_t0 = time.perf_counter()
         for _ in range(due):
+            # ⚡ ONCE PER FRAME, not once per tick. This used to be written above the
+            # loop, so every frame of a multi-frame batch saw one frozen joypad state.
+            # That is invisible for a held button but fatal to autofire: the press
+            # train would come out at the tick rate (and at whatever the batch size
+            # happened to be) instead of the rate that was asked for.
+            self.machine.write(0x00B0, bytes([self._joypad_byte()]))
+            self._frame += 1
             if wrange is not None:               # fresh per-frame write capture
                 self.machine.set_write_log(wrange[0], wrange[1])
+            if rrange is not None:               # ...and read capture
+                self.machine.set_read_log(rrange[0], rrange[1])
+            if probing:                          # fresh window per frame for the viewer
+                self.machine.set_write_log(*self.access_probe)
+                self.machine.set_read_log(*self.access_probe)
             summ = self.machine.run_frames(1)
             # Console-side load. `executed` is the game's own work for this frame, and a
             # changed sprite table means the game completed a logic update -- a game that
@@ -2204,6 +2814,8 @@ class PlayPage(QWidget):
                     return                        # paused at a breakpoint whose guard held
             if wrange is not None and self._check_write_break():
                 return
+            if rrange is not None and self._check_read_break():
+                return
             if self.watches.has_value_breaks():
                 hit = self.watches.check(self.machine)
                 if hit:
@@ -2213,6 +2825,11 @@ class PlayPage(QWidget):
                     return
             for w in locked:                     # freeze: pin each locked value
                 self.machine.write(w.addr, w.lock_bytes())
+            for hook in self.frame_hooks:        # per-frame debug sampling, if subscribed
+                try:
+                    hook()
+                except Exception:
+                    pass                          # a debug tool must never kill the game
             if self._rewind_on:                  # frame-perfect rewind history
                 self._rewind.append(self._capture_state())
             if self._song is not None:           # per-frame note capture (.ngps export)
@@ -2354,9 +2971,12 @@ class Shell(QMainWindow):
                                self._nav_set, self._nav_dbg, self._ver]
 
         self._stack = QStackedWidget()
-        self.library = LibraryPage(self._settings)
+        # One shared play-history store: the library reads it to sort and the player
+        # writes it as you play, so returning from a game shows fresh counts.
+        self._library_db = lib.Library(LIBRARY_DB)
+        self.library = LibraryPage(self._settings, self._library_db)
         self.settings = SettingsPage(self._settings)
-        self.play = PlayPage(self._settings)
+        self.play = PlayPage(self._settings, self._library_db)
         self._stack.addWidget(self.library)
         self._stack.addWidget(self.settings)
         self._stack.addWidget(self.play)

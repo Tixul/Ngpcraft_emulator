@@ -1,4 +1,4 @@
-"""The `.flash` save file — NeoPop's format, because it is everyone's format.
+"""The `.flash` save file — the community's de-facto format, deliberately.
 
 The cartridge IS the save: a game erases a block of its own ROM and programs its
 slot back in. So "persisting the save" means persisting the bytes of the cart image
@@ -7,8 +7,8 @@ cartridge goes in.
 
 WHY NOT INVENT A FORMAT
 -----------------------
-NeoPop wrote one in 2002; Mednafen kept it byte-for-byte (same structs, same raw
-`memcpy` of the struct, padding included); RACE reads it too. A save is a thing a
+The format dates to 2002 and has been kept byte-for-byte since (same structs,
+same raw `memcpy` of the struct, padding included). A save is a thing a
 player wants to keep and to move between emulators, and there is no version of
 "our own cleaner format" that is worth being the one emulator whose saves nobody
 else can read.
@@ -31,7 +31,7 @@ THE LAYOUT (Core/flash.c)
 the 64 KiB the chip's own map uses. We therefore split long runs at 32 KiB. A save
 area is 8 or 16 KiB (the small blocks at the top of the chip exist precisely so a
 save does not cost 64 KiB), so this is a limit the format meets only when a game has
-rewritten a code block, and splitting is what NeoPop's own contiguous-merge would
+rewritten a code block, and splitting is what the format's contiguous-merge would
 have produced anyway.
 
 NOT PERSISTED: block protection. The format has nowhere to put it, no other emulator

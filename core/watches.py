@@ -24,6 +24,10 @@ FORMATS = ("hex", "u", "s")            # hex, unsigned decimal, signed decimal
 BREAK_NONE = ""
 BREAK_CHANGE = "change"
 BREAK_WRITE = "write"
+# "read" = break when ANY code READS the address, via the core read-log. The mirror
+# of "write", and the one that answers "does anything actually USE this value?" --
+# a question no amount of write-watching can settle.
+BREAK_READ = "read"
 OPS = {
     "=":  lambda v, x: v == x,
     "!=": lambda v, x: v != x,
@@ -32,7 +36,9 @@ OPS = {
     "<=": lambda v, x: v <= x,
     ">=": lambda v, x: v >= x,
 }
-BREAKS = (BREAK_NONE, BREAK_CHANGE, BREAK_WRITE, *OPS.keys())
+BREAKS = (BREAK_NONE, BREAK_CHANGE, BREAK_WRITE, BREAK_READ, *OPS.keys())
+# The two that are serviced by the core's access logs rather than by comparing values.
+ACCESS_BREAKS = (BREAK_WRITE, BREAK_READ)
 
 
 def _signed(raw: int, size: int) -> int:
@@ -114,24 +120,40 @@ class WatchSet:
         self.watches: list[Watch] = []
 
     def has_value_breaks(self) -> bool:
-        return any(w.brk and w.brk != BREAK_WRITE for w in self.watches)
+        return any(w.brk and w.brk not in ACCESS_BREAKS for w in self.watches)
 
     def write_watches(self) -> list["Watch"]:
         return [w for w in self.watches if w.brk == BREAK_WRITE]
 
+    def read_watches(self) -> list["Watch"]:
+        return [w for w in self.watches if w.brk == BREAK_READ]
+
+    @staticmethod
+    def _span(watches: list["Watch"]) -> tuple[int, int] | None:
+        if not watches:
+            return None
+        return (min(w.addr for w in watches),
+                max(w.addr + w.size - 1 for w in watches))
+
     def write_range(self) -> tuple[int, int] | None:
         """The [lo, hi] address window covering every 'write' break, or None. The play
         loop arms the core write-log over this range and matches exact addresses."""
-        ww = self.write_watches()
-        if not ww:
-            return None
-        lo = min(w.addr for w in ww)
-        hi = max(w.addr + w.size - 1 for w in ww)
-        return lo, hi
+        return self._span(self.write_watches())
+
+    def read_range(self) -> tuple[int, int] | None:
+        """Same, for 'read' breaks and the core read-log."""
+        return self._span(self.read_watches())
 
     def write_hit(self, addr: int):
         """The 'write' watch whose bytes cover `addr`, or None."""
         for w in self.write_watches():
+            if w.addr <= addr < w.addr + w.size:
+                return w
+        return None
+
+    def read_hit(self, addr: int):
+        """The 'read' watch whose bytes cover `addr`, or None."""
+        for w in self.read_watches():
             if w.addr <= addr < w.addr + w.size:
                 return w
         return None
@@ -141,7 +163,7 @@ class WatchSet:
 
     def check(self, m) -> str | None:
         """Evaluate every VALUE watch (so edge state stays fresh) and return the first
-        break reason. 'write' watches are handled separately, from the write-log."""
+        break reason. 'write'/'read' watches are handled separately, from the logs."""
         hit = None
         for w in self.watches:
             r = w.check(m)

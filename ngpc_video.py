@@ -6,8 +6,8 @@ shows, applying the user's chosen upscale, colour profile and screen filter
 (scanlines, LCD grid, CRT) in numpy so it stays cheap at 60 fps.
 
 Kept separate from the shell so the look can grow (and be unit-tested) without
-touching the emulation loop. Inspired by the filter menus in RetroArch, mGBA and
-Mesen: a small, curated set that actually suits a tiny handheld LCD.
+touching the emulation loop. Deliberately a small, curated set -- what actually
+suits a tiny handheld LCD, not every filter in existence.
 """
 
 from __future__ import annotations

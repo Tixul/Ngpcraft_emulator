@@ -862,11 +862,33 @@ bool exec_reg_family(Machine& m, ngpc_record_t* rec, uint8_t op, uint32_t pc,
     if (sub == 0x14) {                              // PAA r   -. 4. 4  (word and long)
         /* Pointer-adjust: "if r<0> = 1 then INC r" (Toshiba catalog) -- round an odd
          * pointer up to the next even (16-bit-aligned) address. No flags. Puyo Pop uses
-         * it after a copy loop; unported, it faulted the whole game. Cross-checked
-         * against NeoPop (regPAA) and ares (instructionPointerAdjustAccumulator). */
+         * it after a copy loop; unported, it faulted the whole game. */
         if (sz == 0) return false;                  // no byte form (-WL)
         WR((rv + (rv & 1u)) & mask);                // flags unchanged
         out_len = L(2); out_cycles = 4;
+        return true;
+    }
+    if (sub == 0x16) {                              // MIRR r   -. 3. -  (WORD ONLY)
+        /* Reverse the bit order of a 16-bit register. Straight from the Toshiba
+         * 900/L1 datasheet, which is unusually explicit about every part of it:
+         *
+         *     MIRR  -W-  MIRR r   D8 + r : 16   r<0:MSB> <- r<MSB:0>
+         *     flags - - - - - -   length 2   states  -. 3. -
+         *
+         * WORD ONLY: the size column reads `x W x`, so the byte and long forms do
+         * not exist and must be declined rather than guessed at. No flags change.
+         *
+         * The datasheet's own worked example is the test: MIRR HL with HL = 0x1234
+         * (0001001000110100) must leave 0x2C48 (0010110001001000).
+         *
+         * Found by the ROM analyzer: this was the ONE missing opcode in the whole
+         * 90-ROM corpus, and it stops Card Fighters Clash 2 Expand Edition dead at
+         * PC 20EF92 (`DA 16` = MIRR BC). */
+        if (sz != 1) return false;
+        uint32_t v = rv & 0xFFFFu, out = 0;
+        for (unsigned i = 0; i < 16; ++i) out = (out << 1) | ((v >> i) & 1u);
+        WR(out);                                    // flags unchanged
+        out_len = L(2); out_cycles = 3;
         return true;
     }
     if (sub >= 0x60 && sub <= 0x6F) {               // INC / DEC #3, r   (#3 == 0 means 8)
@@ -916,7 +938,7 @@ bool exec_reg_family(Machine& m, ngpc_record_t* rec, uint8_t op, uint32_t pc,
 
     /* LDC cr, r  (0x2E)  and  LDC r, cr  (0x2F).
      *   `C8 + zz + r : 2E : cr`, length 3, state **3. 3. 3**, no flags touched.
-     * (NeoPop bills 8 here; the datasheet says 3. The datasheet wins, as usual.)
+     * (A figure of 8 circulates for this; the datasheet says 3, and wins.)
      *
      * `ldc DMAC0, WA` -- `D8 2E 20` -- is the single biggest remaining blocker on
      * the real corpus: **19 of the 66 commercial ROMs** stop on it, because they
@@ -979,10 +1001,12 @@ bool exec_reg_family(Machine& m, ngpc_record_t* rec, uint8_t op, uint32_t pc,
      * test, and V is what we set. (An open hardware question, and a cheap one for
      * the calibration ROM to answer: run BS1F on 0 and print A.)
      *
-     * ⚠️ CYCLES ARE NOT SOURCED. The Toshiba instruction lists in `doc t_900` give
-     * no figure for these two. The only number available is NeoPop's 4 -- and this
-     * project has caught NeoPop's cycle counts being wrong on JR, CALR and MUL/DIV.
-     * 4 is a PLACEHOLDER. Replace it the day a Toshiba list turns up. */
+     * ⚠️ CYCLES ARE NOT SOURCED -- THE ONE REMAINING HOLE IN THIS FILE. The Toshiba
+     * instruction lists in `doc t_900` give no figure for BS1F/BS1B, so 4 is a
+     * PLACEHOLDER with nothing behind it. Do not treat it as measured. Two ways out,
+     * either of which retires this note: a Toshiba list that covers them, or a
+     * calibration ROM that times a BS1F loop against the raster on real silicon --
+     * the same method that settled the cart fetch wait-state. */
     if (sub == 0x0E || sub == 0x0F) {
         if (sz != 1) return false;                   // "× ż ×" -- word only
         const uint16_t src = uint16_t(rv);

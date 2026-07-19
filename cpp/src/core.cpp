@@ -237,8 +237,7 @@ NGPC_API void ngpc_reset(ngpc_t* h, int reset_mode) {
      * The hardware reads its reset vector out of the table at 0xFFFF00 (-> 0xFF204A in
      * the retail BIOS). But if the RAM marker says the console has booted before, it
      * goes to VECT_SHUTDOWN instead, so the BIOS can run the cleanup it would normally
-     * do when you swap cartridges. See machine.hpp, and note that ares lands on exactly
-     * the same rule from the other direction. */
+     * do when you swap cartridges. See machine.hpp. */
     if (reset_mode == kResetBiosBoot) {
         const bool been_here_before = m->mem[kBiosRamMarker] != 0;
         const uint32_t slot = been_here_before ? kVectShutdown : kHwResetVector;
@@ -444,10 +443,8 @@ static bool deliver_irq(ngpc::Machine& m) {
      * vector 0x10 with a destination of 0x8032. The level gates delivery TO THE CPU; the
      * DMA controller is a DIFFERENT CONSUMER and is not behind that gate.
      *
-     * The evidence is the GAME's own configuration, not an emulator's: if level 0 killed
-     * the DMA too, Puyo Pop's split could never have worked on the silicon it shipped on.
-     * (NeoPop's `TestIntHDMA` checks the DMA vectors first and tests no level anywhere --
-     * it agrees, but it is the corroboration, not the reason.)
+     * The evidence is the GAME's own configuration: if level 0 killed the DMA too, Puyo
+     * Pop's split could never have worked on the silicon it shipped on.
      *
      * Delivering such a request to the CPU instead sends it into a BIOS stub that jumps
      * through a user hook nobody installed, lands at address 0, hits the `swi 7` there,
@@ -490,6 +487,10 @@ static bool deliver_irq(ngpc::Machine& m) {
     c.iff_level = uint8_t(best_level + 1 > 7 ? 7 : best_level + 1);
     c.pc = m.read32(kIrqVectorTableBase + 4u * best_index);
     m.irq_pending &= ~(uint64_t(1) << best_index);
+    /* Log the delivery with its raster position. An interrupt is half of every raster
+     * effect -- seeing the register writes without the IRQ that triggered them shows
+     * the symptom and hides the cause. `addr` carries the vector index. */
+    if (m.elog_lo <= m.elog_hi) m.note_event(ngpc::Machine::kEventIrq, best_index, 0, c.pc);
     return true;
 }
 
@@ -540,8 +541,11 @@ NGPC_API int ngpc_run(ngpc_t* h, uint32_t max_instrs,
         ngpc_record_t* rec = want_record ? &out_records[s.emitted] : &scratch;
 
         const uint32_t pc_before = m->cpu.pc;
+        if (m->coverage_on) m->note_exec(pc_before);
+        const uint32_t sp_before = m->callstack_on ? m->cpu.regs[7] : 0u;
         m->fetch_window = pc_before;   // fetch bytes read in read8() get the cheap cart cost
         const uint8_t st = ngpc::step(*m, rec);
+        if (m->callstack_on) m->note_control_flow(pc_before, sp_before);
 
         if (st == NGPC_HALTED) {
             /* HALT is not a dead stop on real hardware: the CPU parks, the video
@@ -741,6 +745,166 @@ NGPC_API void ngpc_set_write_log(ngpc_t* h, uint32_t lo, uint32_t hi) {
 NGPC_API uint64_t ngpc_write_log_count(ngpc_t* h) {
     if (!h) return 0;
     return reinterpret_cast<Machine*>(h)->wlog_count;
+}
+
+NGPC_API void ngpc_set_coverage(ngpc_t* h, int enabled) {
+    if (!h) return;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    m->coverage_on = (enabled != 0);
+    m->coverage_hits = 0;
+    if (enabled) {
+        m->coverage.assign(Machine::kCovSpan / 8, 0);
+    } else {
+        m->coverage.clear();
+        m->coverage.shrink_to_fit();
+    }
+}
+
+NGPC_API uint32_t ngpc_coverage_hits(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->coverage_hits;
+}
+
+NGPC_API uint32_t ngpc_get_coverage(ngpc_t* h, uint8_t* out, uint32_t n) {
+    if (!h) return 0;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    const uint32_t have = uint32_t(m->coverage.size());
+    if (!out || n == 0) return have;             /* size query */
+    const uint32_t want = have < n ? have : n;
+    for (uint32_t i = 0; i < want; ++i) out[i] = m->coverage[i];
+    return want;
+}
+
+NGPC_API void ngpc_set_hygiene(ngpc_t* h, int enabled) {
+    if (!h) return;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    m->hygiene_on = (enabled != 0);
+    m->hygiene_reset();
+}
+
+NGPC_API uint64_t ngpc_uninit_reads(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->uninit_reads;
+}
+
+NGPC_API uint64_t ngpc_lost_writes(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->lost_writes;
+}
+
+static uint32_t copy_hygiene(const Machine::HygieneRec* src, uint32_t have,
+                             ngpc_hygiene_t* out, uint32_t n) {
+    const uint32_t want = have < n ? have : n;
+    for (uint32_t i = 0; i < want; ++i) {
+        out[i].pc = src[i].pc;
+        out[i].addr = src[i].addr;
+    }
+    return want;
+}
+
+NGPC_API uint32_t ngpc_get_uninit_reads(ngpc_t* h, ngpc_hygiene_t* out, uint32_t n) {
+    if (!h || !out || n == 0) return 0;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    return copy_hygiene(m->hyg_uninit, m->hyg_uninit_n, out, n);
+}
+
+NGPC_API uint32_t ngpc_get_lost_writes(ngpc_t* h, ngpc_hygiene_t* out, uint32_t n) {
+    if (!h || !out || n == 0) return 0;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    return copy_hygiene(m->hyg_lost, m->hyg_lost_n, out, n);
+}
+
+NGPC_API void ngpc_set_event_log(ngpc_t* h, uint32_t lo, uint32_t hi) {
+    if (!h) return;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    m->elog_lo = lo;
+    m->elog_hi = hi;
+    m->elog_count = 0;
+}
+
+NGPC_API uint64_t ngpc_event_log_count(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->elog_count;
+}
+
+NGPC_API uint32_t ngpc_get_event_log(ngpc_t* h, ngpc_event_t* out, uint32_t n) {
+    if (!h || !out || n == 0) return 0;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    const uint64_t total = m->elog_count;
+    const uint64_t held = total < Machine::kElogSize ? total : Machine::kElogSize;
+    const uint32_t want = uint32_t(held < n ? held : n);
+    const uint64_t first = total - want;
+    for (uint32_t i = 0; i < want; ++i) {
+        const Machine::EventRec& e = m->elog[(first + i) % Machine::kElogSize];
+        out[i].pc = e.pc;
+        out[i].addr = e.addr;
+        out[i].scanline = e.scanline;
+        out[i].cycle = e.cycle;
+        out[i].value = e.value;
+        out[i].type = e.type;
+    }
+    return want;
+}
+
+NGPC_API void ngpc_set_callstack(ngpc_t* h, int enabled) {
+    if (!h) return;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    m->callstack_on = (enabled != 0);
+    if (!enabled) { m->call_depth = 0; m->call_overflow = 0; }
+}
+
+NGPC_API uint32_t ngpc_callstack_depth(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->call_depth;
+}
+
+NGPC_API uint64_t ngpc_callstack_overflow(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->call_overflow;
+}
+
+NGPC_API uint32_t ngpc_get_callstack(ngpc_t* h, ngpc_frame_t* out, uint32_t n) {
+    if (!h || !out || n == 0) return 0;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    const uint32_t want = m->call_depth < n ? m->call_depth : n;
+    for (uint32_t i = 0; i < want; ++i) {
+        const Machine::Frame& f = m->callstack[i];
+        out[i].caller_pc = f.caller_pc;
+        out[i].entry_pc = f.entry_pc;
+        out[i].return_pc = f.return_pc;
+        out[i].entry_sp = f.entry_sp;
+    }
+    return want;
+}
+
+NGPC_API void ngpc_set_read_log(ngpc_t* h, uint32_t lo, uint32_t hi) {
+    if (!h) return;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    m->rlog_lo = lo;
+    m->rlog_hi = hi;
+    m->rlog_count = 0;
+}
+
+NGPC_API uint64_t ngpc_read_log_count(ngpc_t* h) {
+    if (!h) return 0;
+    return reinterpret_cast<Machine*>(h)->rlog_count;
+}
+
+NGPC_API uint32_t ngpc_get_read_log(ngpc_t* h, ngpc_read_t* out, uint32_t n) {
+    if (!h || !out || n == 0) return 0;
+    Machine* m = reinterpret_cast<Machine*>(h);
+    const uint64_t total = m->rlog_count;
+    const uint64_t held = total < Machine::kRlogSize ? total : Machine::kRlogSize;
+    const uint32_t want = uint32_t(held < n ? held : n);
+    /* The most recent `want`, oldest first. */
+    const uint64_t first = total - want;
+    for (uint32_t i = 0; i < want; ++i) {
+        const Machine::ReadRec& r = m->rlog[(first + i) % Machine::kRlogSize];
+        out[i].pc = r.pc;
+        out[i].addr = r.addr;
+        out[i].value = r.value;
+    }
+    return want;
 }
 
 NGPC_API uint32_t ngpc_get_write_log(ngpc_t* h, ngpc_write_t* out, uint32_t n) {

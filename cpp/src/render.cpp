@@ -136,10 +136,9 @@ void Machine::render_scanline(uint32_t line) {
      *    (4-6), and this core enforced that. But real games disagree: Ogre
      *    Battle Gaiden's intro writes a blue into 0x83E0[0], sets BGC = 0x00
      *    (D7=0), and expects a blue sky -- a black one would be a broken intro
-     *    on the silicon it shipped on. NeoPop's author hit the same wall and
-     *    left the note in the source: "Background colour Enabled? HACK: 01 AUG
-     *    2002 - Always on!", commenting out the very `(bgc & 0xC0) == 0x80`
-     *    check we had. So the backdrop is the palette entry, unconditionally;
+     *    on the silicon it shipped on. The game is the authority over the manual
+     *    here: the `(bgc & 0xC0) == 0x80` gate this core used to apply has to go.
+     *    So the backdrop is the palette entry, unconditionally;
      *    a game that wants black simply leaves 0x83E0[index] black (the empty-
      *    memory cold start still resolves to 0, i.e. black). The enable bits do
      *    not gate the colour. */
