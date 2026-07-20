@@ -33,14 +33,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: NgpCraftEmulator-windows
-            binary: dist/NgpCraftEmulator.exe
+            asset: NgpCraftEmulator-windows.zip
           - os: ubuntu-latest
-            artifact: NgpCraftEmulator-linux
-            binary: dist/NgpCraftEmulator
+            asset: NgpCraftEmulator-linux.tar.gz
           - os: macos-latest
-            artifact: NgpCraftEmulator-macos
-            binary: dist/NgpCraftEmulator.app
+            asset: NgpCraftEmulator-macos.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -99,14 +96,36 @@ jobs:
       - name: Package with PyInstaller
         run: pyinstaller --noconfirm --clean NgpCraftEmulator.spec
 
+      # One clean archive per OS, so a Release carries exactly three downloads.
+      # Each is made ON its own runner, which matters most for macOS: the build is
+      # a .app *bundle* (a directory), and `ditto` is Apple's tool that zips it
+      # while preserving the bundle layout and the executable bit -- a plain folder
+      # upload would explode into loose files and lose the +x, and the .app would
+      # not launch. Windows uses PowerShell's Compress-Archive; Linux uses tar,
+      # which keeps the binary's executable bit.
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/NgpCraftEmulator.exe -DestinationPath ${{ matrix.asset }}
+
+      - name: Archive (Linux)
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf ${{ matrix.asset }} NgpCraftEmulator
+
+      - name: Archive (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/NgpCraftEmulator.app ${{ matrix.asset }}
+
       - name: Upload the build
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.binary }}
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
           if-no-files-found: error
 
-  # On a tag, gather the three artefacts into one GitHub Release.
+  # On a tag, gather the three archives into one GitHub Release. `merge-multiple`
+  # drops them all straight into artifacts/ (no per-artifact subfolders), so the
+  # release attaches exactly the three files and nothing else.
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
@@ -115,8 +134,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: artifacts/*
           generate_release_notes: true
