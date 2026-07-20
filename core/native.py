@@ -82,7 +82,15 @@ STATUS_HALTED = 1
 STATUS_BREAKPOINT = 40
 STATUS_COUNT_REACHED = 41
 
-_DLL_NAME = "ngpc_core.dll"
+# The shared library's name follows the platform. CMake strips the `lib` prefix
+# (PROPERTIES PREFIX "", see cpp/CMakeLists.txt), so it is `ngpc_core.<ext>` on
+# every OS -- only the extension changes. Windows stays byte-for-byte what it was.
+if sys.platform == "win32":
+    _DLL_NAME = "ngpc_core.dll"
+elif sys.platform == "darwin":
+    _DLL_NAME = "ngpc_core.dylib"
+else:
+    _DLL_NAME = "ngpc_core.so"
 # Frozen (PyInstaller): the DLL is bundled at cpp/build/ under the extraction root
 # (sys._MEIPASS). From source it sits at <repo>/cpp/build/ next to this package.
 if getattr(sys, "frozen", False):

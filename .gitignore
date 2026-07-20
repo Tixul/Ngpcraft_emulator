@@ -24,7 +24,11 @@ system_ram.bin
 # standalone-exe build (PyInstaller): keep build_exe.bat, ignore everything it generates
 /build/
 /release/
+/dist/
+# Ignore auto-generated specs, but TRACK the maintained one -- CI builds from it,
+# so it must be in the repo (a fresh checkout has no other copy).
 *.spec
+!NgpCraftEmulator.spec
 
 # dev-internal docs (kept in the repo for convenience, never distributed)
 /DEVLOG.md

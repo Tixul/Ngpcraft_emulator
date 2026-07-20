@@ -27,10 +27,16 @@ add_library(ngpc_core SHARED ${NGPC_CORE_SOURCES})
 target_include_directories(ngpc_core PUBLIC include PRIVATE src)
 set_target_properties(ngpc_core PROPERTIES PREFIX "")   # ngpc_core.dll, not libngpc_core.dll
 
-# With MinGW/GCC, statically link the C++ runtime so the DLL has no external runtime
-# dependency (it is loaded by an MSVC-built CPython that knows nothing about MinGW).
-if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  # -static also pulls in libwinpthread statically (std::thread/mutex would otherwise
-  # leave a libwinpthread-1.dll dependency the MSVC CPython host cannot resolve).
-  target_link_options(ngpc_core PRIVATE -static-libgcc -static-libstdc++ -static)
+# Statically link the C++ runtime so the library carries no external runtime
+# dependency (it is loaded by a CPython that knows nothing about the compiler used
+# here). GCC/Clang on any OS accept the -static-lib* pair.
+if(MINGW OR CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_link_options(ngpc_core PRIVATE -static-libgcc -static-libstdc++)
+  # Fully-static (-static) is a Windows/MinGW-only need: it folds in libwinpthread
+  # so no libwinpthread-1.dll dependency is left for the MSVC CPython host to
+  # resolve. On Linux a fully-static shared lib fights glibc (dlopen, NSS) and on
+  # macOS it is unsupported outright -- so restrict it to Windows.
+  if(WIN32)
+    target_link_options(ngpc_core PRIVATE -static)
+  endif()
 endif()
