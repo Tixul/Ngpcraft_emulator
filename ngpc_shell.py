@@ -3,7 +3,8 @@
 A clean, PPSSPP-shaped shell over the FAST native core: a left rail (Library /
 Settings), a game LIBRARY of cover cards with live thumbnails, a categorized
 SETTINGS screen (General / Graphics / Audio / Controls), and a PLAY view with
-sound and configurable keys. One dark theme, one window, no debugger clutter.
+sound and configurable keys. One window, no debugger clutter, and a theme that
+follows Windows by default (see ngpc_theme.py).
 
     python ngpc_shell.py                 # open the library
     python ngpc_shell.py "<rom>.ngc"     # boot straight into a game
@@ -51,6 +52,9 @@ import ngpc_settings as cfg  # noqa: E402
 import ngpc_video  # noqa: E402
 import ngpc_library as lib  # noqa: E402
 import ngpc_input  # noqa: E402
+import ngpc_theme  # noqa: E402
+import ngpc_bindmap  # noqa: E402
+import ngpc_debug  # noqa: E402
 from ngpc_debug import DebugWindow  # noqa: E402
 
 # A 'no cartridge' image for the BIOS-alone boot: 64 KiB of erased flash (0xFF).
@@ -109,70 +113,12 @@ THUMB_VERSION = 3       # bump to invalidate the on-disk cache after a render ch
 THUMB_SAMPLE_FRAMES = (360, 600, 840, 1120, 1500, 1900)
 THUMB_GOOD_ENOUGH = 22   # distinct-colour score that ends the search early
 
-ACCENT = "#4aa3ff"
-STYLE = f"""
-* {{ color: #e7e9ee; font-family: 'Segoe UI', system-ui, sans-serif; }}
-QMainWindow, QWidget#page {{ background: #15171c; }}
-QWidget#rail {{ background: #101216; }}
-QLabel#appTitle {{ font-size: 18px; font-weight: 700; padding: 14px 12px; }}
-QLabel#pageTitle {{ font-size: 22px; font-weight: 700; }}
-QLabel#hint {{ color: #8b93a3; }}
-QPushButton#rail {{
-    text-align: left; padding: 11px 16px; border: none; border-radius: 8px;
-    font-size: 14px; background: transparent; color: #b8c0cf;
-}}
-QPushButton#rail:hover {{ background: #1c2028; color: #ffffff; }}
-QPushButton#rail:checked {{ background: {ACCENT}22; color: {ACCENT}; font-weight: 600; }}
-QPushButton#primary {{
-    background: {ACCENT}; color: #06121f; border: none; border-radius: 8px;
-    padding: 9px 18px; font-weight: 600;
-}}
-QPushButton#primary:hover {{ background: #6fb6ff; }}
-QPushButton#ghost {{
-    background: #21252e; border: 1px solid #2c313c; border-radius: 8px;
-    padding: 8px 16px;
-}}
-QPushButton#ghost:hover {{ border-color: {ACCENT}; }}
-QFrame#card {{ background: #1b1e25; border: 1px solid #262b34; border-radius: 12px; }}
-QFrame#card:hover {{ border-color: {ACCENT}; background: #20242d; }}
-QLabel#cardName {{ font-size: 12px; color: #cfd5e0; padding: 0 6px; }}
-QFrame#settingRow {{ background: #1b1e25; border-radius: 10px; }}
-QListWidget#cats {{ background: transparent; border: none; font-size: 14px; outline: 0; }}
-QListWidget#cats::item {{ padding: 10px 14px; border-radius: 8px; margin: 2px 6px; }}
-QListWidget#cats::item:selected {{ background: {ACCENT}22; color: {ACCENT}; }}
-QComboBox, QLineEdit, QSpinBox {{
-    background: #12141a; border: 1px solid #2c313c; border-radius: 7px; padding: 6px 8px;
-}}
-QComboBox:hover, QLineEdit:hover {{ border-color: {ACCENT}; }}
-QSlider::groove:horizontal {{ height: 6px; background: #2c313c; border-radius: 3px; }}
-QSlider::handle:horizontal {{ width: 16px; background: {ACCENT}; border-radius: 8px; margin: -6px 0; }}
-QCheckBox {{ spacing: 8px; }}
-QScrollArea {{ border: none; }}
-QLabel#lcd {{ background: #000000; border-radius: 6px; }}
-QLabel#overlay {{ font-size: 20px; font-weight: 700; }}
-QLabel#osd {{ color: #7CFC7C; font-weight: 700; font-family: "Consolas", monospace;
-  background: rgba(0,0,0,0.45); border-radius: 4px; padding: 2px 6px; }}
-QFrame#playbar {{ background: #14181f; border-top: 1px solid #262c36; }}
-QPushButton#barBtn {{ background: #1c222b; color: #cfd6e0; border: 1px solid #2c333e;
-  border-radius: 5px; padding: 4px 9px; font-size: 15px; }}
-QPushButton#barBtn:hover {{ background: #262d38; }}
-QPushButton#barBtn:checked {{ background: #2f6feb; color: #ffffff; border-color: #2f6feb; }}
-QLabel#barSpeed {{ color: #7CFC7C; font-weight: 700; font-family: "Consolas", monospace; }}
-QPushButton#barShow {{ background: rgba(20,24,31,0.85); color: #cfd6e0;
-  border: 1px solid #2c333e; border-top-left-radius: 5px; border-top-right-radius: 5px; }}
-QPushButton#railToggle {{ background: transparent; color: #7a8494; border: none;
-  font-size: 18px; font-weight: 700; }}
-QPushButton#railToggle:hover {{ color: #cfd6e0; }}
-QWidget#overlayMenu {{ background: rgba(10, 12, 16, 0.72); }}
-QFrame#menuPanel {{ background: #191d25; border: 1px solid #2c313c; border-radius: 14px; }}
-QLabel#menuTitle {{ font-size: 18px; font-weight: 700; color: #ffffff; }}
-QPushButton#menuItem {{
-    text-align: left; padding: 11px 16px; border: none; border-radius: 9px;
-    font-size: 15px; background: transparent; color: #cdd3de;
-}}
-QPushButton#menuItem:hover {{ background: #232833; color: #ffffff; }}
-QPushButton#menuItem[sel="true"] {{ background: {ACCENT}; color: #06121f; font-weight: 600; }}
-"""
+# The palette every widget paints with. A module global rather than a value
+# threaded through constructors: cards and stars are built deep inside layout
+# code that has no business carrying a theme argument, and the Shell owns the
+# only writer (`_apply_theme`). Read it at PAINT time, never cache a colour --
+# a colour captured at import is a colour that survives a theme change.
+PALETTE = ngpc_theme.DARK
 
 
 # ---------------------------------------------------------------- thumbnails
@@ -295,11 +241,12 @@ class _ArtLabel(QLabel):
     def _placeholder(self) -> None:
         self.setText("◼")
         self.setStyleSheet(
-            "background:#0c0e12; border-radius:8px; color:#2c313c;"
+            f"background:{PALETTE.bg_art}; border-radius:8px;"
+            f" color:{PALETTE.text_placeholder};"
             f" font-size:{max(16, self._h // 4)}px;")
 
     def set_image(self, img: QImage) -> None:
-        self.setStyleSheet("background:#0c0e12; border-radius:8px;")
+        self.setStyleSheet(f"background:{PALETTE.bg_art}; border-radius:8px;")
         self.setPixmap(QPixmap.fromImage(img).scaled(
             self._w, self._h, Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.FastTransformation))
@@ -319,8 +266,8 @@ class _FavStar(QPushButton):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet(
             "QPushButton#favStar { border: none; background: transparent; font-size: 15px;"
-            f" color: {'#ffcc55' if on else '#5a6270'}; }}"
-            "QPushButton#favStar:hover { color: #ffcc55; }")
+            f" color: {PALETTE.fav_on if on else PALETTE.fav_off}; }}"
+            f"QPushButton#favStar:hover {{ color: {PALETTE.fav_on}; }}")
 
 
 class _RomMenuMixin:
@@ -874,6 +821,7 @@ def _row(label_widget: QWidget, control: QWidget) -> QFrame:
 class SettingsPage(QWidget):
     changed = pyqtSignal()          # something the shell should re-apply
     language_changed = pyqtSignal()
+    theme_changed = pyqtSignal()
     resume_requested = pyqtSignal()
     scale_changed = pyqtSignal(int)  # window-size preset -> resize the window now
 
@@ -944,6 +892,16 @@ class SettingsPage(QWidget):
         self._lang.currentIndexChanged.connect(self._on_lang)
         self._lbl_lang = QLabel()
 
+        # Theme sits next to language because it is the same KIND of setting: it
+        # changes how the app presents itself, not how it emulates.
+        self._theme = QComboBox()
+        for tid, _key in ngpc_theme.THEMES:
+            self._theme.addItem("", tid)          # text filled by retranslate()
+        cur_theme = cfg.theme(self._settings)
+        self._theme.setCurrentIndex([t for t, _ in ngpc_theme.THEMES].index(cur_theme))
+        self._theme.currentIndexChanged.connect(self._on_theme)
+        self._lbl_theme = QLabel()
+
         self._shot_edit = QLineEdit(cfg.screenshot_dir(self._settings))
         self._shot_edit.setPlaceholderText(str(REPO / "screenshots"))
         self._shot_edit.editingFinished.connect(
@@ -982,6 +940,7 @@ class SettingsPage(QWidget):
 
         self._rows_general = [
             _row(self._lbl_lang, self._lang),
+            _row(self._lbl_theme, self._theme),
             _row(self._lbl_shots, shotw),
             _row(self._lbl_savemode, self._savemode),
             _row(self._lbl_flashsize, self._flashsize),
@@ -1155,30 +1114,20 @@ class SettingsPage(QWidget):
         self._ctrl_hint = QLabel(); self._ctrl_hint.setObjectName("hint")
         self._ctrl_hint.setWordWrap(True)
         v.addWidget(self._ctrl_hint)
-        self._keybtns: dict[str, cfg.KeyCaptureButton] = {}
-        for label, _mask in cfg.JOYPAD_BUTTONS:
-            code = int(self._settings.value(
-                f"input/{label}", cfg.DEFAULT_KEYS.get(label, 0), type=int))
-            btn = cfg.KeyCaptureButton(code)
-            btn.setObjectName("ghost"); btn.setFixedWidth(140)
-
-            # Persist on the button's `captured` signal, which fires AFTER the new key
-            # is set -- so the saved binding is the one the user just pressed.
-            def persist(new_code: int, lbl=label) -> None:
-                cfg.set_binding(self._settings, lbl, int(new_code))
-                self._settings.sync()      # flush to disk/registry so it survives a crash
-                self._refresh_conflicts()
-                self.changed.emit()
-            btn.captured.connect(persist)
-            self._keybtns[label] = btn
-            lab = QLabel(label)
-            v.addWidget(_row(lab, btn))
+        # The bindings live on a picture of the console rather than in a list: the
+        # field for "Left" sits next to the actual left of the d-pad. Same widgets,
+        # same settings keys -- only the arrangement carries the meaning now.
+        self._bindmap = ngpc_bindmap.BindMap(self._settings)
+        self._bindmap.changed.connect(self._refresh_conflicts)
+        self._bindmap.changed.connect(self.changed.emit)
+        self._keybtns = self._bindmap.buttons     # `_restore_keys` still drives these
+        v.addWidget(self._bindmap, 1)
 
         # In game the hotkeys are matched BEFORE the joypad bindings, so a button
         # bound to Esc/Tab/P/F5... is simply dead and nothing says why. Say why.
         self._conflict = QLabel(); self._conflict.setObjectName("hint")
         self._conflict.setWordWrap(True)
-        self._conflict.setStyleSheet("color:#ffb454;")
+        self._conflict.setStyleSheet(f"color:{PALETTE.warning};")
         v.addWidget(self._conflict)
 
         self._restore = QPushButton(); self._restore.setObjectName("ghost")
@@ -1283,13 +1232,13 @@ class SettingsPage(QWidget):
 
         self._hk_dupe = QLabel(); self._hk_dupe.setObjectName("hint")
         self._hk_dupe.setWordWrap(True)
-        self._hk_dupe.setStyleSheet("color:#ffb454;")
+        self._hk_dupe.setStyleSheet(f"color:{PALETTE.warning};")
         v.addWidget(self._hk_dupe)
         # The joypad-vs-hotkey clash is shown in BOTH panels: you can create it
         # from either side, and you should not have to guess which one to open.
         self._hk_conflict = QLabel(); self._hk_conflict.setObjectName("hint")
         self._hk_conflict.setWordWrap(True)
-        self._hk_conflict.setStyleSheet("color:#ffb454;")
+        self._hk_conflict.setStyleSheet(f"color:{PALETTE.warning};")
         v.addWidget(self._hk_conflict)
 
         self._hk_restore = QPushButton(); self._hk_restore.setObjectName("ghost")
@@ -1336,6 +1285,22 @@ class SettingsPage(QWidget):
         self.retranslate()
         self.language_changed.emit()
 
+    def _on_theme(self, _idx: int) -> None:
+        self._settings.setValue("general/theme", self._theme.currentData())
+        self.theme_changed.emit()       # the Shell repaints everything, us included
+
+    def restyle(self) -> None:
+        """Re-apply the inline colours the global stylesheet cannot reach.
+
+        Warning labels carry their own sheet (a stylesheet rule cannot express
+        "amber only when this text means trouble"), so a theme change has to
+        come back and rewrite them by hand."""
+        warn = f"color:{PALETTE.warning};"
+        for lab in (self._conflict, self._hk_dupe, self._hk_conflict):
+            if lab.styleSheet():        # only the ones currently showing a warning
+                lab.setStyleSheet(warn)
+        self._bindmap.update()          # leader lines are painted, not styled
+
     def retranslate(self) -> None:
         lang = cfg.language(self._settings)
         t = lambda k: cfg.tr(lang, k)
@@ -1350,6 +1315,9 @@ class SettingsPage(QWidget):
         for b in self._hkbtns.values():
             b._render()  # noqa: SLF001
         self._lbl_lang.setText(t("language")); self._lbl_bios.setText(t("bios"))
+        self._lbl_theme.setText(t("theme"))
+        for i, (_tid, key) in enumerate(ngpc_theme.THEMES):
+            self._theme.setItemText(i, t(key))
         self._lbl_realbios.setText(t("console_boot")); self._bios_browse.setText(t("browse"))
         self._lbl_shots.setText(t("screenshots")); self._shot_browse.setText(t("browse"))
         self._lbl_savemode.setText(t("save_mode"))
@@ -1382,8 +1350,7 @@ class SettingsPage(QWidget):
                 box.setItemText(i, t(key))
         self._lbl_aon.setText(t("audio_on")); self._lbl_vol.setText(t("volume"))
         self._ctrl_hint.setText(t("controls_hint")); self._restore.setText(t("restore"))
-        for b in self._keybtns.values():
-            b._render()  # noqa: SLF001
+        self._bindmap.retranslate()
         # turbo + controller
         self._turbo_hint.setText(t("turbo_hint"))
         for label, lab in self._turbo_labels.items():
@@ -2931,7 +2898,7 @@ class Shell(QMainWindow):
             self.restoreGeometry(geo)
         else:
             self.resize(980, 660)
-        self.setStyleSheet(STYLE)
+        self._apply_theme()
 
         central = QWidget(); central.setObjectName("page")
         root = QHBoxLayout(central); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
@@ -2991,8 +2958,17 @@ class Shell(QMainWindow):
         self.settings.changed.connect(self._on_settings_changed)
         self.settings.scale_changed.connect(self.play.set_window_scale)
         self.settings.language_changed.connect(self._retranslate)
+        self.settings.theme_changed.connect(self._restyle)
         self.settings.resume_requested.connect(lambda: self._go(2))
         self._debug_win = None
+
+        # Follow the OS live: on "system", flipping Windows to light repaints the
+        # app immediately rather than at the next launch. Qt 6.5+; harmless if the
+        # platform never emits it.
+        try:
+            QApplication.styleHints().colorSchemeChanged.connect(self._on_system_theme)
+        except (AttributeError, RuntimeError):
+            pass
 
         self._retranslate()
         self._go(0)
@@ -3008,6 +2984,41 @@ class Shell(QMainWindow):
             wdg.setVisible(show)
         self._rail_toggle.setText("‹" if show else "☰")
         self._settings.setValue("win/rail_collapsed", not show)
+
+    def _apply_theme(self) -> None:
+        """Resolve the chosen theme and hand it to every painter.
+
+        Sets the module global FIRST, then the stylesheet: widgets rebuilt during
+        the restyle below read `PALETTE` as they are constructed, so a stale
+        global would build the new UI in the old theme's colours."""
+        global PALETTE
+        PALETTE = ngpc_theme.resolve(cfg.theme(self._settings))
+        ngpc_theme.set_current(PALETTE)     # for widgets that PAINT (the key map)
+        # The debugger keeps its own module-level brushes; point them here too, so
+        # a debug window opened LATER is already in the right theme.
+        ngpc_debug.use_palette(PALETTE)
+        app = QApplication.instance()
+        if app is not None:
+            ngpc_theme.apply_app_palette(app, PALETTE)
+        self.setStyleSheet(ngpc_theme.build_style(PALETTE))
+
+    def _restyle(self) -> None:
+        """Repaint the whole app for the current theme, live.
+
+        Structural twin of `_retranslate`: the stylesheet covers most widgets,
+        then each page fixes up what it drew by hand. The library is REBUILT
+        rather than restyled -- every card holds a cover thumbnail on a themed
+        backdrop, and rebuilding reuses the cached images anyway."""
+        self._apply_theme()
+        self.settings.restyle()
+        self.library._rebuild()        # noqa: SLF001 -- cards bake in palette colours
+        if self._debug_win is not None:
+            self._debug_win.restyle(PALETTE)
+
+    def _on_system_theme(self, _scheme) -> None:
+        """Windows switched light/dark. Only our fault if we said we'd follow."""
+        if cfg.theme(self._settings) == ngpc_theme.THEME_SYSTEM:
+            self._restyle()
 
     def _retranslate(self) -> None:
         lang = cfg.language(self._settings)

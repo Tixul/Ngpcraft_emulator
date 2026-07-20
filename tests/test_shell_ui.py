@@ -9,6 +9,7 @@ round-trip, which is what the front-end contract is.
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
 
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import ngpc_settings as cfg  # noqa: E402
 import ngpc_shell as shell  # noqa: E402
+import ngpc_theme as th  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -74,6 +76,96 @@ def test_language_switch_retranslates_the_rail(app):
         w._retranslate()
         assert "Bibliothèque" in w._nav_lib.text()
         assert "Réglages" in w._nav_set.text()
+    finally:
+        w.close()
+
+
+def test_theme_switch_restyles_the_window(app):
+    w = shell.Shell()
+    try:
+        s = cfg.make_settings()
+        s.setValue("general/theme", th.THEME_LIGHT)
+        w._restyle()
+        assert shell.PALETTE is th.LIGHT
+        assert th.LIGHT.bg_window in w.styleSheet()
+        s.setValue("general/theme", th.THEME_DARK)
+        w._restyle()
+        assert shell.PALETTE is th.DARK
+        assert th.DARK.bg_window in w.styleSheet()
+    finally:
+        w.close()
+
+
+def test_no_widget_falls_through_to_the_os_palette(app):
+    """The bug this theming exists to kill.
+
+    Every widget class the app instantiates must get a background from OUR
+    stylesheet. One that does not gets the OS's colours while `*` still forces
+    our text colour onto it -- which is invisible when the user's Windows theme
+    runs opposite to the app's, and which looks perfectly fine to a developer
+    whose OS theme happens to match. Only a test catches that."""
+    for palette in (th.DARK, th.LIGHT):
+        css = th.build_style(palette)
+        for widget in ("QTableWidget", "QPlainTextEdit", "QTabWidget::pane",
+                       "QMenu", "QToolTip", "QDialog",
+                       "QComboBox QAbstractItemView"):
+            assert widget in css, f"{widget} has no rule: it will use OS colours"
+
+
+def test_every_palette_colour_actually_parses(app):
+    """Qt accepts no 8-digit #RRGGBBAA: it parsed "#4aa3ff22" as #a3ff22 and
+    painted the selected rail item lime green for the whole life of the code,
+    with no warning. An unparseable colour must fail here, not on screen."""
+    from PyQt6.QtGui import QColor
+
+    for palette in (th.DARK, th.LIGHT):
+        for field in palette.__dataclass_fields__:
+            value = getattr(palette, field)
+            if not isinstance(value, str) or not value.startswith("#"):
+                continue
+            c = QColor()
+            c.setNamedColor(value)
+            assert c.isValid() and c.name() == value.lower(), (
+                f"{field}={value!r} does not round-trip: Qt reads it as {c.name()}")
+
+
+def test_light_theme_never_reuses_a_dark_colour(app):
+    """A light theme built by copy-paste keeps a few dark values by accident, and
+    each one is an unreadable patch. Nothing may be shared but the fixed
+    console-screen colours, which are deliberately theme-independent."""
+    shared = {f.name for f in th.DARK.__dataclass_fields__.values()
+              if getattr(th.DARK, f.name) == getattr(th.LIGHT, f.name)}
+    assert shared == set(), f"light theme still carries dark values: {shared}"
+
+
+def test_console_art_loads_and_is_declared_to_pyinstaller(app):
+    """The key map is a picture; without it the panel is fields floating in space.
+
+    Two ways that breaks, both silent: the file goes missing, or it exists in the
+    repo but is absent from the .spec -- PyInstaller follows imports, not file
+    reads, so an asset opened by path is invisible to it and never reaches the
+    .exe. The packaged app would show an empty console and no error."""
+    import ngpc_bindmap
+
+    assert ngpc_bindmap.ART.is_file(), f"missing console art: {ngpc_bindmap.ART}"
+    from PyQt6.QtGui import QPixmap
+    assert not QPixmap(str(ngpc_bindmap.ART)).isNull(), "console art will not decode"
+
+    spec = (pathlib.Path(__file__).resolve().parent.parent / "NgpCraftEmulator.spec")
+    assert ngpc_bindmap.ART.name in spec.read_text(encoding="utf-8"), (
+        f"{ngpc_bindmap.ART.name} is not in the .spec datas: it will be missing "
+        "from the built .exe even though the tests pass from source")
+
+
+def test_bind_map_covers_every_joypad_button(app):
+    """Every bindable button needs a field, or a binding becomes unreachable from
+    the UI. POWER is deliberately absent: only 7 joypad bits exist (0x80 is POWER
+    and the core drives it), so a POWER field would be a dead control."""
+    w = shell.Shell()
+    try:
+        fields = set(w.settings._bindmap.buttons)
+        assert fields == {lbl for lbl, _mask in cfg.JOYPAD_BUTTONS}
+        assert "Power" not in fields
     finally:
         w.close()
 

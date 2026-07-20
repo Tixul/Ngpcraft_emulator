@@ -243,6 +243,14 @@ def language(s: QSettings) -> str:
     return lang if lang in dict(LANGUAGES) else "en"
 
 
+def theme(s: QSettings) -> str:
+    """Which UI theme to paint. Defaults to following the OS, so a fresh install
+    matches the desktop the user already chose rather than imposing one."""
+    import ngpc_theme as th
+    val = s.value("general/theme", th.THEME_SYSTEM, type=str)
+    return val if val in dict(th.THEMES) else th.THEME_SYSTEM
+
+
 def key_bindings(s: QSettings) -> dict[int, int]:
     """{Qt key code -> joypad mask}, from settings or defaults."""
     out: dict[int, int] = {}
@@ -472,6 +480,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "coin_cell_empty": "Nothing to reset: this console has no saved settings yet.",
         "coin_cell_busy": "Quit the game first — the console is running.",
         "language": "Language", "real_bios": "Boot the real BIOS at power-on",
+        "theme": "Theme", "theme_system": "Follow Windows",
+        "theme_dark": "Dark", "theme_light": "Light",
+        "btn_power": "POWER", "btn_up": "UP", "btn_down": "DOWN",
+        "btn_left": "LEFT", "btn_right": "RIGHT",
+        "btn_option": "OPTION", "btn_a": "A", "btn_b": "B",
+        "press_key": "press a key…",
+        "power_managed": "handled by the console",
         "lcd_scale": "Window scale", "smoothing": "Smooth scaling", "scanlines":
         "Scanline overlay", "audio_on": "Enable audio", "volume": "Volume",
         "controls_hint": "Click a button, then press the key to bind it.",
@@ -560,6 +575,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "cat_bios": "Console (BIOS)",
         "cat_controls": "Commandes", "rom_folder": "Dossier des ROMs",
         "bios": "Image BIOS", "language": "Langue",
+        "theme": "Thème", "theme_system": "Suivre Windows",
+        "theme_dark": "Sombre", "theme_light": "Clair",
+        "btn_power": "POWER", "btn_up": "HAUT", "btn_down": "BAS",
+        "btn_left": "GAUCHE", "btn_right": "DROITE",
+        "btn_option": "OPTION", "btn_a": "A", "btn_b": "B",
+        "press_key": "appuyez sur une touche…",
+        "power_managed": "géré par la console",
         # -- l'horloge et la pile bouton de la console
         "clock_mode": "Horloge quand l'émulateur est fermé",
         "clk_hardware": "Continue de tourner (comme le vrai matériel)",

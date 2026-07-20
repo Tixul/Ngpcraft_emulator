@@ -40,6 +40,7 @@ from core.ramsearch import RamSearch
 from core.symbols import SymbolTable, load_map
 from core.vgm_export import VgmRecorder
 from core.ngps_export import NgpsRecorder
+import ngpc_theme
 
 _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
@@ -78,8 +79,11 @@ USE_SCR1, USE_SCR2, USE_SPRITE = 1, 2, 4
 # Colour per usage. "Shared" is deliberately loud: a tile pulled by both a plane and a
 # sprite is usually a range that was loaded over another one, which is a real and
 # hard-to-see bug when it happens by accident.
+# The three consumer colours are theme-independent -- they are DATA labels, and a
+# blue plane stays blue in either theme. "Free space" is the exception: it is a
+# neutral, so it has to follow the background or every unused tile reads as full.
 USAGE_COLOURS = {
-    0: (38, 38, 42),                      # nobody -- free space
+    0: ngpc_theme.DARK.usage_free,        # nobody -- free space (themed)
     USE_SCR1: (59, 130, 246),             # plane 1
     USE_SCR2: (34, 168, 83),              # plane 2
     USE_SPRITE: (245, 158, 11),           # sprites
@@ -120,13 +124,24 @@ _CALL_MNEMONICS = frozenset({"call", "calr", "swi"})
 
 # Row tint for the instruction the PC is on, and the "leave it alone" brush for
 # every other row (a default-constructed QBrush clears any previous highlight).
-_PC_ROW_BG = QBrush(QColor(46, 62, 88))
+# Memory-viewer access tint follows the usual convention: blue was read, red was
+# written. All of these are REBOUND by `use_palette` -- they are module globals
+# read at call time, so rebinding reaches every table without touching the rows.
+PALETTE = ngpc_theme.DARK
+_PC_ROW_BG = ngpc_theme.brush(PALETTE.dbg_pc_row)
 _NO_BRUSH = QBrush()
+_READ_BG = ngpc_theme.brush(PALETTE.dbg_read)
+_WRITE_BG = ngpc_theme.brush(PALETTE.dbg_write)
 
-# Memory-viewer access tint, following the usual convention: blue was read,
-# red was written.
-_READ_BG = QBrush(QColor(30, 58, 95))
-_WRITE_BG = QBrush(QColor(96, 40, 44))
+
+def use_palette(p) -> None:
+    """Point this module's colours at a new theme. Call before repainting."""
+    global PALETTE, _PC_ROW_BG, _READ_BG, _WRITE_BG
+    PALETTE = p
+    _PC_ROW_BG = ngpc_theme.brush(p.dbg_pc_row)
+    _READ_BG = ngpc_theme.brush(p.dbg_read)
+    _WRITE_BG = ngpc_theme.brush(p.dbg_write)
+    USAGE_COLOURS[0] = p.usage_free
 # How many sampled frames a byte stays lit after being touched. At 60 fps this is
 # about a second -- long enough to see a one-off access, short enough that a busy
 # region does not just stay solid.
@@ -279,6 +294,34 @@ def _pixmap(arr: np.ndarray, scale: int) -> QPixmap:
 
 
 class DebugWindow(QMainWindow):
+    def restyle(self, palette) -> None:
+        """Repaint for a new theme.
+
+        The window chrome needs no work -- this is a child of the Shell, so Qt
+        pushes the Shell's stylesheet down the hierarchy for free. What is left
+        is everything QSS cannot express: the table-row BRUSHES, the legend
+        swatches (a colour that IS data, not decoration), and the tile atlas,
+        which paints its 'free space' frames into a numpy image and so has to be
+        re-rendered rather than restyled."""
+        use_palette(palette)
+        self._scope.setStyleSheet(f"background:{PALETTE.bg_scope};")
+        # Conditional colours: only repaint the ones currently saying something,
+        # so a cleared field stays cleared instead of turning permanently red.
+        for lab, token in ((self._dis_goto, PALETTE.error),
+                           (self._mem_addr, PALETTE.error),
+                           (self._rs_value, PALETTE.error),
+                           (self._break_err, PALETTE.warning)):
+            if lab.styleSheet():
+                lab.setStyleSheet(f"color:{token}")
+        for flag, cb in self._tile_show.items():
+            cb.setStyleSheet(f"color: rgb{USAGE_COLOURS[flag]};")
+        self._tile_shared.setStyleSheet(f"color: rgb{USAGE_SHARED};")
+        for name, _base, _rows, flag in self.PAL_BLOCKS:
+            self._pal_show[name].setStyleSheet(f"color: rgb{USAGE_COLOURS[flag]};")
+            self._pal_widgets[name][0].setStyleSheet(
+                f"color: rgb{USAGE_COLOURS[flag]}; font-weight: bold;")
+        self.refresh()          # re-renders the tile/palette atlases
+
     def __init__(self, parent, settings) -> None:
         super().__init__(parent)
         self.setWindowTitle("NgpCraft — Debug")
@@ -741,7 +784,7 @@ class DebugWindow(QMainWindow):
     def _dis_do_goto(self) -> None:
         addr = self._resolve_addr(self._dis_goto.text())
         if addr is None:
-            self._dis_goto.setStyleSheet("color:#e06c75")
+            self._dis_goto.setStyleSheet(f"color:{PALETTE.error}")
             return
         self._dis_goto.setStyleSheet("")
         self._dis_follow.setChecked(False)     # going somewhere means stop following
@@ -1341,7 +1384,7 @@ class DebugWindow(QMainWindow):
             return (self._mem_base, b"")
         addr = self._resolve_addr(self._mem_addr.text())
         if addr is None:
-            self._mem_addr.setStyleSheet("color:#e06c75")
+            self._mem_addr.setStyleSheet(f"color:{PALETTE.error}")
             return (self._mem_base, m.read(self._mem_base, 16 * self._mem_rows.value()))
         self._mem_addr.setStyleSheet("")
         base = addr & 0xFFFFF0
@@ -1585,7 +1628,7 @@ class DebugWindow(QMainWindow):
         # Now it is checked as you type and named.
         self._break_err = QLabel(""); self._break_err.setObjectName("hint")
         self._break_err.setWordWrap(True)
-        self._break_err.setStyleSheet("color:#ffb454;")
+        self._break_err.setStyleSheet(f"color:{PALETTE.warning};")
         lay.addWidget(self._break_err)
         bar = QHBoxLayout()
         add = QPushButton("＋ Add"); add.setObjectName("ghost"); add.clicked.connect(self._break_add)
@@ -1827,7 +1870,7 @@ class DebugWindow(QMainWindow):
             try:
                 operand = int(self._rs_value.text(), 0)
             except ValueError:
-                self._rs_value.setStyleSheet("color:#e06c75"); return
+                self._rs_value.setStyleSheet(f"color:{PALETTE.error}"); return
             self._rs_value.setStyleSheet("")
         n = self._ram.refine(m, op, operand)
         self._rs_count.setText(f"{n} candidates")
@@ -1963,7 +2006,7 @@ class DebugWindow(QMainWindow):
         lay.addWidget(t)
 
         self._scope = QLabel(); self._scope.setFixedHeight(84)
-        self._scope.setStyleSheet("background:#111;")
+        self._scope.setStyleSheet(f"background:{PALETTE.bg_scope};")
         lay.addWidget(self._scope)
 
         self._z80_lbl = QLabel("—"); self._z80_lbl.setObjectName("hint")
@@ -2197,7 +2240,7 @@ class DebugWindow(QMainWindow):
             cb.setStyleSheet(f"color: rgb{colour};")
             who.addWidget(cb)
             self._tile_show[flag] = cb
-        shared = QLabel("■ shared")
+        shared = self._tile_shared = QLabel("■ shared")
         shared.setStyleSheet(f"color: rgb{USAGE_SHARED};")
         shared.setToolTip("Referenced by more than one consumer — often a tile range that "
                           "was loaded over another one.")
