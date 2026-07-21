@@ -1071,6 +1071,12 @@ class SettingsPage(QWidget):
         self._aspectbox = self._combo("gfx/aspect", self._aspect_items,
                                       cfg.aspect_mode(self._settings))
 
+        self._mono_items = [(cfg.MONO_K2GE, "mono_k2ge"), (cfg.MONO_K1GE, "mono_k1ge")]
+        self._monobox = self._combo("gfx/mono_mode", self._mono_items,
+                                    cfg.mono_mode(self._settings))
+        self._mono_hint = QLabel(); self._mono_hint.setObjectName("hint")
+        self._mono_hint.setWordWrap(True)
+
         self._smooth = QCheckBox(); self._smooth.setChecked(cfg.smoothing(self._settings))
         self._smooth.toggled.connect(
             lambda b: (self._settings.setValue("gfx/smoothing", b), self.changed.emit()))
@@ -1083,8 +1089,9 @@ class SettingsPage(QWidget):
 
         self._lbl_scale = QLabel(); self._lbl_filter = QLabel(); self._lbl_color = QLabel()
         self._lbl_aspect = QLabel(); self._lbl_smooth = QLabel(); self._lbl_fs = QLabel()
-        self._lbl_showfps = QLabel()
+        self._lbl_showfps = QLabel(); self._lbl_mono = QLabel()
         for r in (_row(self._lbl_scale, self._scale),
+                  _row(self._lbl_mono, self._monobox),
                   _row(self._lbl_filter, self._filter),
                   _row(self._lbl_color, self._colorbox),
                   _row(self._lbl_aspect, self._aspectbox),
@@ -1092,6 +1099,7 @@ class SettingsPage(QWidget):
                   _row(self._lbl_showfps, self._showfps),
                   _row(self._lbl_fs, self._fs)):
             v.addWidget(r)
+        v.addWidget(self._mono_hint)
         return w
 
     # -- Audio
@@ -1344,8 +1352,10 @@ class SettingsPage(QWidget):
         self._lbl_filter.setText(t("filter")); self._lbl_color.setText(t("color_profile"))
         self._lbl_aspect.setText(t("aspect")); self._lbl_fs.setText(t("fullscreen"))
         self._lbl_showfps.setText(t("show_fps"))
+        self._lbl_mono.setText(t("mono_mode")); self._mono_hint.setText(t("mono_mode_hint"))
         for box, items in ((self._filter, self._filter_items),
                            (self._colorbox, self._color_items),
+                           (self._monobox, self._mono_items),
                            (self._aspectbox, self._aspect_items)):
             for i, (_val, key) in enumerate(items):
                 box.setItemText(i, t(key))
@@ -1646,7 +1656,8 @@ class PlayPage(QWidget):
             rom, bios_path=self._bios_path(), real_bios=self._real_bios,
             save_to_rom=mode in (cfg.SAVE_ROM, cfg.SAVE_BOTH),
             sidecar=mode in (cfg.SAVE_SIDECAR, cfg.SAVE_BOTH),
-            flash_size=cap, clock_mode=cfg.clock_mode(self._settings))
+            flash_size=cap, clock_mode=cfg.clock_mode(self._settings),
+            k1ge_console=cfg.mono_mode(self._settings) == cfg.MONO_K1GE)
         self.machine = self.session.machine
         # Silicon-calibrated cart-flash wait-states so self-timed games run at their
         # real 30fps instead of ~2x too fast. See cfg.cart_wait_states / project memo.

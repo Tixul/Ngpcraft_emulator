@@ -130,6 +130,12 @@ void store(Machine& m, ngpc_record_t* rec, uint32_t addr, uint32_t value, uint8_
     if (writable)
         for (uint8_t i = 0; i < size; ++i) {
             const uint32_t a = (addr + i) & kAddrMask;
+            /* On the ORIGINAL mono NGP there is no 12-bit colour table: 0x8380..0x83DF
+             * is K2GE silicon the cartridge cannot reach. Emulating that console means
+             * its writes there go nowhere, which leaves the BIOS grey ramp standing --
+             * the difference between "a mono game on an NGPC" and "a mono game on an
+             * NGP". Both are real machines; the setting picks one. */
+            if (m.k1ge_console && a >= 0x008380 && a <= 0x0083DF) { m.note_lost_write(a); continue; }
             m.mem[a] = bytes[i];
             /* VRAM-write wait (see Machine::vram_wait): the K2GE throttles CPU access to
              * display RAM DURING THE ACTIVE DRAWING PERIOD only -- in vblank the bus is

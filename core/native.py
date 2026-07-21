@@ -364,6 +364,8 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_set_cart_wait.restype = None
     lib.ngpc_set_cart_data_wait.argtypes = [c_void_p, c_uint32]
     lib.ngpc_set_cart_data_wait.restype = None
+    lib.ngpc_set_k1ge_console.argtypes = [c_void_p, c_int]
+    lib.ngpc_set_k1ge_console.restype = None
     lib.ngpc_set_vram_wait.argtypes = [c_void_p, c_uint32]
     lib.ngpc_set_vram_wait.restype = None
     lib.ngpc_set_ldir_cost.argtypes = [c_void_p, c_uint32]
@@ -506,6 +508,16 @@ class NativeMachine:
         30fps reproduces on top of the fetch cost. See Machine::cart_data_wait.
         """
         self._lib.ngpc_set_cart_data_wait(self._h, int(cycles_per_byte))
+
+    def set_k1ge_console(self, on: bool) -> None:
+        """Emulate the ORIGINAL mono NGP instead of the NGPC, for a mono cartridge.
+
+        The NGPC reports itself at 0x6F91 and a colour-aware mono game (Samurai
+        Shodown) then runs its colourisation code and paints the 12-bit compat
+        palette. An original NGP has neither, so the game stays monochrome and the
+        BIOS grey ramp stands. Must be set BEFORE reset. See Machine::k1ge_console.
+        """
+        self._lib.ngpc_set_k1ge_console(self._h, 1 if on else 0)
 
     def set_vram_wait(self, cycles_per_byte: int) -> None:
         """EXPERIMENTAL wait-states per byte written to display RAM (0x8000-0xBFFF).

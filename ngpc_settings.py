@@ -158,6 +158,21 @@ def flash_capacity_bytes(s: QSettings, rom_bytes: int) -> int:
     return rom_bytes
 
 
+# How a MONOCHROME (NGP) cartridge is run. The NGPC tells a cartridge it is a colour
+# console (0x6F91) and a colour-aware mono game -- Samurai Shodown -- then paints its own
+# palette: green bamboo, characters near their canonical colours. An original NGP has
+# neither, so the same cartridge stays in eight greys. Both are real machines.
+MONO_K2GE, MONO_K1GE = "k2ge", "k1ge"
+MONO_MODES = (MONO_K2GE, MONO_K1GE)
+
+
+def mono_mode(s: QSettings) -> str:
+    """Which console a black-and-white NGP cartridge runs on. Defaults to the NGPC
+    (colourised), which is the hardware this emulator is."""
+    m = str(s.value("gfx/mono_mode", MONO_K2GE, type=str))
+    return m if m in MONO_MODES else MONO_K2GE
+
+
 REWIND_CHOICES = (0, 10, 20, 30)          # seconds of history the UI offers
 
 

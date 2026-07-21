@@ -232,6 +232,7 @@ class NativeSession:
         flash_size: int = 0,
         real_bios: bool = False,
         clock_mode: str = CLOCK_HARDWARE,
+        k1ge_console: bool = False,
     ):
         if not native.available():
             raise RuntimeError(
@@ -252,6 +253,9 @@ class NativeSession:
         # The console's 12 KiB of RAM is kept alive by a coin cell -- that is where the
         # BIOS remembers your language and the date -- so it is handed over BEFORE the
         # reset, which consults the marker inside it to tell a first boot from a resume.
+        # Which machine a monochrome cartridge thinks it is in. Set BEFORE either reset
+        # path below, because the reset is what stamps 0x6F91.
+        self.machine.set_k1ge_console(k1ge_console)
         self.real_bios = real_bios and bios is not None
         self.ram_path = SYSTEM_RAM_PATH
         self._power_pressed = False

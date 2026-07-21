@@ -181,8 +181,29 @@ void Machine::reset_memory() {
      * these, carts diverge at instruction ~1 (Neo Turf reads 0x6F84). */
     mem[0x006F80] = 0xFF;  /* ADC/contrast reading, 0x03FF full-scale (low)  */
     mem[0x006F81] = 0x03;  /*                                        (high)  */
-    mem[0x006F84] = 0x40;  /* BIOS system status byte                        */
-    mem[0x006F87] = 0x01;  /* BIOS system status byte                        */
+    mem[0x006F83] = 0x10;
+    mem[0x006F86] = 0x40;
+    /* ⚡ 0x6F91 IS HOW A CARTRIDGE KNOWS IT IS ON A COLOUR CONSOLE.
+     *
+     * Read off a REAL BIOS boot (real_bios=true, 700 frames) and diffed against what
+     * this hand-off used to leave. We were seeding 0x40/0x01 at 0x6F84/0x6F87; the
+     * BIOS actually puts them at 0x6F83/0x6F86 and -- the part that matters -- fills
+     * 0x6F91 = 0x10 and 0x6F92 = 0x03, which we left at ZERO.
+     *
+     * A colour-aware mono cartridge tests that byte (Cool Boarders does it literally:
+     * `cp (0x6F91), 0x10`). With zero there, Samurai Shodown decides it is running on
+     * a plain mono NGP and never runs its colourisation code: measured, it wrote SIXTEEN
+     * bytes of palette in 1200 frames and nothing at all to the K2GE blocks, so its
+     * fighter stayed a two-tone silhouette. On the user's real NGPC the same cartridge
+     * comes up partly COLOURED -- green bamboo, characters near their canonical
+     * colours -- which is the game's own data, not a BIOS theme.
+     *
+     * So this is not decoration: it is the flag that selects the cartridge's colour
+     * path, and leaving it zero silently downgraded every colour-aware mono game. */
+    if (!k1ge_console) {
+        mem[0x006F91] = 0x10;
+        mem[0x006F92] = 0x03;
+    }
 
     /* K2GE power-on values (NGPC_HW_QUICKREF.md §5).
      * 0x8000 = 0xC0 is load-bearing: VBlank+HBlank interrupts are ENABLED at

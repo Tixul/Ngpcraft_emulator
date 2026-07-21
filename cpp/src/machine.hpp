@@ -678,6 +678,14 @@ struct Machine {
      * per-frame ldir into char RAM (Cool Boarders -> 0xBC00) is slower on silicon than a
      * CPU model alone predicts. 0 = off. Needs a v3 calibration ROM to confirm. */
     uint32_t vram_wait = 0;
+
+    /* WHICH CONSOLE WE ARE PRETENDING TO BE, for a monochrome cartridge.
+     * false (default) = NGPC: 0x6F91 reads 0x10, so a colour-aware mono game runs its
+     * colourisation code and owns the compat palette. true = the original mono NGP:
+     * 0x6F91 reads the cartridge's own header value and the 12-bit compat palette does
+     * not exist on that silicon, so writes to it are ignored and the BIOS grey ramp
+     * stands. Set BEFORE reset. */
+    bool k1ge_console = false;
     /* Cycles per byte for LDIR/LDDR block copies. Datasheet 7n+1 (default 7); may be a floor
      * like MUL/DIV were. 14 reproduces Cool Boarders' silicon 30fps without touching Fatal
      * Fury. `ngpc_set_ldir_cost` is the knob; pending a clean silicon measurement. */

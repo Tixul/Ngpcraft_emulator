@@ -955,6 +955,11 @@ NGPC_API void ngpc_set_cart_data_wait(ngpc_t* h, uint32_t cycles_per_byte) {
     reinterpret_cast<Machine*>(h)->cart_data_wait = cycles_per_byte;
 }
 
+NGPC_API void ngpc_set_k1ge_console(ngpc_t* h, int on) {
+    if (!h) return;
+    reinterpret_cast<Machine*>(h)->k1ge_console = (on != 0);
+}
+
 NGPC_API void ngpc_set_vram_wait(ngpc_t* h, uint32_t cycles_per_byte) {
     if (!h) return;
     reinterpret_cast<Machine*>(h)->vram_wait = cycles_per_byte;
