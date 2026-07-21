@@ -289,6 +289,7 @@ class NativeSession:
             # dead-battery path and stamps 1998-01-01 over the chip. Restoring before the
             # reset would hand the player's clock straight to that warm-up to be wiped.
             apply_saved_clock(self.machine, self.rtc_path, self.clock_mode)
+            self._apply_bios_colour_theme()
 
         # Present the cart as a bigger flash chip than the (under-filled) ROM, so a homebrew
         # that saves in the chip's top block has that block. The working image becomes the
@@ -549,6 +550,32 @@ class NativeSession:
         them while the beam runs to split the screen or fake parallax.
         """
         return render_frame(self.video_memory(), self.machine.raster_log())
+
+    # The compat palette lives at 0x8380..0x83FF and, for a MONOCHROME cartridge, holds
+    # the COLOUR THEME the player picked in the BIOS's own setup screens -- the NGPC's
+    # Game Boy Color trick. The BIOS keeps its master copy in battery-backed RAM at
+    # 0x6DD8 and blits it across when a dirty flag is set (its routine at 0xFF4FDF:
+    # `lda XIY,(0x6DD8) / lda XIX,(0x8380) / ld BC,0x40 / ldirw`).
+    #
+    # In hand-off mode we never run that code AND never restore the coin cell -- the
+    # game deliberately boots on a zeroed slate so the picture is deterministic. So the
+    # theme has to be fetched from the saved cell by hand, and ONLY the theme: restoring
+    # the whole 12 KiB would put the BIOS's work RAM back under the game and undo that
+    # determinism. Without this the core's built-in grey ramp stands and the player's
+    # choice -- a green ramp, say -- silently does nothing.
+    _THEME_ADDR, _THEME_LEN = 0x006DD8, 0x80
+
+    def _apply_bios_colour_theme(self) -> None:
+        try:
+            cell = self.ram_path.read_bytes()
+        except OSError:
+            return
+        off = self._THEME_ADDR - native.RAM_START
+        theme = cell[off:off + self._THEME_LEN]
+        # A console that never completed the BIOS setup leaves this all zero, which as a
+        # palette is an all-black screen -- keep the core's grey ramp for that case.
+        if len(theme) == self._THEME_LEN and any(theme):
+            self.machine.write(0x008380, theme)
 
     def close(self) -> None:
         # The save is committed BEFORE the machine goes away, and a failure to write it

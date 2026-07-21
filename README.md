@@ -25,6 +25,9 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
   Neo Geo Pocket intro plays and the game then boots on its own, exactly like hardware.
 - **Video**: integer / fit / stretch scaling, scanline / LCD-grid / CRT filters,
   colour profiles, real fullscreen. The canvas follows the window; size presets `Ctrl+1…5`.
+- **Black-and-white cartridges, in colour** — an NGP game on an NGPC is *colourised*, the way
+  a Game Boy game is on a Game Boy Color. Both machines are selectable — see
+  [Monochrome cartridges](#monochrome-cartridges-on-a-colour-console).
 - **Save states** — 8 slots per game (toolbar or `F2` save / `F4` load / `F3` slot).
 - **In-game saves** — the game's own flash save, stored in the ROM, a separate file, or both.
 - **A console that remembers** — the coin cell keeps its BIOS settings *and* its clock, so
@@ -36,7 +39,11 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
 - **Controller support** — an Xbox-style (XInput) pad alongside the keyboard, plus
   **turbo / autofire** on A and B at 5–20 presses per second.
 - **Fully remappable** — console buttons *and* every in-game hotkey, with a warning when
-  a binding would collide.
+  a binding would collide. The console buttons are bound **on a picture of the console**:
+  each field sits next to the button it drives, so you pick the D-pad's *left* rather than
+  a row labelled "Left".
+- **Themes** — follows your desktop's light/dark setting by default, or pick Light or Dark
+  explicitly. Switches live, no restart.
 - **Debug tools** (`F1`) — a real debugger: symbols, instruction stepping, call stack,
   raster event timeline, read *and* write watchpoints, an editable hex view with access
   highlighting, RAM search, and audio analysis with **VGM export**. See
@@ -63,19 +70,33 @@ python ngpc_shell.py
 
 On Windows a prebuilt core (`cpp/build/ngpc_core.dll`) is included, so it runs as-is.
 
-### Standalone Windows .exe (no Python needed)
+### Prebuilt download (no Python needed)
 
-Grab `NgpCraftEmulator.exe` from the [Releases](../../releases) page and double-click
-it — nothing to install. ROMs, saves and screenshots live in folders next to the `.exe`.
+Grab the build for your platform from the [Releases](../../releases) page and run it —
+nothing to install. ROMs, saves and screenshots live in folders next to the app.
 
-To build it yourself:
+**Windows, Linux and macOS are built from this same source** by GitHub Actions
+([`.github/workflows/build.yml`](.github/workflows/build.yml)): each tagged release runs the
+test suite on all three and packages one archive per platform. PyInstaller cannot
+cross-compile, so every build is made on its own machine — which is the whole reason that
+workflow exists.
+
+> The macOS app is **not code-signed**, so Gatekeeper warns the first time: right-click ▸
+> **Open** to run it anyway.
+
+To build it yourself on the platform you are on:
 
 ```bat
 pip install pyinstaller
-build_exe.bat
+build_exe.bat                        :: Windows
 ```
 
-This produces a single self-contained file, `release\NgpCraftEmulator.exe`.
+```bash
+pyinstaller --noconfirm --clean NgpCraftEmulator.spec    # any platform
+```
+
+The spec branches on the host OS (core library name, icon format, macOS `.app` bundle), so
+the same file produces the right thing everywhere.
 
 ### Building the core (other platforms / from source)
 
@@ -117,6 +138,38 @@ No ROMs or BIOS are included — provide your own.
 
 The **Boot BIOS** button (Library) boots the BIOS by itself, with no cartridge — the
 console's own language/clock screens, one of the NGPC's signature features.
+
+## Monochrome cartridges on a colour console
+
+A Neo Geo Pocket game is black and white. Put one in an NGPC and it comes up **in colour** —
+the same trick a Game Boy Color plays on a Game Boy cartridge. Both halves of that are
+modelled here.
+
+**The game colourises itself.** The console tells a cartridge which machine it is sitting in,
+and a colour-aware mono game reads that and takes a different code path. *Samurai Shodown!*
+paints its own palette — green bamboo, fighters near their canonical colours — where on an
+original NGP it stays in eight greys. Getting that byte wrong is invisible until you compare
+against hardware: with it, the game writes some 3 600 palette entries in the first 20 seconds;
+without it, sixteen. *(Confirmed against a real NGPC, cartridge flashed.)*
+
+**Everything else gets the console's theme.** A mono game that is *not* colour-aware is tinted
+by the BIOS instead, using the colour **you** chose on the console's own setup screens. The
+BIOS keeps that palette in coin-cell RAM, so it survives across launches and the emulator
+hands it to the cartridge exactly as the hardware does.
+
+> To choose it, use the **Boot BIOS** button and go through the setup. Launching a *game*
+> auto-completes that setup with defaults on purpose — nobody wants to fill in a
+> questionnaire to start playing — which also means it never asks you for a colour.
+
+**Which machine to be** — *Settings ▸ Graphics ▸ "Black-and-white NGP games"*:
+
+- **NGPC (K2GE) — colourised** *(default)* — what this emulator is.
+- **NGP (K1GE) — monochrome** — the original handheld. The cartridge is told it is in a mono
+  console, and the 12-bit palette it would colourise through does not exist on that silicon,
+  so it stays grey **of its own accord** — the game never runs its colour code. This is not a
+  filter laid over the picture afterwards.
+
+Takes effect the next time a game is started.
 
 ## Saves
 
@@ -368,6 +421,14 @@ tool, not a deterministic TAS engine.
 
 ## Known issues
 
+- **Cool Boarders Pocket freezes on the end-of-race *REWARD* screen** when **Cart flash size**
+  is **Auto**. That screen saves, and this is a genuine 8 Mbit cartridge that saves in *its
+  own* top block — but Auto presents any under-filled cart as 16 Mbit, which changes the
+  block numbering, sends the erase somewhere else, and leaves the save block never cleared. A
+  flash cell only goes down, so the write can never take, and the BIOS waits for it forever.
+  **Set Cart flash size to 8 Mbit** and it saves and moves on. Auto's rule only recognises a
+  save in the *second* 8 KB block from the top; this game uses the first, so it never
+  self-corrects. Other genuine 8 Mbit carts that save the same way will behave the same.
 - **A save state can carry an old fault back with it.** A state is the whole machine
   including work RAM, so anything a fix corrects *at boot* is restored to its broken value by
   a state captured before the fix. Two known cases, both fixed for a fresh run and both still
