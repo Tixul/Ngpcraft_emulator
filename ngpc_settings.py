@@ -8,6 +8,10 @@ couple of reusable widgets; the modern shell owns the look.
 
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
+
 from PyQt6.QtCore import Qt, QSettings, pyqtSignal
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtWidgets import QPushButton
@@ -30,7 +34,7 @@ DEFAULT_KEYS: dict[str, int] = {
     "Option": int(Qt.Key.Key_Return),
 }
 
-LANGUAGES: tuple[tuple[str, str], ...] = (("en", "English"), ("fr", "Français"))
+# LANGUAGES / STRINGS are built at the bottom, from lang/*.json.
 
 
 def make_settings() -> QSettings:
@@ -239,8 +243,10 @@ def library_filter(s: QSettings) -> str:
 
 
 def language(s: QSettings) -> str:
-    lang = s.value("general/language", "en", type=str)
-    return lang if lang in dict(LANGUAGES) else "en"
+    """The UI language, validated against what lang/ actually ships. A saved code
+    whose file went away falls back to English rather than showing raw keys."""
+    lang = s.value("general/language", FALLBACK_LANG, type=str)
+    return lang if lang in STRINGS else FALLBACK_LANG
 
 
 def theme(s: QSettings) -> str:
@@ -445,250 +451,71 @@ class KeyCaptureButton(QPushButton):
         super().keyPressEvent(event)
 
 
-# --- localization table (grows over time; keys are stable) ----------------
-STRINGS: dict[str, dict[str, str]] = {
-    "en": {
-        "library": "Library", "settings": "Settings", "no_roms":
-        "No ROMs found. Set your ROM folder in Settings.", "open_rom": "Open ROM…",
-        "set_folder": "Choose ROM folder…", "play": "Play", "resume": "Resume",
-        "reset": "Reset", "quit_lib": "Quit to Library", "paused": "Paused",
-        "cat_general": "General", "cat_graphics": "Graphics", "cat_audio": "Audio",
-        "cat_bios": "Console (BIOS)",
-        "cat_controls": "Controls", "rom_folder": "ROM folder", "bios": "BIOS image",
-        # -- the console's own clock and coin cell
-        "clock_mode": "Clock while the emulator is closed",
-        "clk_hardware": "Keeps running (like real hardware)",
-        "clk_host": "Follow the PC's clock",
-        "clk_paused": "Stops, and resumes where it left off",
-        "clock_mode_hint": "A real console's clock runs off its coin cell whether or not "
-        "you are playing, so shutting the emulator for three days should bring it back "
-        "three days later — that is the default. 'Follow the PC's clock' sets it from your "
-        "computer at every launch: always right, but it overrides whatever date you set on "
-        "the BIOS screen. 'Stops' freezes time with the emulator — not what hardware does, "
-        "but it is reproducible, which is what you want when debugging.",
-        "coin_cell": "Coin cell (console memory)",
-        "coin_cell_hint": "One battery keeps BOTH the BIOS settings (language, colour) and "
-        "the clock alive. Resetting it is pulling that battery out: the console forgets its "
-        "language and date and runs its first-boot setup again, exactly like a brand-new "
-        "machine. Your games and their saves are NOT touched.",
-        "coin_cell_reset": "Reset the console",
-        "coin_cell_confirm_title": "Reset the console?",
-        "coin_cell_confirm": "This clears the BIOS settings (language, colour) and the "
-        "clock, and the console will run its first-boot setup again.\n\nYour games and "
-        "their saves are not affected.\n\nReset it?",
-        "coin_cell_done": "Console reset — it will boot as new.",
-        "coin_cell_empty": "Nothing to reset: this console has no saved settings yet.",
-        "coin_cell_busy": "Quit the game first — the console is running.",
-        "language": "Language", "real_bios": "Boot the real BIOS at power-on",
-        "theme": "Theme", "theme_system": "Follow Windows",
-        "theme_dark": "Dark", "theme_light": "Light",
-        "btn_power": "POWER", "btn_up": "UP", "btn_down": "DOWN",
-        "btn_left": "LEFT", "btn_right": "RIGHT",
-        "btn_option": "OPTION", "btn_a": "A", "btn_b": "B",
-        "press_key": "press a key…",
-        "power_managed": "handled by the console",
-        "lcd_scale": "Window scale", "smoothing": "Smooth scaling", "scanlines":
-        "Scanline overlay", "audio_on": "Enable audio", "volume": "Volume",
-        "controls_hint": "Click a button, then press the key to bind it.",
-        "browse": "Browse…", "restore": "Restore defaults",
-        "view_grid": "Grid", "view_list": "List", "view_compact": "Compact",
-        "thumb_size": "Cover size", "boot_bios": "Boot BIOS",
-        "console_boot": "Play the console boot (BIOS) before the game",
-        "console_boot_hint": "Powers the console on for real: the Neo Geo Pocket BIOS "
-        "plays its intro, then boots the game on its own — just like hardware. A brand-new "
-        "console configures itself the first time (first-boot setup auto-completed with "
-        "defaults and remembered), so you always get intro → game with no setup to click "
-        "through. Leave OFF to hand the cartridge straight to the game (instant).",
-        "cart_wait": "Cartridge flash timing (real hardware speed)",
-        "cart_wait_hint": "Models the slow cartridge flash bus + block-copy timing. Without "
-        "it the CPU runs cart code ~3.4x too fast, so self-timed games (Cool Boarders, Densha "
-        "de Go) run at 60fps instead of the 30fps a real console shows — their in-game timer "
-        "then counts ~2x too fast. Fetch timing is silicon-confirmed; the LDIR block-copy part "
-        "is strongly evidenced but not yet ROM-confirmed, so check the in-game timer against a "
-        "stopwatch. Leave ON; turn OFF to compare with the old (too-fast) timing.",
-        # video
-        "filter": "Screen filter", "flt_none": "None", "flt_scanlines": "Scanlines",
-        "flt_lcdgrid": "LCD grid", "flt_crt": "CRT",
-        "color_profile": "Colour", "col_raw": "Raw", "col_lcd": "LCD", "col_vivid": "Vivid",
-        "aspect": "Aspect", "asp_pixel": "Pixel-perfect", "asp_fit": "Fit window",
-        "asp_stretch": "Stretch", "fullscreen": "Fullscreen",
-        # in-game menu / hotkeys
-        "menu_title": "Paused", "m_resume": "Resume", "m_reset": "Reset",
-        "m_video": "Video & filters", "m_audio": "Audio", "m_controls": "Controls",
-        "m_debug": "Debug tools", "m_quit": "Quit to library", "cat_hotkeys": "Hotkeys",
-        "m_savestate": "Save state (slot {n})", "m_loadstate": "Load state (slot {n})",
-        # (the old hk_* cheat-sheet lines named their keys literally -- "F5 — reset".
-        # The Hotkeys panel now BINDS them and shows the live key, so those strings
-        # would have become quietly wrong the first time anyone rebound anything.)
-        "shot_saved": "Saved {name}", "screenshots": "Screenshots folder",
-        "show_fps": "Show FPS overlay",
-        "save_mode": "In-game save", "save_rom": "In the ROM (.ngc)",
-        "save_sidecar": "Separate file", "save_both": "ROM + separate file",
-        "flash_size": "Cart flash size", "flash_auto": "Auto",
-        "flash_4m": "4 Mbit (512 KB)", "flash_8m": "8 Mbit (1 MB)", "flash_16m": "16 Mbit (2 MB)",
-        "rewind": "Rewind buffer", "rewind_off": "Off",
-        "rewind_10": "10 s (~29 MB)", "rewind_20": "20 s (~58 MB)", "rewind_30": "30 s (~86 MB)",
-        "slot": "Slot {n}", "state_saved": "State {n} saved",
-        "state_loaded": "State {n} loaded", "state_empty": "Slot {n} empty",
-        "speed": "Speed {x}x",
-        "saves_folder": "Saves folder",
-        # -- library: search / sort / filter
-        "search": "Search…", "sort": "Sort",
-        "sort_name": "Name", "sort_last": "Last played", "sort_plays": "Most played",
-        "sort_time": "Playtime", "sort_added": "Recently added", "sort_size": "Size",
-        "sort_reverse": "Reverse the order",
-        "filter_all": "All", "filter_fav": "Favourites", "filter_never": "Never played",
-        "no_match": "No game matches this search.",
-        "fav_add": "Add to favourites", "fav_remove": "Remove from favourites",
-        "never_played": "Never played", "plays_n": "{n}×",
-        # -- turbo / gamepad
-        "turbo": "Turbo (autofire) on {btn}",
-        "turbo_rate": "Turbo rate",
-        "turbo_hz": "{n} per second",
-        "turbo_hint": "Holding a turbo button fires it repeatedly. The rate is counted "
-        "in console frames, so it stays the same under fast-forward.",
-        "gamepad": "Use a controller",
-        "gamepad_hint": "Reads an Xbox-style (XInput) controller alongside the keyboard. "
-        "D-pad and left stick move; A/X and B/Y are the two console buttons; Start or "
-        "Back is Option. Windows only — elsewhere this does nothing.",
-        "pad_on": "Controller detected", "pad_off": "No controller detected",
-        "pad_none": "Controller support unavailable on this system",
-        "key_conflict": "⚠ This key is already {hk}. In game the hotkey wins and this "
-        "button will not respond.",
-        # short hotkey names, for the conflict warning above
-        "hkn_menu": "menu", "hkn_debug": "debug tools", "hkn_save": "save state",
-        "hkn_slot": "slot", "hkn_load": "load state", "hkn_reset": "reset",
-        "hkn_fs": "fullscreen", "hkn_shot": "screenshot", "hkn_pause": "pause",
-        "hkn_toolbar": "toolbar", "hkn_ff": "fast-forward", "hkn_slower": "slower",
-        "hkn_faster": "faster", "hkn_rewind": "rewind", "hkn_step": "frame step",
-        "hotkeys_hint": "Click a hotkey, then press the key to bind it. "
-        "Ctrl+1…5 always sets the window size and cannot be rebound.",
-        "hk_dupe": "⚠ Two hotkeys share a key: {hk}. Only the first one will fire.",
-    },
-    "fr": {
-        "library": "Bibliothèque", "settings": "Réglages", "no_roms":
-        "Aucune ROM trouvée. Indiquez votre dossier de ROMs dans les Réglages.",
-        "open_rom": "Ouvrir une ROM…", "set_folder": "Choisir le dossier de ROMs…",
-        "play": "Jouer", "resume": "Reprendre", "reset": "Réinitialiser",
-        "quit_lib": "Retour à la bibliothèque", "paused": "En pause",
-        "cat_general": "Général", "cat_graphics": "Graphismes", "cat_audio": "Audio",
-        "cat_bios": "Console (BIOS)",
-        "cat_controls": "Commandes", "rom_folder": "Dossier des ROMs",
-        "bios": "Image BIOS", "language": "Langue",
-        "theme": "Thème", "theme_system": "Suivre Windows",
-        "theme_dark": "Sombre", "theme_light": "Clair",
-        "btn_power": "POWER", "btn_up": "HAUT", "btn_down": "BAS",
-        "btn_left": "GAUCHE", "btn_right": "DROITE",
-        "btn_option": "OPTION", "btn_a": "A", "btn_b": "B",
-        "press_key": "appuyez sur une touche…",
-        "power_managed": "géré par la console",
-        # -- l'horloge et la pile bouton de la console
-        "clock_mode": "Horloge quand l'émulateur est fermé",
-        "clk_hardware": "Continue de tourner (comme le vrai matériel)",
-        "clk_host": "Suivre l'horloge du PC",
-        "clk_paused": "S'arrête, et reprend où elle en était",
-        "clock_mode_hint": "Sur une vraie console, la pile bouton fait tourner l'horloge "
-        "que vous jouiez ou non : fermer l'émulateur trois jours devrait donc la retrouver "
-        "trois jours plus tard — c'est le réglage par défaut. « Suivre l'horloge du PC » la "
-        "règle sur votre ordinateur à chaque lancement : toujours juste, mais ça écrase la "
-        "date que vous aviez mise dans le BIOS. « S'arrête » fige le temps avec l'émulateur "
-        "— ce n'est pas le comportement du matériel, mais c'est reproductible, ce qu'on veut "
-        "pour déboguer.",
-        "coin_cell": "Pile bouton (mémoire de la console)",
-        "coin_cell_hint": "Une seule pile garde EN VIE les réglages du BIOS (langue, "
-        "couleur) ET l'horloge. La réinitialiser, c'est retirer cette pile : la console "
-        "oublie sa langue et sa date et refait sa configuration de premier démarrage, comme "
-        "une machine neuve. Vos jeux et leurs sauvegardes ne sont PAS touchés.",
-        "coin_cell_reset": "Réinitialiser la console",
-        "coin_cell_confirm_title": "Réinitialiser la console ?",
-        "coin_cell_confirm": "Ceci efface les réglages du BIOS (langue, couleur) et "
-        "l'horloge, et la console refera sa configuration de premier démarrage.\n\nVos jeux "
-        "et leurs sauvegardes ne sont pas affectés.\n\nRéinitialiser ?",
-        "coin_cell_done": "Console réinitialisée — elle démarrera comme neuve.",
-        "coin_cell_empty": "Rien à réinitialiser : cette console n'a pas encore de réglages.",
-        "coin_cell_busy": "Quittez le jeu d'abord — la console tourne.",
-        "real_bios": "Démarrer le vrai BIOS à l'allumage", "lcd_scale":
-        "Échelle de la fenêtre", "smoothing": "Lissage", "scanlines":
-        "Effet lignes de balayage", "audio_on": "Activer l'audio", "volume": "Volume",
-        "controls_hint": "Cliquez un bouton, puis appuyez sur la touche à assigner.",
-        "browse": "Parcourir…", "restore": "Valeurs par défaut",
-        "view_grid": "Grille", "view_list": "Liste", "view_compact": "Compact",
-        "thumb_size": "Taille des vignettes", "boot_bios": "Lancer le BIOS",
-        "console_boot": "Jouer le démarrage console (BIOS) avant le jeu",
-        "console_boot_hint": "Allume vraiment la console : le BIOS du Neo Geo Pocket joue "
-        "son intro, puis lance le jeu tout seul — comme sur le hardware. Une console neuve "
-        "se configure toute seule au premier lancement (premier démarrage auto-complété avec "
-        "les réglages par défaut et mémorisé) : tu as toujours intro → jeu, sans écran de "
-        "réglage à valider. Laissez DÉSACTIVÉ pour donner la cartouche directement au jeu.",
-        "cart_wait": "Timing du flash cartouche (vitesse console réelle)",
-        "cart_wait_hint": "Modélise le bus flash lent + le timing des copies bloc. Sans lui "
-        "le CPU exécute le code cartouche ~3,4× trop vite : les jeux auto-cadencés (Cool "
-        "Boarders, Densha de Go) tournent à 60fps au lieu des 30fps de la vraie console — "
-        "leur chrono compte ~2× trop vite. Le timing fetch est confirmé sur silicium ; la "
-        "partie LDIR (copie bloc) est fortement étayée mais pas encore confirmée par ROM — "
-        "vérifie le chrono du jeu avec un chronomètre. Laissez ACTIVÉ ; désactivez pour "
-        "comparer avec l'ancien timing (trop rapide).",
-        # video
-        "filter": "Filtre d'écran", "flt_none": "Aucun", "flt_scanlines": "Scanlines",
-        "flt_lcdgrid": "Grille LCD", "flt_crt": "CRT",
-        "color_profile": "Couleur", "col_raw": "Brut", "col_lcd": "LCD", "col_vivid": "Vif",
-        "aspect": "Ratio", "asp_pixel": "Pixel-perfect", "asp_fit": "Ajuster",
-        "asp_stretch": "Étirer", "fullscreen": "Plein écran",
-        # in-game menu / hotkeys
-        "menu_title": "En pause", "m_resume": "Reprendre", "m_reset": "Réinitialiser",
-        "m_video": "Vidéo & filtres", "m_audio": "Audio", "m_controls": "Commandes",
-        "m_debug": "Outils debug", "m_quit": "Retour à la bibliothèque",
-        "m_savestate": "Sauvegarder l'état (empl. {n})", "m_loadstate": "Charger l'état (empl. {n})",
-        "cat_hotkeys": "Raccourcis",
-        # (voir la note côté anglais : les anciennes lignes hk_* citaient les touches
-        # en dur et seraient devenues fausses dès le premier remap.)
-        "shot_saved": "Enregistré {name}", "screenshots": "Dossier des captures",
-        "show_fps": "Afficher le FPS",
-        "save_mode": "Sauvegarde du jeu", "save_rom": "Dans la ROM (.ngc)",
-        "save_sidecar": "Fichier séparé", "save_both": "ROM + fichier séparé",
-        "flash_size": "Taille flash cart", "flash_auto": "Auto",
-        "flash_4m": "4 Mbit (512 Ko)", "flash_8m": "8 Mbit (1 Mo)", "flash_16m": "16 Mbit (2 Mo)",
-        "rewind": "Tampon rembobinage", "rewind_off": "Désactivé",
-        "rewind_10": "10 s (~29 Mo)", "rewind_20": "20 s (~58 Mo)", "rewind_30": "30 s (~86 Mo)",
-        "slot": "Emplacement {n}", "state_saved": "État {n} sauvé",
-        "state_loaded": "État {n} chargé", "state_empty": "Emplacement {n} vide",
-        "speed": "Vitesse {x}x",
-        "saves_folder": "Dossier des sauvegardes",
-        # -- bibliothèque : recherche / tri / filtre
-        "search": "Rechercher…", "sort": "Trier",
-        "sort_name": "Nom", "sort_last": "Dernier joué", "sort_plays": "Plus joué",
-        "sort_time": "Temps de jeu", "sort_added": "Ajouté récemment", "sort_size": "Taille",
-        "sort_reverse": "Inverser l'ordre",
-        "filter_all": "Tous", "filter_fav": "Favoris", "filter_never": "Jamais joué",
-        "no_match": "Aucun jeu ne correspond à cette recherche.",
-        "fav_add": "Ajouter aux favoris", "fav_remove": "Retirer des favoris",
-        "never_played": "Jamais joué", "plays_n": "{n}×",
-        # -- turbo / manette
-        "turbo": "Turbo (tir auto) sur {btn}",
-        "turbo_rate": "Cadence du turbo",
-        "turbo_hz": "{n} par seconde",
-        "turbo_hint": "Maintenir un bouton turbo l'enchaîne automatiquement. La cadence "
-        "est comptée en images console : elle reste la même en avance rapide.",
-        "gamepad": "Utiliser une manette",
-        "gamepad_hint": "Lit une manette de type Xbox (XInput) en plus du clavier. Croix "
-        "directionnelle et stick gauche pour se déplacer ; A/X et B/Y sont les deux boutons "
-        "de la console ; Start ou Back fait Option. Windows uniquement — ailleurs, sans effet.",
-        "pad_on": "Manette détectée", "pad_off": "Aucune manette détectée",
-        "pad_none": "Manette non prise en charge sur ce système",
-        "key_conflict": "⚠ Cette touche est déjà {hk}. En jeu le raccourci gagne et ce "
-        "bouton ne répondra pas.",
-        # noms courts des raccourcis, pour l'avertissement ci-dessus
-        "hkn_menu": "menu", "hkn_debug": "outils debug", "hkn_save": "sauver l'état",
-        "hkn_slot": "emplacement", "hkn_load": "charger l'état", "hkn_reset": "réinitialiser",
-        "hkn_fs": "plein écran", "hkn_shot": "capture", "hkn_pause": "pause",
-        "hkn_toolbar": "barre d'outils", "hkn_ff": "avance rapide", "hkn_slower": "ralentir",
-        "hkn_faster": "accélérer", "hkn_rewind": "rembobiner", "hkn_step": "image par image",
-        "hotkeys_hint": "Cliquez un raccourci, puis appuyez sur la touche à assigner. "
-        "Ctrl+1…5 règle toujours la taille de la fenêtre et n'est pas remappable.",
-        "hk_dupe": "⚠ Deux raccourcis partagent une touche : {hk}. Seul le premier agira.",
-    },
-}
+# --- localization ---------------------------------------------------------
+# One JSON file per language in lang/, discovered at import time: shipping a new
+# language is dropping a file in there, no code change. See TRANSLATING.md.
+#
+# Keys are stable and the table grows over time; a language that misses some of
+# them is fine -- `tr` falls back to English key by key, so a half-finished
+# translation is still mergeable.
+#
+# (Why hkn_* and not literal cheat-sheet lines: the old hk_* strings named their
+# keys in the text -- "F5 - reset". The Hotkeys panel now BINDS them and shows
+# the live key, so those strings would have gone quietly wrong the first time
+# anyone rebound anything.)
+
+FALLBACK_LANG = "en"
+
+# Frozen in the .exe the JSONs are extracted next to the code, under _MEIPASS;
+# from source they sit beside this file. Both are read-only either way -- a
+# translator sends the file and it goes in the repo, so there is deliberately no
+# user-editable lang/ folder next to the .exe to keep in sync with this one.
+LANG_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "lang"
+
+
+def load_languages(directory: Path | None = None) -> tuple[
+        dict[str, dict[str, str]], tuple[tuple[str, str], ...]]:
+    """Read lang/<code>.json -> (strings-by-code, (code, menu label) tuples).
+
+    A file that is missing, unreadable or not valid JSON is skipped with a
+    warning rather than taken down the app: a broken translation must never
+    stop someone from playing. "@..." keys are metadata, not UI strings.
+    """
+    directory = LANG_DIR if directory is None else Path(directory)
+    table: dict[str, dict[str, str]] = {}
+    names: dict[str, str] = {}
+    for path in sorted(directory.glob("*.json")):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[i18n] skipping {path.name}: {exc}", file=sys.stderr)
+            continue
+        if not isinstance(doc, dict):
+            print(f"[i18n] skipping {path.name}: expected an object", file=sys.stderr)
+            continue
+        code = path.stem.lower()
+        names[code] = str(doc.get("@name") or code)
+        table[code] = {k: str(v) for k, v in doc.items() if not k.startswith("@")}
+    if FALLBACK_LANG not in table:                 # never leave `tr` without a floor
+        print(f"[i18n] no {FALLBACK_LANG}.json in {directory}", file=sys.stderr)
+        table[FALLBACK_LANG] = {}
+        names.setdefault(FALLBACK_LANG, "English")
+    # English first (it is the fallback and the source language), rest A->Z on
+    # the label the user actually reads.
+    order = sorted(table, key=lambda c: (c != FALLBACK_LANG, names[c].lower()))
+    return table, tuple((c, names[c]) for c in order)
+
+
+STRINGS, LANGUAGES = load_languages()
 
 
 def tr(lang: str, key: str) -> str:
-    return STRINGS.get(lang, STRINGS["en"]).get(key, STRINGS["en"].get(key, key))
+    base = STRINGS.get(FALLBACK_LANG, {})
+    return STRINGS.get(lang, base).get(key, base.get(key, key))
+
+
+def time_units(lang: str) -> dict[str, str]:
+    """The min/hour/day abbreviations `ngpc_library`'s card subtitles need. That
+    module stays Qt-free, so it cannot reach the table itself."""
+    return {u: tr(lang, f"unit_{u}") for u in ("min", "hour", "day")}
+

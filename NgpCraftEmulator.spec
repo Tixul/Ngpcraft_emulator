@@ -35,9 +35,13 @@ a = Analysis(
     # Every runtime resource must be listed here: PyInstaller follows IMPORTS, not
     # file reads, so an asset opened by path is invisible to it and simply goes
     # missing from the build.
+    # 'lang' is a whole directory on purpose: languages are discovered by
+    # globbing it at import time, so a new lang/pt.json must ship with no edit
+    # here either -- naming the files one by one would silently drop it.
     datas=[(f'cpp/build/{_CORE}', 'cpp/build'),
            ('assets/icone_ngpcraft.ico', 'assets'),
-           ('assets/ngpc_console.png', 'assets')],
+           ('assets/ngpc_console.png', 'assets'),
+           ('lang', 'lang')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

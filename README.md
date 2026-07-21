@@ -45,6 +45,9 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
   with it. See [ROM analysis](#rom-analysis).
 - **Crash reports** — a ROM fault writes a detailed `crashes/*.txt` (reason, PC, opcode,
   registers, memory & stack dumps).
+- **Translated interface** — English and French, switchable live, no restart. One JSON
+  file per language in [`lang/`](lang), so adding one is adding a file and needs no
+  code: see [TRANSLATING.md](TRANSLATING.md). Contributions welcome.
 
 <img width="1073" height="768" alt="emulateur02" src="https://github.com/user-attachments/assets/051d5d43-dc43-4001-8964-7e8b757b057d" />
 

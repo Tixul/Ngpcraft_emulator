@@ -638,11 +638,12 @@ class LibraryPage(QWidget):
         plays = self._lib.plays(rom)
         if not plays:
             return cfg.tr(lang, "never_played")
+        units = cfg.time_units(lang)
         bits = [cfg.tr(lang, "plays_n").format(n=plays)]
-        played = lib.format_playtime(self._lib.playtime(rom))
+        played = lib.format_playtime(self._lib.playtime(rom), units)
         if played != "—":
             bits.append(played)
-        last = lib.format_last(self._lib.last_played(rom), lang)
+        last = lib.format_last(self._lib.last_played(rom), units)
         if last:
             bits.append(last)
         return " · ".join(bits)
@@ -2404,11 +2405,7 @@ class PlayPage(QWidget):
         except Exception:
             path = None
         if needs_bios:
-            fr = cfg.language(self._settings) == "fr"
-            msg = ("⚠ Ce jeu a besoin du BIOS Neo Geo Pocket (non chargé).\n"
-                   "Ajoutez un bios.bin — Réglages ▸ BIOS." if fr else
-                   "⚠ This game needs the Neo Geo Pocket BIOS (not loaded).\n"
-                   "Add a bios.bin — Settings ▸ BIOS.")
+            msg = cfg.tr(cfg.language(self._settings), "crash_needs_bios")
         else:
             name, _desc = _STATUS_DESC.get(summ.stop_status, ("STATUS_%d" % summ.stop_status, ""))
             msg = f"⚠ ROM crashed — {name}"

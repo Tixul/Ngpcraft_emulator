@@ -893,6 +893,20 @@ class EmulatorWindow(QMainWindow):
         return "pad=" + "+".join(pressed)
 
     def eventFilter(self, obj, event):  # type: ignore[override]
+        # An event filter must NEVER raise. PyQt turns an exception thrown here
+        # into qFatal(), which aborts the process with 0xC0000409 and no Python
+        # traceback on stderr -- see conftest.py, and `tools/wdbg.py` exists to
+        # catch exactly this. The window that dies is not always the one at
+        # fault: this filter is installed on the QApplication, so a window that
+        # was dropped WITHOUT being closed (closeEvent is what removes it, and a
+        # test that builds one and lets it fall out of scope never calls it)
+        # stays registered on an app that outlives it. The next stray event then
+        # reaches a wrapper whose Python attributes are gone. Detach quietly.
+        if not hasattr(self, "session"):
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            return False
         active_window = QApplication.activeWindow()
         if (
             self.session is None

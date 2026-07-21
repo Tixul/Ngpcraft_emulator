@@ -190,30 +190,38 @@ def _stat(rom: Path, field: str) -> float:
         return 0.0
 
 
-def format_playtime(seconds: float) -> str:
+# Abbreviations for the two card subtitles below. They are the only words this
+# module prints, and it stays Qt-free (see the header), so the caller hands them
+# over already translated -- `ngpc_settings.time_units(lang)` builds this dict.
+DEFAULT_UNITS: dict[str, str] = {"min": "min", "hour": "h", "day": "d"}
+
+
+def format_playtime(seconds: float, units: dict[str, str] | None = None) -> str:
     """Compact playtime for a card subtitle: '—', '12 min', '3 h 04'."""
+    u = units or DEFAULT_UNITS
     s = int(seconds)
     if s < 60:
         return "—"
     if s < 3600:
-        return f"{s // 60} min"
-    return f"{s // 3600} h {(s % 3600) // 60:02d}"
+        return f"{s // 60} {u['min']}"
+    return f"{s // 3600} {u['hour']} {(s % 3600) // 60:02d}"
 
 
-def format_last(when: float, lang: str = "en") -> str:
+def format_last(when: float, units: dict[str, str] | None = None) -> str:
     """Relative 'last played', short enough for a card. Deliberately terse and
     unit-only ("5 min", "3 h", "12 j") so it needs no sentence to translate --
-    only the day letter differs between the two languages we ship."""
+    just the three abbreviations in `units`."""
+    u = units or DEFAULT_UNITS
     if not when:
         return ""
     delta = time.time() - when
     if delta < 300:
         return "· · ·"                       # minutes ago; no number worth printing
     if delta < 3600:
-        return f"{int(delta // 60)} min"
+        return f"{int(delta // 60)} {u['min']}"
     if delta < 86400:
-        return f"{int(delta // 3600)} h"
+        return f"{int(delta // 3600)} {u['hour']}"
     days = int(delta // 86400)
     if days < 30:
-        return f"{days} {'j' if lang == 'fr' else 'd'}"
+        return f"{days} {u['day']}"
     return time.strftime("%Y-%m-%d", time.localtime(when))
