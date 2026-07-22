@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import re
 import sys
 import time
 from collections import deque
@@ -25,7 +26,9 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QSize, QObject, QThread, QEvent, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap, QKeyEvent, QKeySequence, QFont, QIcon
+from PyQt6.QtGui import (
+    QImage, QPixmap, QKeyEvent, QKeySequence, QFont, QFontMetrics, QIcon,
+)
 from PyQt6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
@@ -76,9 +79,17 @@ SCREEN_W, SCREEN_H = 160, 152
 # whole NEO GEO POCKET intro plays (logo ~frame 300, intro ends ~460) instead of being
 # skipped by the 1-frame boot transient that briefly touches the FF5xxx menu region.
 BIOS_INTRO_FRAMES = 400
+# The left rail MEASURES itself against its longest nav label instead of taking a
+# width. Those labels are translated, so a fixed number is a bet on the language:
+# 190 px fit English and French and clipped Portuguese ("Ferramentas de depuração").
+# The floor is that old width, so nothing changes for a language that already fit;
+# the ceiling stops one long label from eating the window.
+RAIL_MIN_W, RAIL_MAX_W, RAIL_COLLAPSED_W = 190, 320, 44
+RAIL_TEXT_PAD = 2 * 16 + 2 * 8 + 10   # QPushButton#rail padding + rail margins + slack
 DEFAULT_ROM_DIR = REPO / "roms"          # drop your .ngc/.ngp files here (or pick a folder)
 DEFAULT_BIOS = REPO / "bios.bin"         # optional: a real NGPC BIOS enables "Boot BIOS"
-THUMB_DIR = REPO / "thumbnails"
+THUMB_DIR = REPO / "thumbnails"          # auto-rendered covers -- a CACHE, prunable
+COVER_DIR = REPO / "covers"              # covers the USER chose -- only ever READ
 LIBRARY_DB = REPO / "library.json"       # play counts / last played / favourites
 APP_ICON = BUNDLE / "assets" / "icone_ngpcraft.ico"
 STATE_DIR = REPO / "savestates"
@@ -120,14 +131,54 @@ THUMB_GOOD_ENOUGH = 22   # distinct-colour score that ends the search early
 # a colour captured at import is a colour that survives a theme change.
 PALETTE = ngpc_theme.DARK
 
+# Right-click menu labels, a module global for the same reason PALETTE is one: cards
+# are built deep inside layout code that has no business carrying a language argument,
+# and the Shell owns the only writer (`LibraryPage.retranslate`). Read at MENU time,
+# never cached in an action -- a label captured at build time survives a language switch.
+MENU_TEXT = {
+    "analyze": "🔍  Analyze ROM…",
+    "cover_set": "🖼  Choose cover image…",
+    "cover_reset": "↺  Back to the auto cover",
+}
+
 
 # ---------------------------------------------------------------- thumbnails
+# Image types accepted as a hand-picked cover.
+_COVER_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+# What an AUTO-rendered cover is named: "<stem>.<8 hex>.v<N>.png". The prune below
+# matches on this and nothing else -- a file a human put in the folder is not ours
+# to delete, and deleting it is exactly what used to eat a hand-placed title screen
+# on every update that bumped THUMB_VERSION.
+_AUTO_COVER_RE = re.compile(r"\.[0-9a-f]{8}\.v\d+\.png$", re.IGNORECASE)
+
+
+def _path_tag(rom: Path) -> str:
+    """8 hex digits identifying a ROM by its FULL path."""
+    return hashlib.md5(str(rom).encode("utf-8", "surrogatepass")).hexdigest()[:8]
+
+
 def _cover_path(rom: Path) -> Path:
     """The on-disk cover cache for a ROM -- UNIQUE per full path. Two projects can
     each hold a `main.ngc`; a stem-only name would make them share one cover (and,
     with a recursive scan, overwrite each other)."""
-    tag = hashlib.md5(str(rom).encode("utf-8", "surrogatepass")).hexdigest()[:8]
-    return THUMB_DIR / f"{rom.stem}.{tag}.v{THUMB_VERSION}.png"
+    return THUMB_DIR / f"{rom.stem}.{_path_tag(rom)}.v{THUMB_VERSION}.png"
+
+
+def custom_cover(rom: Path) -> Path | None:
+    """The cover the USER chose for this ROM, if any. It beats the rendered one and
+    is never regenerated, pruned, or invalidated by a THUMB_VERSION bump: `covers/`
+    is a folder the emulator only ever reads. Two names are accepted, most specific
+    first -- the tagged one pins the cover to ONE file on disk (two NgpCraft projects
+    both build a `main.ngc`), the plain one is drop-in friendly and keeps working
+    when the whole install moves."""
+    if not COVER_DIR.is_dir():
+        return None
+    for stem in (f"{rom.stem}.{_path_tag(rom)}", rom.stem):
+        for ext in _COVER_EXTS:
+            p = COVER_DIR / f"{stem}{ext}"
+            if p.is_file():
+                return p
+    return None
 
 
 class ThumbWorker(QObject):
@@ -149,10 +200,11 @@ class ThumbWorker(QObject):
     def run(self) -> None:
         THUMB_DIR.mkdir(exist_ok=True)
         # Prune covers from older render versions so the folder does not grow a
-        # copy per THUMB_VERSION bump.
+        # copy per THUMB_VERSION bump -- but ONLY files this worker wrote. Anything
+        # else in here was put there by hand and stays (see `_AUTO_COVER_RE`).
         keep = f".v{THUMB_VERSION}.png"
         for old in THUMB_DIR.glob("*.png"):
-            if not old.name.endswith(keep):
+            if not old.name.endswith(keep) and _AUTO_COVER_RE.search(old.name):
                 try:
                     old.unlink()
                 except OSError:
@@ -160,9 +212,10 @@ class ThumbWorker(QObject):
         for rom in self._roms:
             if self._stop:
                 break
-            cache = _cover_path(rom)
-            if cache.exists():
-                img = QImage(str(cache))
+            # A cover the user picked wins, and is never re-rendered over.
+            src = custom_cover(rom) or _cover_path(rom)
+            if src.exists():
+                img = QImage(str(src))
                 if not img.isNull():
                     self.ready.emit(str(rom), img)
                     continue
@@ -171,7 +224,7 @@ class ThumbWorker(QObject):
             except Exception:
                 continue
             if img is not None:
-                img.save(str(cache))
+                img.save(str(_cover_path(rom)))
                 self.ready.emit(str(rom), img)
         self.done.emit()
 
@@ -274,12 +327,23 @@ class _RomMenuMixin:
     """Right-click on a game: the actions that are about the FILE rather than about
     playing it. Both the grid card and the list row need exactly this."""
 
-    analyze_requested = None      # re-declared as a signal on each concrete class
+    # re-declared as signals on each concrete class
+    analyze_requested = None
+    cover_set_requested = None
+    cover_reset_requested = None
 
     def contextMenuEvent(self, e) -> None:  # type: ignore[override]
         menu = QMenu(self)
-        act = menu.addAction("🔍  Analyze ROM…")
-        act.triggered.connect(lambda: self.analyze_requested.emit(str(self.rom)))
+        rom = str(self.rom)
+        menu.addAction(MENU_TEXT["analyze"]).triggered.connect(
+            lambda: self.analyze_requested.emit(rom))
+        menu.addSeparator()
+        menu.addAction(MENU_TEXT["cover_set"]).triggered.connect(
+            lambda: self.cover_set_requested.emit(rom))
+        # Only offer the reset when there is a chosen cover to drop.
+        if custom_cover(self.rom) is not None:
+            menu.addAction(MENU_TEXT["cover_reset"]).triggered.connect(
+                lambda: self.cover_reset_requested.emit(rom))
         menu.exec(e.globalPos())
 
 
@@ -289,6 +353,8 @@ class GameCard(_RomMenuMixin, QFrame):
     clicked = pyqtSignal(str)
     fav_toggled = pyqtSignal(str)
     analyze_requested = pyqtSignal(str)
+    cover_set_requested = pyqtSignal(str)
+    cover_reset_requested = pyqtSignal(str)
 
     def __init__(self, rom: Path, long_edge: int, sub: str, fav: bool, fav_tip: str) -> None:
         super().__init__()
@@ -334,6 +400,8 @@ class GameRow(_RomMenuMixin, QFrame):
     clicked = pyqtSignal(str)
     fav_toggled = pyqtSignal(str)
     analyze_requested = pyqtSignal(str)
+    cover_set_requested = pyqtSignal(str)
+    cover_reset_requested = pyqtSignal(str)
 
     def __init__(self, rom: Path, long_edge: int, show_art: bool,
                  sub: str, fav: bool, fav_tip: str) -> None:
@@ -523,6 +591,10 @@ class LibraryPage(QWidget):
         self._view_btns[cfg.VIEW_LIST].setText(cfg.tr(lang, "view_list"))
         self._view_btns[cfg.VIEW_COMPACT].setText(cfg.tr(lang, "view_compact"))
         self._size_lbl.setText(cfg.tr(lang, "thumb_size"))
+        # Right-click labels live in a module global (see MENU_TEXT); this is its
+        # only writer, so a language switch reaches menus built on any card.
+        MENU_TEXT.update({k: cfg.tr(lang, f"menu_{k}")
+                          for k in ("analyze", "cover_set", "cover_reset")})
         self._search.setPlaceholderText(cfg.tr(lang, "search"))
         self._revbtn.setToolTip(cfg.tr(lang, "sort_reverse"))
         # Re-label the combos in place; blocking the signal keeps a language switch
@@ -625,6 +697,78 @@ class LibraryPage(QWidget):
             QApplication.restoreOverrideCursor()
         RomReportDialog(self, rom.stem, text).exec()
 
+    def set_cover(self, rom_str: str) -> None:
+        """Pick an image and make it this game's cover, for good. It is COPIED into
+        `covers/`, a folder the emulator only ever reads, so nothing the app does --
+        a re-scan, a cache-version bump, an update -- can put a rendered screenshot
+        back in its place. Overwriting the install keeps it too: `covers/` is user
+        data that ships in no archive."""
+        rom = Path(rom_str)
+        lang = cfg.language(self._settings)
+        title = cfg.tr(lang, "cover_set")
+        path, _ = QFileDialog.getOpenFileName(
+            self, title, str(rom.parent),
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if not path:
+            return
+        img = QImage(path)
+        if img.isNull():
+            QMessageBox.warning(self, title, cfg.tr(lang, "cover_bad"))
+            return
+        # Same stem twice in the library (every NgpCraft project builds a `main.ngc`)
+        # -> pin the cover to THIS path; otherwise use the plain, drop-in name, which
+        # also keeps working if the library folder is moved.
+        twin = any(o != rom and o.stem == rom.stem for o in self._all_roms)
+        stem = f"{rom.stem}.{_path_tag(rom)}" if twin else rom.stem
+        target = COVER_DIR / f"{stem}.png"
+        try:
+            COVER_DIR.mkdir(exist_ok=True)
+            # A cover this game already had, under some other extension, would still
+            # be found first. Clear the ones at OUR name only -- never a twin's.
+            for ext in _COVER_EXTS:
+                other = COVER_DIR / f"{stem}{ext}"
+                if other != target and other.is_file():
+                    other.unlink()
+            ok = img.save(str(target), "PNG")
+        except OSError as exc:
+            QMessageBox.warning(self, title, f"{cfg.tr(lang, 'cover_failed')}\n\n{exc}")
+            return
+        if not ok:
+            QMessageBox.warning(self, title, cfg.tr(lang, "cover_failed"))
+            return
+        self._apply_cover(rom, img)
+
+    def reset_cover(self, rom_str: str) -> None:
+        """Drop the chosen cover and fall back to the rendered screenshot."""
+        rom = Path(rom_str)
+        dropped = False
+        while (p := custom_cover(rom)) is not None:
+            try:
+                p.unlink()
+            except OSError:
+                break
+            dropped = True
+        if not dropped:
+            return
+        cache = _cover_path(rom)
+        if cache.is_file():
+            img = QImage(str(cache))
+            if not img.isNull():
+                self._apply_cover(rom, img)
+                return
+        # Never rendered (the chosen cover meant we never booted it): render now. The
+        # whole list goes back through the worker -- the cached ones come straight back.
+        self._stop_worker()
+        if self._all_roms:
+            self._start_worker(self._all_roms)
+
+    def _apply_cover(self, rom: Path, img: QImage) -> None:
+        """Show `img` for `rom` now, and keep it across view/size switches."""
+        self._images[str(rom)] = img
+        item = self._items.get(str(rom))
+        if item is not None:
+            item.set_image(img)
+
     def _on_fav(self, rom_str: str) -> None:
         self._lib.toggle_favorite(Path(rom_str))
         # Re-arrange rather than just repaint the star: under the Favourites
@@ -679,6 +823,8 @@ class LibraryPage(QWidget):
                 card.clicked.connect(self.play_requested.emit)
                 card.fav_toggled.connect(self._on_fav)
                 card.analyze_requested.connect(self.analyze_rom)
+                card.cover_set_requested.connect(self.set_cover)
+                card.cover_reset_requested.connect(self.reset_cover)
                 self._items[str(rom)] = card
                 cards.append(card)
                 grid.addWidget(card, i // cols, i % cols)
@@ -695,6 +841,8 @@ class LibraryPage(QWidget):
                 row.clicked.connect(self.play_requested.emit)
                 row.fav_toggled.connect(self._on_fav)
                 row.analyze_requested.connect(self.analyze_rom)
+                row.cover_set_requested.connect(self.set_cover)
+                row.cover_reset_requested.connect(self.reset_cover)
                 self._items[str(rom)] = row
                 col.addWidget(row)
 
@@ -765,10 +913,7 @@ class LibraryPage(QWidget):
         self._worker = None
 
     def _on_thumb(self, rom_str: str, img: QImage) -> None:
-        self._images[rom_str] = img          # keep for view/size switches
-        item = self._items.get(rom_str)
-        if item is not None:
-            item.set_image(img)
+        self._apply_cover(Path(rom_str), img)
 
     def _choose_folder(self) -> None:
         cur = cfg.rom_folder(self._settings) or str(DEFAULT_ROM_DIR)
@@ -2912,7 +3057,7 @@ class Shell(QMainWindow):
         root = QHBoxLayout(central); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
         # left rail (collapses to a thin strip that still holds the toggle)
-        rail = QWidget(); rail.setObjectName("rail"); rail.setFixedWidth(190)
+        rail = QWidget(); rail.setObjectName("rail"); rail.setFixedWidth(RAIL_MIN_W)
         self._rail = rail
         rlay = QVBoxLayout(rail); rlay.setContentsMargins(8, 8, 8, 12); rlay.setSpacing(4)
         head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0)
@@ -2984,10 +3129,40 @@ class Shell(QMainWindow):
         if rom:
             self._launch(rom)
 
+    def _rail_width(self) -> int:
+        """How wide the rail must be for its longest nav label to fit whole.
+
+        Measured in the font Qt will actually PAINT with -- bold, because the selected
+        entry is 600-weight and that is the widest the same text ever gets. Measuring
+        the bold form for every entry means selecting one never re-clips it."""
+        widest = 0
+        for b in (self._nav_resume, self._nav_lib, self._nav_set, self._nav_dbg):
+            # Polish first: the 14px comes from the STYLESHEET, and an unpolished
+            # button still reports the default app font -- a narrower one, which is
+            # how you measure a rail that then clips.
+            b.ensurePolished()
+            f = QFont(b.font()); f.setBold(True)
+            widest = max(widest, QFontMetrics(f).horizontalAdvance(b.text()))
+        return max(RAIL_MIN_W, min(RAIL_MAX_W, widest + RAIL_TEXT_PAD))
+
+    def _fit_rail(self) -> None:
+        """Re-measure the rail after anything that changes its labels or its font.
+
+        A label too long even for RAIL_MAX_W still gets clipped -- the sidebar is not
+        allowed to eat the window -- so it also gets a tooltip. Clipped AND unreadable
+        is the bug; clipped with the full text one hover away is a layout limit."""
+        width = self._rail_width()
+        if self._rail.width() >= 100:     # a collapsed rail stays collapsed
+            self._rail.setFixedWidth(width)
+        for b in (self._nav_resume, self._nav_lib, self._nav_set, self._nav_dbg):
+            f = QFont(b.font()); f.setBold(True)
+            fits = QFontMetrics(f).horizontalAdvance(b.text()) + RAIL_TEXT_PAD <= width
+            b.setToolTip("" if fits else b.text().strip())
+
     def _toggle_rail(self, show: bool | None = None) -> None:
-        # Collapse to a thin 44px strip that still holds the toggle (no overlap of content).
+        # Collapse to a thin strip that still holds the toggle (no overlap of content).
         show = (self._rail.width() < 100) if show is None else show
-        self._rail.setFixedWidth(190 if show else 44)
+        self._rail.setFixedWidth(self._rail_width() if show else RAIL_COLLAPSED_W)
         for wdg in self._rail_hideable:
             wdg.setVisible(show)
         self._rail_toggle.setText("‹" if show else "☰")
@@ -3018,6 +3193,7 @@ class Shell(QMainWindow):
         rather than restyled -- every card holds a cover thumbnail on a themed
         backdrop, and rebuilding reuses the cached images anyway."""
         self._apply_theme()
+        self._fit_rail()               # a restyle can hand the rail a different font
         self.settings.restyle()
         self.library._rebuild()        # noqa: SLF001 -- cards bake in palette colours
         if self._debug_win is not None:
@@ -3034,6 +3210,7 @@ class Shell(QMainWindow):
         self._nav_lib.setText("   " + cfg.tr(lang, "library"))
         self._nav_set.setText("   " + cfg.tr(lang, "settings"))
         self._nav_dbg.setText("   " + cfg.tr(lang, "m_debug"))
+        self._fit_rail()               # the new labels may not be the old width
         self.library.retranslate()
         self.settings.retranslate()
 

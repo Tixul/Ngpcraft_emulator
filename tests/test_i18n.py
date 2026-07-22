@@ -39,7 +39,10 @@ def test_english_is_present_and_populated():
 
 
 def test_every_file_in_lang_becomes_a_menu_entry():
-    assert {p.stem for p in LANG_FILES} == set(cfg.STRINGS)
+    # Compare LOWERCASED stems: the loader normalises the code that way on purpose,
+    # so a file named for its locale the conventional way (`pt_PT.json`) loads as
+    # `pt_pt`. Comparing raw stems failed the file, not the loader.
+    assert {p.stem.lower() for p in LANG_FILES} == set(cfg.STRINGS)
     assert {c for c, _n in cfg.LANGUAGES} == set(cfg.STRINGS)
     assert cfg.LANGUAGES[0][0] == cfg.FALLBACK_LANG, "English leads the menu"
     for code, label in cfg.LANGUAGES:

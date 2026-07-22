@@ -80,6 +80,42 @@ def test_language_switch_retranslates_the_rail(app):
         w.close()
 
 
+def test_the_rail_fits_every_language_it_ships(app):
+    """The rail used to be a fixed 190 px while its labels are TRANSLATED -- so a
+    language with longer words (Portuguese "Ferramentas de depuração", but French
+    "Bibliothèque" already) had its entries cut off. It now measures itself.
+
+    The contract, per language: every nav entry either fits, or carries a tooltip
+    with its full text (the rail is capped so one long word cannot eat the window).
+    """
+    from PyQt6.QtGui import QFont, QFontMetrics
+
+    w = shell.Shell()
+    try:
+        w.show()
+        s = cfg.make_settings()
+        assert set(cfg.STRINGS) >= {"en", "fr"}, "at least the two original languages"
+        for lang in sorted(cfg.STRINGS):
+            s.setValue("general/language", lang)
+            w._retranslate()
+            rail = w._rail.width()
+            assert shell.RAIL_MIN_W <= rail <= shell.RAIL_MAX_W
+            for b in (w._nav_resume, w._nav_lib, w._nav_set, w._nav_dbg):
+                b.ensurePolished()
+                f = QFont(b.font()); f.setBold(True)
+                need = QFontMetrics(f).horizontalAdvance(b.text()) + shell.RAIL_TEXT_PAD
+                assert need <= rail or b.toolTip() == b.text().strip(), (
+                    f"[{lang}] {b.text().strip()!r} needs {need}px of a {rail}px rail "
+                    f"and has no tooltip to fall back on")
+        # collapsing still wins over any measured width, and expanding re-measures
+        w._toggle_rail(False)
+        assert w._rail.width() == shell.RAIL_COLLAPSED_W
+        w._toggle_rail(True)
+        assert w._rail.width() == w._rail_width()
+    finally:
+        w.close()
+
+
 def test_theme_switch_restyles_the_window(app):
     w = shell.Shell()
     try:
@@ -372,3 +408,111 @@ def test_debug_exports_and_trace_to_file(app, tmp_path, monkeypatch):
             w._debug_win.close()
         w.play.stop()
         w.close()
+
+
+def test_custom_cover_survives_a_cache_version_bump(app, tmp_path, monkeypatch):
+    """The bug a user hit: a title screen they placed by hand came back as the
+    default rendered one after every update. The cover cache prunes anything that
+    is not the CURRENT render version, and it used to prune by "is a .png" — so an
+    update that bumped THUMB_VERSION deleted the user's file too.
+
+    Two guarantees checked here: a chosen cover in `covers/` is what the library
+    shows and is never re-rendered over, and the prune only ever removes files the
+    thumbnail worker itself wrote.
+    """
+    from PyQt6.QtGui import QImage
+
+    monkeypatch.setattr(shell, "THUMB_DIR", tmp_path / "thumbnails")
+    monkeypatch.setattr(shell, "COVER_DIR", tmp_path / "covers")
+    shell.THUMB_DIR.mkdir()
+    shell.COVER_DIR.mkdir()
+
+    rom = tmp_path / "roms" / "My Game.ngc"
+    rom.parent.mkdir()
+    rom.write_bytes(b"\xff" * 64)
+
+    # what the user supplies, and what an older render version left behind
+    mine = QImage(4, 4, QImage.Format.Format_RGB32)
+    mine.fill(0xFF00FF00)
+    assert mine.save(str(shell.COVER_DIR / "My Game.png"), "PNG")
+    stale_auto = shell.THUMB_DIR / f"My Game.{shell._path_tag(rom)}.v1.png"
+    assert mine.save(str(stale_auto), "PNG")
+    hand_placed = shell.THUMB_DIR / "My Game.png"      # the pre-`covers/` workflow
+    assert mine.save(str(hand_placed), "PNG")
+
+    assert shell.custom_cover(rom) == shell.COVER_DIR / "My Game.png"
+
+    seen: list[tuple[str, QImage]] = []
+    worker = shell.ThumbWorker([rom], None)
+    worker.ready.connect(lambda r, i: seen.append((r, i)))
+    worker.run()
+
+    # the chosen cover was served -- no ROM was booted to render one over it
+    assert [r for r, _ in seen] == [str(rom)]
+    assert seen[0][1].size() == mine.size()
+    assert not shell._cover_path(rom).exists(), "must not render over a chosen cover"
+    # the prune took the worker's own stale file and NOTHING else
+    assert not stale_auto.exists()
+    assert hand_placed.exists(), "a file the worker did not write is not its to delete"
+    assert (shell.COVER_DIR / "My Game.png").exists()
+
+
+def test_custom_cover_is_scoped_when_two_roms_share_a_name(app, tmp_path, monkeypatch):
+    """Every NgpCraft project builds a `main.ngc`. A cover chosen for one of them
+    must not become the cover of all of them."""
+    monkeypatch.setattr(shell, "COVER_DIR", tmp_path / "covers")
+    shell.COVER_DIR.mkdir()
+    a = tmp_path / "projA" / "main.ngc"
+    b = tmp_path / "projB" / "main.ngc"
+    for p in (a, b):
+        p.parent.mkdir()
+        p.write_bytes(b"\xff" * 64)
+
+    (shell.COVER_DIR / f"main.{shell._path_tag(a)}.png").write_bytes(b"x")
+    assert shell.custom_cover(a) is not None
+    assert shell.custom_cover(b) is None, "a path-scoped cover must not leak to a twin"
+
+    # the plain name is the drop-in / move-proof form: it answers for both
+    (shell.COVER_DIR / "main.png").write_bytes(b"x")
+    assert shell.custom_cover(b) == shell.COVER_DIR / "main.png"
+    assert shell.custom_cover(a).name.startswith("main."), "the scoped one still wins"
+    assert shell.custom_cover(a) != shell.COVER_DIR / "main.png"
+
+
+def test_choose_and_reset_cover_round_trip(app, tmp_path, monkeypatch):
+    """The menu path end to end: choosing an image writes it under `covers/` and
+    paints it now; resetting drops it and falls back to the rendered cache."""
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(shell, "THUMB_DIR", tmp_path / "thumbnails")
+    monkeypatch.setattr(shell, "COVER_DIR", tmp_path / "covers")
+    shell.THUMB_DIR.mkdir()
+
+    rom = tmp_path / "roms" / "Game.ngc"
+    rom.parent.mkdir()
+    rom.write_bytes(b"\xff" * 64)
+
+    auto = QImage(4, 4, QImage.Format.Format_RGB32); auto.fill(0xFF0000FF)
+    assert auto.save(str(shell._cover_path(rom)), "PNG")     # pretend it was rendered
+    picked = tmp_path / "title.png"
+    mine = QImage(8, 8, QImage.Format.Format_RGB32); mine.fill(0xFF00FF00)
+    assert mine.save(str(picked), "PNG")
+
+    # No ROM folder configured -> the page builds without starting the thumbnail
+    # worker (which would boot a core), which is all this test needs.
+    page = shell.LibraryPage(cfg.make_settings(), shell.lib.Library(tmp_path / "library.json"))
+    try:
+        page._all_roms = [rom]
+        monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                            staticmethod(lambda *a, **k: (str(picked), "")))
+        page.set_cover(str(rom))
+        assert (shell.COVER_DIR / "Game.png").is_file()
+        assert page._images[str(rom)].size() == mine.size(), "the new cover is shown at once"
+
+        page.reset_cover(str(rom))
+        assert shell.custom_cover(rom) is None
+        assert page._images[str(rom)].size() == auto.size(), "fell back to the rendered one"
+    finally:
+        page._stop_worker()
+        page.deleteLater()
