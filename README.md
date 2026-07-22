@@ -20,7 +20,8 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
 - **Library** with cover thumbnails (grid / list / compact), live-reflowing — plus
   **search**, **sort** (name, last played, most played, playtime, recently added, size,
   with a direction toggle), **favourites** ★ and a **never-played** filter. Play count,
-  playtime and last-played are tracked per game.
+  playtime and last-played are tracked per game. Covers are rendered from the game itself,
+  or [pick your own](#your-own-cover-art) — one that updates never overwrite.
 - **Console boot** — with a real BIOS, *Boot BIOS* powers the console on for real: the
   Neo Geo Pocket intro plays and the game then boots on its own, exactly like hardware.
 - **Video**: integer / fit / stretch scaling, scanline / LCD-grid / CRT filters,
@@ -138,6 +139,28 @@ No ROMs or BIOS are included — provide your own.
 
 The **Boot BIOS** button (Library) boots the BIOS by itself, with no cartridge — the
 console's own language/clock screens, one of the NGPC's signature features.
+
+### Your own cover art
+
+Library covers are rendered automatically (the emulator boots each game and keeps its
+best-looking frame), and that render is a **cache**: it lives in `thumbnails/` and is
+thrown away whenever a new version renders covers differently.
+
+To use your own image instead, right-click a game ▸ **Choose cover image…**. The file is
+copied into **`covers/`** — a folder the emulator only ever *reads*. Nothing regenerates
+it, no update replaces it, and overwriting the install to upgrade keeps it, because
+`covers/` is your data and ships in no archive. Right-click ▸ **Back to the auto cover**
+undoes it.
+
+You can also drop files in yourself: `covers/<ROM file name>.png` (also `.jpg`, `.bmp`,
+`.gif`, `.webp`) — e.g. `covers/Faselei! (Europe).png`. Any size works; it is scaled to
+the card. If two ROMs in your library share a file name (every NgpCraft project builds a
+`main.ngc`), use `covers/<name>.<8-hex tag>.png` to pin a cover to one of them — picking
+the image through the menu does this for you.
+
+> Placing an image directly in `thumbnails/` used to look like it worked, then lost your
+> cover on the next update that changed the render. `thumbnails/` is the cache; `covers/`
+> is yours.
 
 ## Monochrome cartridges on a colour console
 
@@ -442,6 +465,17 @@ tool, not a deterministic TAS engine.
 
 If you hit a bug, a ROM fault auto-writes a `crashes/*.txt` report (reason, PC, opcode,
 registers, memory & stack) — attach it, ideally with a save state, when reporting.
+
+## Thanks
+
+The emulator speaks more than one language because people sent theirs in.
+
+- **Português (Portugal)** — [@spotanjo3](https://github.com/spotanjo3)
+  ([#1](https://github.com/Tixul/Ngpcraft_emulator/issues/1))
+
+Adding yours is adding one JSON file, no Python required, and an unfinished one is
+mergeable — see [TRANSLATING.md](TRANSLATING.md). You get credited here, in the file
+itself, and as a co-author of the commit.
 
 ## Legal
 

@@ -39,6 +39,12 @@ it). `"@section:*"` entries are just headings that group the file so you can see
 what a string is used for; they stay English and are never displayed. Leave them
 where they are.
 
+**`"@credit"` is yours.** Put your name or handle there and it travels with the
+file — through forks, copies, and rewrites of the README. You are credited in the
+README too, and as a co-author of the commit that brings your file in, so the
+contribution counts on your GitHub profile. Say so if you would rather not be
+named: anonymous is a fine answer and the translation is just as welcome.
+
 **Keep `\n` where it is.** It is a line break in a message box or an overlay; the
 surrounding lines were sized around it.
 
