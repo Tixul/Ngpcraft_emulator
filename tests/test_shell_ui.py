@@ -156,7 +156,24 @@ def test_a_long_nav_label_wraps_instead_of_being_clipped(app):
         b.ensurePolished()
         f = QFont(b.font()); f.setBold(True)
         fm = QFontMetrics(f)
-        long_label = "Ferramentas de depuração"
+        # Build a label that overflows one rail line in the font Qt WILL PAINT WITH,
+        # rather than hard-coding a string and betting it is wide enough. That bet lost
+        # on the CI: its offscreen QPA falls back to a narrower font than Windows, so
+        # "Ferramentas de depuração" (the original literal) fit one line there, the wrap
+        # under test never fired, and this failed on Linux/Mac only.
+        #
+        # SHORT, uniform words, grown one at a time until the line JUST passes the cap.
+        # Two properties the assertions below need, on any font: overflowing by a single
+        # short word keeps the balanced split's widest line under the cap (so no tooltip
+        # fires), and equal words make that split a clean near-middle break. A long seed
+        # word ("Ferramentas"/"depuração") could already blow past twice the cap on a
+        # wide font, leaving no two-line fit -- which is the trap this avoids.
+        cap = shell.RAIL_MAX_W - shell.RAIL_TEXT_PAD
+        word = "log"
+        words = [word, word]
+        while fm.horizontalAdvance(shell.RAIL_INDENT + " ".join(words)) <= cap:
+            words.append(word)
+        long_label = " ".join(words)
         w._nav_text = dict(w._nav_text)          # leave the real labels alone
         w._nav_text[b] = long_label
         w._fit_rail()
@@ -166,11 +183,15 @@ def test_a_long_nav_label_wraps_instead_of_being_clipped(app):
         assert not b.toolTip(), "it fits on two lines -- no tooltip needed"
         assert b.sizeHint().height() > w._nav_lib.sizeHint().height(), \
             "the two-line entry is taller than a one-line one"
-        # the split is the balanced one, not the greedy fill
-        greedy = max(fm.horizontalAdvance(shell.RAIL_INDENT + "Ferramentas de"),
-                     fm.horizontalAdvance(shell.RAIL_INDENT + "depuração"))
+        # The split is the width-minimising one (what `_wrap_nav` promises), not a greedy
+        # first-line fill. Check the chosen widest line equals the best any single break
+        # can do -- computed the same way the code does, so it holds in any font.
+        best = min(
+            max(fm.horizontalAdvance(shell.RAIL_INDENT + " ".join(words[:i])),
+                fm.horizontalAdvance(shell.RAIL_INDENT + " ".join(words[i:])))
+            for i in range(1, len(words)))
         chosen = max(fm.horizontalAdvance(ln) for ln in b.text().split("\n"))
-        assert chosen < greedy, f"balanced split should beat greedy ({chosen} vs {greedy})"
+        assert chosen == best, f"wrap must pick the width-minimising split ({chosen} vs {best})"
     finally:
         w.close()
 
