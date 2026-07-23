@@ -9,6 +9,7 @@ couple of reusable widgets; the modern shell owns the look.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,21 @@ DEFAULT_KEYS: dict[str, int] = {
 # LANGUAGES / STRINGS are built at the bottom, from lang/*.json.
 
 
+SETTINGS_FILE_ENV = "NGPCRAFT_SETTINGS"
+
+
 def make_settings() -> QSettings:
+    """The one way to reach stored settings: the user scope (the registry, on Windows),
+    or the .ini named by `NGPCRAFT_SETTINGS` when that is set.
+
+    The override exists because the test suite CLEARS this store around every test, and
+    there is no other way to keep it off the real one: `QSettings.setDefaultFormat` is
+    documented to steer the (organization, application) constructor and, on this Qt
+    build, does not -- only the explicit (format, scope, ...) form honours a redirect.
+    So it has to happen here. See `pytest_configure` in the root conftest."""
+    override = os.environ.get(SETTINGS_FILE_ENV)
+    if override:
+        return QSettings(override, QSettings.Format.IniFormat)
     return QSettings(SETTINGS_ORG, SETTINGS_APP)
 
 

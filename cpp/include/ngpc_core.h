@@ -359,6 +359,16 @@ NGPC_API void ngpc_set_timer_base(ngpc_t*, uint32_t cycles_per_phi_t1);
 NGPC_API void ngpc_get_apu_state(ngpc_t*, ngpc_apu_state_t* out);
 /* Debug channel mute mask: bit0..2 squares, bit3 noise, bit4 DAC (0x1F = all on). */
 NGPC_API void ngpc_set_apu_channel_mask(ngpc_t*, uint32_t mask);
+
+/* Debug LAYER mask -- the video counterpart of the channel mute above.
+ *   bit0 SCR1 · bit1 SCR2 · bit2 sprites PR.C=1 · bit3 PR.C=2 · bit4 PR.C=3
+ * 0x1F = everything on, which is the default and the only value any fidelity gate
+ * may run under. Clearing a bit removes that layer from the composed picture and
+ * changes nothing else -- no machine state, no timing, no savestate content. It is
+ * how you answer "which plane is this text on?" without editing VRAM. */
+#define NGPC_LAYER_ALL 0x1Fu
+NGPC_API void ngpc_set_layer_mask(ngpc_t*, uint32_t mask);
+NGPC_API uint32_t ngpc_get_layer_mask(ngpc_t*);
 NGPC_API uint32_t ngpc_get_audio(ngpc_t*, int16_t* out, uint32_t frames);
 NGPC_API uint64_t ngpc_audio_dropped(ngpc_t*);
 

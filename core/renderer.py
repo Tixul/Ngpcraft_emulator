@@ -41,6 +41,18 @@ from core.k2ge import (
 NGPC_SCREEN_WIDTH = 160
 NGPC_SCREEN_HEIGHT = 152
 
+# Debug layer mask -- the video twin of the APU's channel mute. MUST match the native
+# core bit for bit (`Machine::kLayer*` in cpp/src/machine.hpp, `ngpc_set_layer_mask`):
+# a mask that means different things in the two cores would make the differential gate
+# compare two different pictures and call it agreement.
+LAYER_SCR1 = 0x01
+LAYER_SCR2 = 0x02
+LAYER_SPR_BACK = 0x04      # PR.C = 1, behind both planes
+LAYER_SPR_MID = 0x08       # PR.C = 2, between the planes
+LAYER_SPR_FRONT = 0x10     # PR.C = 3, in front of everything
+LAYER_SPRITES = LAYER_SPR_BACK | LAYER_SPR_MID | LAYER_SPR_FRONT
+LAYER_ALL = 0x1F
+
 # Scroll plane geometry: 32 tiles × 32 tiles × 8-pixel tiles = 256×256 pixel
 # plane. Scroll offsets wrap modulo this size.
 _SCR_PLANE_PIXEL_SIZE = 256
@@ -517,9 +529,16 @@ def _apply_neg_invert(framebuffer: list[list[K2geColor]]) -> None:
 
 
 def render_frame(
-    memory: dict[int, int], raster_log: RasterLog | None = None,
+    memory: dict[int, int],
+    raster_log: RasterLog | None = None,
+    layer_mask: int = LAYER_ALL,
 ) -> RenderedFrame:
     """Compose one NGPC frame from a merged memory view.
+
+    `layer_mask` is the debug show/hide mask (`LAYER_SCR1` … `LAYER_SPR_FRONT`); it
+    must stay bit-for-bit the same concept as the native core's `ngpc_set_layer_mask`,
+    which is why both live under the same names. Default `LAYER_ALL` = the real
+    picture; anything else is an inspection view and must never feed a fidelity gate.
 
     `raster_log` is the K2GE register block (0x8000..0x803F) as it stood at the start
     of each of the 152 visible lines -- what the native core records while the beam
@@ -566,15 +585,24 @@ def render_frame(
         memory, positioned_sprites, sprite_palettes, tile_cache,
     )
 
-    _blit_sprite_layer(framebuffer, sprite_layers[1])
-    _render_scroll_plane(
-        framebuffer, memory, control, back_plane, tile_cache, raster_log,
-    )
-    _blit_sprite_layer(framebuffer, sprite_layers[2])
-    _render_scroll_plane(
-        framebuffer, memory, control, front_plane, tile_cache, raster_log,
-    )
-    _blit_sprite_layer(framebuffer, sprite_layers[3])
+    # The layer mask gates COMPOSITION only, never `build_sprite_line_buffer` above:
+    # sprite 0 still wins its pixel whatever is shown, so hiding the front sprites
+    # reveals the scroll plane under them -- not the sprite that lost the pixel.
+    def _sprites(prc: int) -> None:
+        if layer_mask & (LAYER_SPR_BACK << (prc - 1)):
+            _blit_sprite_layer(framebuffer, sprite_layers[prc])
+
+    def _plane(plane: str) -> None:
+        if layer_mask & (LAYER_SCR1 if plane == "scr1" else LAYER_SCR2):
+            _render_scroll_plane(
+                framebuffer, memory, control, plane, tile_cache, raster_log,
+            )
+
+    _sprites(1)
+    _plane(back_plane)
+    _sprites(2)
+    _plane(front_plane)
+    _sprites(3)
 
     oowc_color = resolve_oowc_color(memory, control)
     _apply_window_clip(framebuffer, control, oowc_color)

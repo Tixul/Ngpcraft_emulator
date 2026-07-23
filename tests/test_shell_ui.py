@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import tempfile
 
 import pytest
 
@@ -32,11 +33,30 @@ def app():
 
 @pytest.fixture(autouse=True)
 def _clean_settings():
-    # Never touch the user's real settings: use a throwaway in-memory scope.
+    # This clears the REAL scope -- `make_settings()` has no test mode. What keeps it
+    # off the user's registry is `pytest_configure` in the root conftest, which points
+    # QSettings at a temp .ini before collection. Without that redirect these two
+    # lines delete the user's BIOS path and ROM folder on every test.
     s = cfg.make_settings()
     s.clear()
     yield
     s.clear()
+
+
+def test_the_suite_never_touches_real_settings():
+    """The guard for the conftest redirect. This fixture calls `.clear()` on
+    `QSettings("NgpCraft", "Emulator")` around EVERY test in this file; if that ever
+    resolves to the user's own scope again, a test run eats their configuration --
+    silently, because wiping settings is not something a passing test complains about.
+    """
+    from PyQt6.QtCore import QSettings
+
+    s = cfg.make_settings()
+    assert s.format() == QSettings.Format.IniFormat, \
+        "settings must not resolve to the native store (the Windows registry)"
+    where = pathlib.Path(s.fileName()).resolve()
+    tmp = pathlib.Path(tempfile.gettempdir()).resolve()
+    assert where.is_relative_to(tmp), f"tests would write real settings at {where}"
 
 
 def test_shell_builds_with_three_pages(app):
@@ -85,8 +105,13 @@ def test_the_rail_fits_every_language_it_ships(app):
     language with longer words (Portuguese "Ferramentas de depuração", but French
     "Bibliothèque" already) had its entries cut off. It now measures itself.
 
-    The contract, per language: every nav entry either fits, or carries a tooltip
-    with its full text (the rail is capped so one long word cannot eat the window).
+    The contract, per language: every nav entry shows its text IN FULL -- on one line
+    if it fits, wrapped onto two if it does not -- or, only when even two lines cannot
+    hold it, carries a tooltip. The rail is capped, so it can never eat the window.
+
+    Wrapping rather than shortening is the point: `m_debug` in Portuguese is
+    "Ferramentas de depuração", and rewording a contributor's translation to fit a
+    sidebar is not the layout's call to make.
     """
     from PyQt6.QtGui import QFont, QFontMetrics
 
@@ -100,18 +125,52 @@ def test_the_rail_fits_every_language_it_ships(app):
             w._retranslate()
             rail = w._rail.width()
             assert shell.RAIL_MIN_W <= rail <= shell.RAIL_MAX_W
-            for b in (w._nav_resume, w._nav_lib, w._nav_set, w._nav_dbg):
+            for b, label in w._nav_text.items():
                 b.ensurePolished()
                 f = QFont(b.font()); f.setBold(True)
-                need = QFontMetrics(f).horizontalAdvance(b.text()) + shell.RAIL_TEXT_PAD
-                assert need <= rail or b.toolTip() == b.text().strip(), (
-                    f"[{lang}] {b.text().strip()!r} needs {need}px of a {rail}px rail "
-                    f"and has no tooltip to fall back on")
-        # collapsing still wins over any measured width, and expanding re-measures
+                fm = QFontMetrics(f)
+                # whatever the layout, the words shown are the words translated
+                assert b.text().split() == label.split(), f"[{lang}] {label!r} altered"
+                need = max(fm.horizontalAdvance(ln) for ln in b.text().split("\n"))
+                assert need + shell.RAIL_TEXT_PAD <= rail or b.toolTip() == label, (
+                    f"[{lang}] {label!r} needs {need + shell.RAIL_TEXT_PAD}px of a "
+                    f"{rail}px rail and has no tooltip to fall back on")
+        # collapsing still wins over any measured width, and expanding restores it
         w._toggle_rail(False)
         assert w._rail.width() == shell.RAIL_COLLAPSED_W
         w._toggle_rail(True)
-        assert w._rail.width() == w._rail_width()
+        assert w._rail.width() == w._rail_w
+    finally:
+        w.close()
+
+
+def test_a_long_nav_label_wraps_instead_of_being_clipped(app):
+    """A label no single line can hold is split over two, at the balanced boundary --
+    the one that leaves the widest line narrowest, since that is what the rail costs."""
+    from PyQt6.QtGui import QFont, QFontMetrics
+
+    w = shell.Shell()
+    try:
+        w.show()
+        b = w._nav_dbg
+        b.ensurePolished()
+        f = QFont(b.font()); f.setBold(True)
+        fm = QFontMetrics(f)
+        long_label = "Ferramentas de depuração"
+        w._nav_text = dict(w._nav_text)          # leave the real labels alone
+        w._nav_text[b] = long_label
+        w._fit_rail()
+
+        assert "\n" in b.text(), "a label this long must not stay on one line"
+        assert b.text().split() == long_label.split(), "wrapping must not drop a word"
+        assert not b.toolTip(), "it fits on two lines -- no tooltip needed"
+        assert b.sizeHint().height() > w._nav_lib.sizeHint().height(), \
+            "the two-line entry is taller than a one-line one"
+        # the split is the balanced one, not the greedy fill
+        greedy = max(fm.horizontalAdvance(shell.RAIL_INDENT + "Ferramentas de"),
+                     fm.horizontalAdvance(shell.RAIL_INDENT + "depuração"))
+        chosen = max(fm.horizontalAdvance(ln) for ln in b.text().split("\n"))
+        assert chosen < greedy, f"balanced split should beat greedy ({chosen} vs {greedy})"
     finally:
         w.close()
 
@@ -513,6 +572,131 @@ def test_choose_and_reset_cover_round_trip(app, tmp_path, monkeypatch):
         page.reset_cover(str(rom))
         assert shell.custom_cover(rom) is None
         assert page._images[str(rom)].size() == auto.size(), "fell back to the rendered one"
+    finally:
+        page._stop_worker()
+        page.deleteLater()
+
+
+class _FlatMachine:
+    """A core whose screen never shows anything -- one solid colour, forever. That
+    is literally what a cartridge booted WITHOUT a BIOS puts on screen."""
+
+    def __init__(self, colour: int = 0xFFF) -> None:
+        self._fb = [colour] * (shell.SCREEN_W * shell.SCREEN_H)
+        self.frames = 0
+
+    def run_frames(self, n: int) -> None:
+        self.frames += n
+
+    def framebuffer(self) -> list[int]:
+        return self._fb
+
+
+class _FlatSession:
+    def __init__(self, rom, bios_path=None, autosave=False, colour=0xFFF) -> None:
+        self.machine = _FlatMachine(colour)
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("colour", [0xFFF, 0x000])
+def test_a_blank_capture_never_becomes_a_cover(app, tmp_path, monkeypatch, colour):
+    """The bug: every cover in the grid was a white box. A ROM that never reaches
+    its title screen renders one flat colour, and that frame used to be saved as
+    the cover -- CACHED, so it stayed a white box even after the cause was fixed.
+    A capture with no picture in it is now no cover at all: the card keeps its
+    placeholder and the next launch tries again."""
+    monkeypatch.setattr(shell, "THUMB_DIR", tmp_path / "thumbnails")
+    monkeypatch.setattr(shell, "COVER_DIR", tmp_path / "covers")
+    shell.THUMB_DIR.mkdir()
+    monkeypatch.setattr(shell, "NativeSession",
+                        lambda *a, **k: _FlatSession(*a, colour=colour, **k))
+
+    rom = tmp_path / "roms" / "Blank.ngc"
+    rom.parent.mkdir()
+    rom.write_bytes(b"\xff" * 64)
+
+    worker = shell.ThumbWorker([rom], tmp_path / "bios.bin")
+    monkeypatch.setattr(worker, "_bios", tmp_path / "bios.bin")   # pretend it exists
+    seen: list[str] = []
+    worker.ready.connect(lambda r, _i: seen.append(r))
+    worker.run()
+
+    assert seen == [], "a blank frame must not be shown as a cover"
+    assert not shell._cover_path(rom).exists(), "...and must not be cached to disk"
+
+
+def test_without_a_bios_no_rom_is_booted_for_a_cover(app, tmp_path, monkeypatch):
+    """Covers are rendered by BOOTING the game, and no game boots without a BIOS.
+    Rendering anyway spends a full core boot per ROM to produce a blank box, so
+    with no BIOS the pass does not run at all -- but a cover the user CHOSE is
+    still served, since that one costs no boot."""
+    from PyQt6.QtGui import QImage
+
+    monkeypatch.setattr(shell, "THUMB_DIR", tmp_path / "thumbnails")
+    monkeypatch.setattr(shell, "COVER_DIR", tmp_path / "covers")
+    shell.THUMB_DIR.mkdir()
+    shell.COVER_DIR.mkdir()
+
+    def _boom(*a, **k):
+        raise AssertionError("booted a ROM with no BIOS to render a cover")
+    monkeypatch.setattr(shell, "NativeSession", _boom)
+
+    roms = tmp_path / "roms"
+    roms.mkdir()
+    plain, chosen = roms / "Plain.ngc", roms / "Chosen.ngc"
+    for p in (plain, chosen):
+        p.write_bytes(b"\xff" * 64)
+    mine = QImage(8, 8, QImage.Format.Format_RGB32); mine.fill(0xFF00FF00)
+    assert mine.save(str(shell.COVER_DIR / "Chosen.png"), "PNG")
+
+    seen: list[str] = []
+    worker = shell.ThumbWorker([plain, chosen], None)
+    worker.ready.connect(lambda r, _i: seen.append(r))
+    worker.run()
+
+    assert seen == [str(chosen)]
+    assert not shell._cover_path(plain).exists()
+
+
+def test_a_bios_added_later_re_renders_the_covers(app, tmp_path, monkeypatch):
+    """Set the BIOS in Settings and come back: the covers that could not be
+    rendered without one are rendered now, without a restart."""
+    monkeypatch.setattr(shell, "THUMB_DIR", tmp_path / "thumbnails")
+    monkeypatch.setattr(shell, "COVER_DIR", tmp_path / "covers")
+    monkeypatch.setattr(shell, "DEFAULT_BIOS", tmp_path / "no-such-bios.bin")
+    roms = tmp_path / "roms"
+    roms.mkdir()
+    (roms / "Game.ngc").write_bytes(b"\xff" * 64)
+
+    settings = cfg.make_settings()
+    settings.setValue("paths/rom_folder", str(roms))
+    started: list[object] = []
+    monkeypatch.setattr(shell.LibraryPage, "_start_worker",
+                        lambda self, r: started.append(self._bios()))
+    # The full re-render (as opposed to the cheap "resume what is missing" pass the
+    # library already runs whenever it is shown) is what must happen exactly once.
+    reloads: list[int] = []
+    real_reload = shell.LibraryPage.reload
+    monkeypatch.setattr(shell.LibraryPage, "reload",
+                        lambda self: (reloads.append(1), real_reload(self))[1])
+
+    page = shell.LibraryPage(settings, shell.lib.Library(tmp_path / "library.json"))
+    try:
+        assert started == [None], "the first pass ran with no BIOS"
+        assert page._bios_hint.isVisible() or not page.isVisible(), "the why is on screen"
+
+        bios = tmp_path / "bios.bin"
+        bios.write_bytes(b"\x00" * 64)
+        settings.setValue("paths/bios", str(bios))
+        page.show()          # back from Settings
+        assert started[-1] == bios, "a BIOS appearing re-runs the cover pass"
+        assert len(reloads) == 2, "construction, then the BIOS change"
+        page.hide()
+        page.show()
+        assert len(reloads) == 2, "...and not again on every visit"
+        assert not page._bios_hint.isVisible()
     finally:
         page._stop_worker()
         page.deleteLater()

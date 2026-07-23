@@ -1151,8 +1151,11 @@ class UiDockStructureTests(_QtAvailableMixin, unittest.TestCase):
         self._clear_window_layout_settings()
 
     def _clear_window_layout_settings(self) -> None:
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("NgpCraft", "Emulator")
+        # Via make_settings(), so this lands on the temp .ini the root conftest
+        # redirects to. Built by hand, it removed "window" from the user's own
+        # settings on every run of this test.
+        import ngpc_settings
+        settings = ngpc_settings.make_settings()
         settings.remove("window")
         settings.sync()
 
@@ -1223,13 +1226,13 @@ class UiDockStructureTests(_QtAvailableMixin, unittest.TestCase):
     def test_qsettings_remembers_last_directory(self) -> None:
         # Pass 52 : `_remember_dir` persists to QSettings, and a fresh
         # window reads back the same value.
-        from PyQt6.QtCore import QSettings
         import tempfile
-        # Use a unique test-only QSettings namespace to avoid
-        # touching the real user settings file.
-        # The helpers in EmulatorWindow hardcode "NgpCraft"/"Emulator"
-        # so we clear that scope before + after the test.
-        settings = QSettings("NgpCraft", "Emulator")
+        # The comment here used to claim "a unique test-only namespace"; there was
+        # none, and this removed `last_dir/rom` from the user's real settings on
+        # every run. `make_settings()` is the shared entry point EmulatorWindow now
+        # uses too, so the conftest redirect covers both sides of this test.
+        import ngpc_settings
+        settings = ngpc_settings.make_settings()
         settings.remove("last_dir/rom")
         try:
             window, rom = self._open_window()

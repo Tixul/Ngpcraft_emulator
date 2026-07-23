@@ -47,8 +47,8 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
   explicitly. Switches live, no restart.
 - **Debug tools** (`F1`) — a real debugger: symbols, instruction stepping, call stack,
   raster event timeline, read *and* write watchpoints, an editable hex view with access
-  highlighting, RAM search, and audio analysis with **VGM export**. See
-  [Debugging](#debugging-f1).
+  highlighting, RAM search, **show/hide any video layer** on the live picture, and audio
+  analysis with **VGM export**. See [Debugging](#debugging-f1).
 - **ROM analysis** — right-click a game to boot it, drive it, and report what is wrong
   with it. See [ROM analysis](#rom-analysis).
 - **Crash reports** — a ROM fault writes a detailed `crashes/*.txt` (reason, PC, opcode,
@@ -116,9 +116,11 @@ No ROMs or BIOS are included — provide your own.
 - Put `.ngc` / `.ngp` files in **`roms/`** (or pick any folder with **Choose ROM folder**,
   in the Library).
 - A real Neo Geo Pocket **BIOS** — place it as **`bios.bin`** next to the app (or set the
-  path in **Settings ▸ Console (BIOS)**). **Most homebrew need it**: they call BIOS routines through
-  the console's vector table, so without a BIOS they crash on boot (the emulator will tell
-  you when that happens). Commercial games and BIOS-free homebrew run without one.
+  path in **Settings ▸ Console (BIOS)**). **It is not optional.** Both start modes below go
+  through the BIOS — even the instant hand-off boots it internally to capture the state and
+  character RAM it hands the cartridge — so with no BIOS image at all the CPU never reaches
+  the cartridge: the game sits on a blank white or black screen, and its Library cover
+  cannot be rendered either (a card with no cover is telling you exactly this).
 
 > **A few commercial games need `bios.bin` too.** *Metal Slug — 2nd Mission* checks that the
 > console really booted through its BIOS, and quietly disables **fire and jump** when it
@@ -145,6 +147,11 @@ console's own language/clock screens, one of the NGPC's signature features.
 Library covers are rendered automatically (the emulator boots each game and keeps its
 best-looking frame), and that render is a **cache**: it lives in `thumbnails/` and is
 thrown away whenever a new version renders covers differently.
+
+Because a cover is a real boot, it needs **`bios.bin`** — with no BIOS the cards stay
+blank (the Library says so) rather than filling with white boxes, and they render by
+themselves as soon as you point at a BIOS in Settings. A game that never reaches a real
+screen is left uncovered too, and retried next launch, so a blank frame is never cached.
 
 To use your own image instead, right-click a game ▸ **Choose cover image…**. The file is
 copied into **`covers/`** — a folder the emulator only ever *reads*. Nothing regenerates
@@ -369,6 +376,16 @@ write log can show that.
   L/R volume, plus an oscilloscope of the output and the sound Z80's state. **Mute / solo**
   any channel to isolate it, watch the raw chip-write log, and **record the music** — save it
   as a **`.vgm`** (Furnace / VGM players) or as a **`.ngps` song** for the NGPC sound creator.
+- **Layers** — the same idea, applied to the picture: **show or hide** each of the five
+  video layers (scroll plane 1, scroll plane 2, and sprites split by priority) **while the
+  game runs**, with a *solo* button per layer. On this machine text and artwork are always
+  on separate layers — the chip has no other way to put one over the other — so this is how
+  you find out which plane a HUD, a dialogue box or a title logo actually lives on, without
+  editing a byte of VRAM. **Export PNG** saves what you are looking at at **160×152, one
+  file pixel per console pixel**: no scaling, no screen filter, and the 4-bit colour is
+  written back losslessly, so a title screen's background comes out as a clean plate you can
+  edit and re-import. Hiding a layer changes the *picture* and nothing else — no machine
+  state, no timing — so ticking everything back on restores the frame bit for bit.
 - Plus the live viewers: CPU, palette, tiles, sprites — each with an Export button.
 
 ## ROM analysis

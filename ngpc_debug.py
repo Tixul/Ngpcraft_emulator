@@ -382,6 +382,7 @@ class DebugWindow(QMainWindow):
         self._tabs.addTab(self._palette_tab(), "Palette")
         self._tabs.addTab(self._tiles_tab(), "Tiles")
         self._tabs.addTab(self._sprites_tab(), "Sprites")
+        self._tabs.addTab(self._layers_tab(), "Layers")
         self._tabs.currentChanged.connect(lambda _i: self.refresh())
         v.addWidget(self._tabs, 1)
 
@@ -2306,6 +2307,103 @@ class DebugWindow(QMainWindow):
                         f"{flip}   {pal:X}")
         self._spr_text.setPlainText("\n".join(rows))
 
+    # ---- Layers tab
+    # The video counterpart of the Audio tab's mute/solo: the same idea, applied to the
+    # composite instead of the mix. On this machine text and artwork are ALWAYS on
+    # different layers -- the chip has no other way to superimpose them -- so hiding a
+    # layer is how you find out which one owns what, and how you get a clean background
+    # plate out of a game without touching its VRAM.
+    _LAYERS = (
+        (native.NativeMachine.LAYER_SCR1, "Plane 1 (SCR1)"),
+        (native.NativeMachine.LAYER_SCR2, "Plane 2 (SCR2)"),
+        (native.NativeMachine.LAYER_SPR_BACK, "Sprites · behind"),
+        (native.NativeMachine.LAYER_SPR_MID, "Sprites · middle"),
+        (native.NativeMachine.LAYER_SPR_FRONT, "Sprites · front"),
+    )
+    _LAYER_PREVIEW_SCALE = 3
+
+    def _layers_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Show / hide layers in the rendered picture:"))
+
+        self._layer_boxes = []
+        for bit, name in self._LAYERS:
+            row = QHBoxLayout()
+            cb = QCheckBox(name); cb.setChecked(True)
+            cb.toggled.connect(self._apply_layers)
+            self._layer_boxes.append((bit, cb))
+            solo = QPushButton("solo"); solo.setObjectName("ghost")
+            solo.setToolTip("Show this layer only")
+            solo.clicked.connect(lambda _c=False, b=bit: self._solo_layer(b))
+            row.addWidget(cb); row.addWidget(solo); row.addStretch()
+            lay.addLayout(row)
+
+        btns = QHBoxLayout()
+        allb = QPushButton("All on"); allb.setObjectName("ghost")
+        allb.clicked.connect(lambda: self._solo_layer(None))
+        btns.addWidget(allb); btns.addStretch()
+        lay.addLayout(btns)
+
+        # ⚠️ RAW pixels on purpose: no gamma, no LCD filter. This preview doubles as the
+        # export source, and an extracted background plate has to be the colours the
+        # palette actually holds -- a screen-emulation filter would bake a look into art
+        # that is meant to be re-imported.
+        self._layer_view = QLabel("(no game running)")
+        self._layer_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._layer_view, 1)
+
+        self._layer_hint = QLabel(
+            "Hidden layers change the picture only — no machine state, no timing. "
+            "Turn them all back on before judging fidelity.")
+        self._layer_hint.setObjectName("hint"); self._layer_hint.setWordWrap(True)
+        lay.addWidget(self._layer_hint)
+
+        lay.addLayout(self._export_row(
+            lambda: self._save_png(self._layer_rgb(), "layer.png"), "💾 Export PNG…"))
+        return w
+
+    def _layer_mask(self) -> int:
+        return sum(bit for bit, cb in self._layer_boxes if cb.isChecked())
+
+    def _apply_layers(self) -> None:
+        if self._m is not None:
+            try:
+                self._m.set_layer_mask(self._layer_mask())
+            except Exception:
+                pass
+
+    def _solo_layer(self, bit: int | None) -> None:
+        """`bit` = show that layer alone; `None` = show everything again."""
+        for b, cb in self._layer_boxes:
+            cb.blockSignals(True)
+            cb.setChecked(bit is None or b == bit)
+            cb.blockSignals(False)
+        self._apply_layers()
+        self.refresh()
+
+    def _layer_rgb(self):
+        """The composed picture at 1:1, RGB, as the mask currently shows it."""
+        m = self._m
+        if m is None:
+            return None
+        fb = np.asarray(m.framebuffer(), dtype=np.uint16)
+        if fb.size != native.SCREEN_W * native.SCREEN_H:
+            return None
+        a = fb.reshape(native.SCREEN_H, native.SCREEN_W)
+        rgb = np.empty((native.SCREEN_H, native.SCREEN_W, 3), dtype=np.uint8)
+        rgb[..., 0] = (a & 0x0F) * 17            # R = low nibble of 0BGR
+        rgb[..., 1] = ((a >> 4) & 0x0F) * 17     # G
+        rgb[..., 2] = ((a >> 8) & 0x0F) * 17     # B = high nibble
+        return rgb
+
+    def _refresh_layers(self) -> None:
+        self._apply_layers()          # keep the mask across game resets, like the audio one
+        rgb = self._layer_rgb()
+        if rgb is None:
+            self._layer_view.setText("(no game running)")
+            return
+        self._layer_view.setPixmap(_pixmap(rgb, self._LAYER_PREVIEW_SCALE))
+
     # ---- refresh dispatch
     def refresh(self) -> None:
         if self._m is not None and self._play is not None:
@@ -2317,4 +2415,5 @@ class DebugWindow(QMainWindow):
         (self._refresh_cpu, self._refresh_disasm, self._refresh_callstack,
          self._refresh_events, self._refresh_mem, self._refresh_watch,
          self._refresh_breaks, self._refresh_ramsearch, self._refresh_audio,
-         self._refresh_palette, self._refresh_tiles, self._refresh_sprites)[idx]()
+         self._refresh_palette, self._refresh_tiles, self._refresh_sprites,
+         self._refresh_layers)[idx]()

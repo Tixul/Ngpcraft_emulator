@@ -990,6 +990,18 @@ NGPC_API void ngpc_set_apu_channel_mask(ngpc_t* h, uint32_t mask) {
     reinterpret_cast<Machine*>(h)->apu.channel_mask = uint8_t(mask & 0x1F);
 }
 
+NGPC_API void ngpc_set_layer_mask(ngpc_t* h, uint32_t mask) {
+    if (!h) return;
+    // bit0 = SCR1, bit1 = SCR2, bit2..4 = sprites by PR.C. Debug show/hide only:
+    // it drops a layer from the composite and touches nothing else. See machine.hpp.
+    reinterpret_cast<Machine*>(h)->layer_mask = uint8_t(mask & Machine::kLayerAll);
+}
+
+NGPC_API uint32_t ngpc_get_layer_mask(ngpc_t* h) {
+    if (!h) return Machine::kLayerAll;
+    return reinterpret_cast<Machine*>(h)->layer_mask;
+}
+
 NGPC_API void ngpc_get_apu_state(ngpc_t* h, ngpc_apu_state_t* out) {
     if (!h || !out) return;
     const Apu& a = reinterpret_cast<Machine*>(h)->apu;

@@ -336,6 +336,10 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_get_apu_state.restype = None
     lib.ngpc_set_apu_channel_mask.argtypes = [c_void_p, c_uint32]
     lib.ngpc_set_apu_channel_mask.restype = None
+    lib.ngpc_set_layer_mask.argtypes = [c_void_p, c_uint32]
+    lib.ngpc_set_layer_mask.restype = None
+    lib.ngpc_get_layer_mask.argtypes = [c_void_p]
+    lib.ngpc_get_layer_mask.restype = c_uint32
     lib.ngpc_get_audio.argtypes = [c_void_p, POINTER(c_int16), c_uint32]
     lib.ngpc_get_audio.restype = c_uint32
     lib.ngpc_audio_dropped.argtypes = [c_void_p]
@@ -559,6 +563,26 @@ class NativeMachine:
     def set_apu_channel_mask(self, mask: int) -> None:
         """Debug mute: bit0..2 squares, bit3 noise, bit4 DAC (0x1F = all on)."""
         self._lib.ngpc_set_apu_channel_mask(self._h, int(mask) & 0x1F)
+
+    # Debug layer mask -- the video twin of the channel mute above. Keep these names
+    # in step with `core.renderer.LAYER_*`: one concept, and the two cores must not
+    # drift apart on what bit means what.
+    LAYER_SCR1, LAYER_SCR2 = 0x01, 0x02
+    LAYER_SPR_BACK, LAYER_SPR_MID, LAYER_SPR_FRONT = 0x04, 0x08, 0x10
+    LAYER_SPRITES = LAYER_SPR_BACK | LAYER_SPR_MID | LAYER_SPR_FRONT
+    LAYER_ALL = 0x1F
+
+    def set_layer_mask(self, mask: int) -> None:
+        """Debug show/hide: bit0 SCR1, bit1 SCR2, bit2..4 sprites by PR.C.
+
+        Composition only -- no machine state changes, so a mask can be flipped mid-game
+        and flipped back with the picture identical. 0x1F (default) = everything on;
+        any fidelity or corpus measurement must run there.
+        """
+        self._lib.ngpc_set_layer_mask(self._h, int(mask) & self.LAYER_ALL)
+
+    def layer_mask(self) -> int:
+        return int(self._lib.ngpc_get_layer_mask(self._h))
 
     AUDIO_RATE_HZ = 44100
 

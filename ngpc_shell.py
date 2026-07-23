@@ -86,6 +86,7 @@ BIOS_INTRO_FRAMES = 400
 # the ceiling stops one long label from eating the window.
 RAIL_MIN_W, RAIL_MAX_W, RAIL_COLLAPSED_W = 190, 320, 44
 RAIL_TEXT_PAD = 2 * 16 + 2 * 8 + 10   # QPushButton#rail padding + rail margins + slack
+RAIL_INDENT = "   "                   # the nav entries' hanging indent, on every line
 DEFAULT_ROM_DIR = REPO / "roms"          # drop your .ngc/.ngp files here (or pick a folder)
 DEFAULT_BIOS = REPO / "bios.bin"         # optional: a real NGPC BIOS enables "Boot BIOS"
 THUMB_DIR = REPO / "thumbnails"          # auto-rendered covers -- a CACHE, prunable
@@ -116,13 +117,22 @@ _STATUS_DESC = {
     30: ("UNIMPLEMENTED", "a valid encoding this core has not ported yet"),
 }
 _CRASH_STATUSES = frozenset(_STATUS_DESC) - {13}   # 13 is a clean power-off, not a crash
-THUMB_VERSION = 3       # bump to invalidate the on-disk cache after a render change
+THUMB_VERSION = 4       # bump to invalidate the on-disk cache after a render change
 # Frames to sample for a thumbnail. We keep the RICHEST one so a boot logo, a
 # fade-to-black or a mono fade-to-white does not become the cover, and we sample
 # DEEP (titles/attract can be late) but STOP EARLY once a frame is clearly a real
 # screen -- so a colourful game costs one sample, only the stubborn ones cost six.
 THUMB_SAMPLE_FRAMES = (360, 600, 840, 1120, 1500, 1900)
 THUMB_GOOD_ENOUGH = 22   # distinct-colour score that ends the search early
+# Under this many distinct colours the capture carries NO PICTURE: one flat fill,
+# maybe a second colour. That is what a cartridge sitting on its boot screen looks
+# like -- with no BIOS a commercial game never gets past it and every frame comes
+# back solid white (0xFFF) or solid black. Such a frame is never cached: writing it
+# would pin a white box to disk for good, which is exactly the bug this guards
+# against. The card keeps its placeholder and the next launch tries again.
+# The floor is safe: the thinnest REAL cover measured (a white title screen) scores
+# 4, so 2 separates "nothing on screen" from "a legitimately plain screen".
+THUMB_BLANK_SCORE = 2
 
 # The palette every widget paints with. A module global rather than a value
 # threaded through constructors: cards and stars are built deep inside layout
@@ -219,6 +229,13 @@ class ThumbWorker(QObject):
                 if not img.isNull():
                     self.ready.emit(str(rom), img)
                     continue
+            # No BIOS image, no rendering. A cartridge booted without one never
+            # reaches its title screen -- it sits on a solid white or black frame
+            # forever -- so every cover would come out a blank box. Leaving the
+            # placeholder up is both honest and free; `bios.bin` is not distributed,
+            # so a fresh clone lands here until the user points at their own dump.
+            if self._bios is None:
+                continue
             try:
                 img = self._render(rom)
             except Exception:
@@ -259,8 +276,8 @@ class ThumbWorker(QObject):
                     break             # a real screen -- no need to sample deeper
         finally:
             s.close()
-        if best_fb is None:
-            return None
+        if best_fb is None or best_score <= THUMB_BLANK_SCORE:
+            return None      # nothing on screen -- see THUMB_BLANK_SCORE
         # Build the image from a raw BGRA buffer (per-pixel setPixel would crawl).
         buf = bytearray(SCREEN_W * SCREEN_H * 4)
         i = 0
@@ -491,6 +508,7 @@ class LibraryPage(QWidget):
         self._roms: list[Path] = []               # ...after search / filter / sort
         self._thread: QThread | None = None
         self._worker: ThumbWorker | None = None
+        self._rendered_with: Path | None = None   # BIOS the current covers came from
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 22, 28, 16)
@@ -568,6 +586,13 @@ class LibraryPage(QWidget):
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self._empty)
 
+        # Why the covers are blank, said once, only when it is true.
+        self._bios_hint = QLabel()
+        self._bios_hint.setObjectName("hint")
+        self._bios_hint.setWordWrap(True)
+        self._bios_hint.setVisible(False)
+        root.addWidget(self._bios_hint)
+
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._host = None
@@ -583,10 +608,10 @@ class LibraryPage(QWidget):
         self._folder_btn.setText(cfg.tr(lang, "set_folder"))
         self._open_btn.setText(cfg.tr(lang, "open_rom"))
         self._empty.setText(cfg.tr(lang, "no_roms"))
+        self._bios_hint.setText(cfg.tr(lang, "covers_need_bios"))
         # Only offer "Boot BIOS" when a BIOS image is actually available.
-        has_bios = bool(cfg.bios_path(self._settings) and Path(cfg.bios_path(self._settings)).is_file()) \
-            or DEFAULT_BIOS.is_file()
-        self._bios_btn.setVisible(has_bios)
+        self._bios_btn.setVisible(self._bios() is not None)
+        self._sync_bios_hint()
         self._view_btns[cfg.VIEW_GRID].setText(cfg.tr(lang, "view_grid"))
         self._view_btns[cfg.VIEW_LIST].setText(cfg.tr(lang, "view_list"))
         self._view_btns[cfg.VIEW_COMPACT].setText(cfg.tr(lang, "view_compact"))
@@ -634,8 +659,15 @@ class LibraryPage(QWidget):
             return Path(b)
         return DEFAULT_BIOS if DEFAULT_BIOS.is_file() else None
 
+    def _sync_bios_hint(self) -> None:
+        """Covers are rendered by BOOTING each ROM, which takes a BIOS. Say so when
+        there is none, next to the blank cards it explains -- and only then."""
+        self._bios_hint.setVisible(bool(self._all_roms) and self._bios() is None)
+
     def reload(self) -> None:
         self._stop_worker()
+        # What the covers about to be rendered were rendered WITH (see showEvent).
+        self._rendered_with = self._bios()
         d = self._rom_dir()
         self._all_roms = []
         if d:
@@ -649,6 +681,7 @@ class LibraryPage(QWidget):
             self._all_roms = sorted(p for p in roms if p.is_file())
         self._images.clear()
         self._arrange()
+        self._sync_bios_hint()
         # Render covers for EVERY ROM, not just the visible ones: filtering to
         # favourites and back must not leave the rest of the library blank.
         if self._all_roms:
@@ -934,6 +967,16 @@ class LibraryPage(QWidget):
         # silently replaced the first, so the re-flow below never ran and the grid kept
         # the column count it guessed before it had a real width. One handler now.
         super().showEvent(e)
+        # A BIOS picked in Settings unblocks the covers: without one nothing could be
+        # rendered, so re-run the whole pass on the way back here rather than making
+        # the user restart. Gated on the path actually CHANGING -- this fires on every
+        # return from Settings or from a game. `reload` re-arranges and re-starts the
+        # worker itself, so there is nothing left for the rest of this handler to do.
+        if self._bios() != self._rendered_with:
+            self.retranslate()
+            self.reload()
+            QTimer.singleShot(0, self._reflow_grid)
+            return
         # A game just ended: its play count / playtime / last-played changed, so the
         # cards are stale -- and under "Last played" so is the whole ordering.
         self._arrange()
@@ -3059,6 +3102,8 @@ class Shell(QMainWindow):
         # left rail (collapses to a thin strip that still holds the toggle)
         rail = QWidget(); rail.setObjectName("rail"); rail.setFixedWidth(RAIL_MIN_W)
         self._rail = rail
+        self._rail_w = RAIL_MIN_W            # last width `_fit_rail` measured
+        self._nav_text: dict[QPushButton, str] = {}   # button -> its raw label
         rlay = QVBoxLayout(rail); rlay.setContentsMargins(8, 8, 8, 12); rlay.setSpacing(4)
         head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0)
         self._rail_title = QLabel("◆ NgpCraft"); self._rail_title.setObjectName("appTitle")
@@ -3129,40 +3174,61 @@ class Shell(QMainWindow):
         if rom:
             self._launch(rom)
 
-    def _rail_width(self) -> int:
-        """How wide the rail must be for its longest nav label to fit whole.
+    @staticmethod
+    def _wrap_nav(label: str, fm: QFontMetrics) -> str:
+        """Break a nav label over two lines, at the word boundary that leaves the
+        WIDEST line as narrow as possible.
 
-        Measured in the font Qt will actually PAINT with -- bold, because the selected
-        entry is 600-weight and that is the widest the same text ever gets. Measuring
-        the bold form for every entry means selecting one never re-clips it."""
+        The rail is sized on that widest line, so the balanced split is the cheapest
+        one -- 'Ferramentas de / depuração' costs less width than filling line one
+        greedily. A single unbreakable word comes back unchanged; there is nothing
+        to split, and the caller falls back to a tooltip."""
+        words = label.split()
+        if len(words) < 2:
+            return RAIL_INDENT + label
+        best, best_w = None, None
+        for i in range(1, len(words)):
+            top = RAIL_INDENT + " ".join(words[:i])
+            bot = RAIL_INDENT + " ".join(words[i:])
+            w = max(fm.horizontalAdvance(top), fm.horizontalAdvance(bot))
+            if best_w is None or w < best_w:
+                best, best_w = f"{top}\n{bot}", w
+        return best
+
+    def _fit_rail(self) -> None:
+        """Lay the nav labels out for the current language, then size the rail to them.
+
+        Called after anything that changes those labels or their font. A label too long
+        for one line is broken over TWO rather than reworded: the translation belongs to
+        whoever wrote it, and the layout is what has to give. Only a label that fits on
+        neither -- one unbreakable word wider than the whole rail -- is left clipped,
+        with a tooltip so it stays readable.
+
+        Measured in the font Qt will actually PAINT with, and in BOLD: the selected entry
+        is 600-weight, so measuring that form means selecting one never re-clips it."""
         widest = 0
-        for b in (self._nav_resume, self._nav_lib, self._nav_set, self._nav_dbg):
+        for b, label in self._nav_text.items():
             # Polish first: the 14px comes from the STYLESHEET, and an unpolished
             # button still reports the default app font -- a narrower one, which is
             # how you measure a rail that then clips.
             b.ensurePolished()
             f = QFont(b.font()); f.setBold(True)
-            widest = max(widest, QFontMetrics(f).horizontalAdvance(b.text()))
-        return max(RAIL_MIN_W, min(RAIL_MAX_W, widest + RAIL_TEXT_PAD))
-
-    def _fit_rail(self) -> None:
-        """Re-measure the rail after anything that changes its labels or its font.
-
-        A label too long even for RAIL_MAX_W still gets clipped -- the sidebar is not
-        allowed to eat the window -- so it also gets a tooltip. Clipped AND unreadable
-        is the bug; clipped with the full text one hover away is a layout limit."""
-        width = self._rail_width()
+            fm = QFontMetrics(f)
+            text = RAIL_INDENT + label
+            if fm.horizontalAdvance(text) > RAIL_MAX_W - RAIL_TEXT_PAD:
+                text = self._wrap_nav(label, fm)
+            b.setText(text)
+            lines = [fm.horizontalAdvance(ln) for ln in text.split("\n")]
+            widest = max(widest, max(lines))
+            b.setToolTip("" if max(lines) <= RAIL_MAX_W - RAIL_TEXT_PAD else label)
+        self._rail_w = max(RAIL_MIN_W, min(RAIL_MAX_W, widest + RAIL_TEXT_PAD))
         if self._rail.width() >= 100:     # a collapsed rail stays collapsed
-            self._rail.setFixedWidth(width)
-        for b in (self._nav_resume, self._nav_lib, self._nav_set, self._nav_dbg):
-            f = QFont(b.font()); f.setBold(True)
-            fits = QFontMetrics(f).horizontalAdvance(b.text()) + RAIL_TEXT_PAD <= width
-            b.setToolTip("" if fits else b.text().strip())
+            self._rail.setFixedWidth(self._rail_w)
 
     def _toggle_rail(self, show: bool | None = None) -> None:
         # Collapse to a thin strip that still holds the toggle (no overlap of content).
         show = (self._rail.width() < 100) if show is None else show
-        self._rail.setFixedWidth(self._rail_width() if show else RAIL_COLLAPSED_W)
+        self._rail.setFixedWidth(self._rail_w if show else RAIL_COLLAPSED_W)
         for wdg in self._rail_hideable:
             wdg.setVisible(show)
         self._rail_toggle.setText("‹" if show else "☰")
@@ -3206,10 +3272,15 @@ class Shell(QMainWindow):
 
     def _retranslate(self) -> None:
         lang = cfg.language(self._settings)
-        self._nav_resume.setText("   " + cfg.tr(lang, "m_resume"))
-        self._nav_lib.setText("   " + cfg.tr(lang, "library"))
-        self._nav_set.setText("   " + cfg.tr(lang, "settings"))
-        self._nav_dbg.setText("   " + cfg.tr(lang, "m_debug"))
+        # Keep the labels UNDECORATED here: `_fit_rail` owns how they are laid out
+        # (indent, and a line break when one line will not do), and it needs the
+        # original text to re-wrap from on the next language or theme change.
+        self._nav_text = {
+            self._nav_resume: cfg.tr(lang, "m_resume"),
+            self._nav_lib: cfg.tr(lang, "library"),
+            self._nav_set: cfg.tr(lang, "settings"),
+            self._nav_dbg: cfg.tr(lang, "m_debug"),
+        }
         self._fit_rail()               # the new labels may not be the old width
         self.library.retranslate()
         self.settings.retranslate()

@@ -54,6 +54,7 @@
   "cover_bad": "That file could not be read as an image.",
   "cover_failed": "The cover could not be saved.",
   "cover_set": "Choose cover image",
+  "covers_need_bios": "Covers are rendered by booting each game, which needs the Neo Geo Pocket BIOS. Add a bios.bin — Settings ▸ BIOS. Right-click a card to set your own cover instead.",
   "crash_needs_bios": "⚠ This game needs the Neo Geo Pocket BIOS (not loaded).\nAdd a bios.bin — Settings ▸ BIOS.",
   "fav_add": "Add to favourites",
   "fav_remove": "Remove from favourites",

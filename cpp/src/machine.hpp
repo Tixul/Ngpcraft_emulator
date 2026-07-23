@@ -523,6 +523,21 @@ struct Machine {
     static constexpr uint32_t kScreenWidth  = 160;
     static constexpr uint32_t kScreenHeight = kVisibleScanlines;   /* 152 */
     uint16_t framebuffer[kScreenWidth * kScreenHeight] = {};
+
+    /* 🔍 DEBUG LAYER MASK -- the video twin of `Apu::channel_mask`. A cleared bit drops
+     * one layer from the COMPOSITE only; nothing else changes, because a scroll plane
+     * holds no state of its own to disturb. The silicon has no such register: this is an
+     * inspection tool (which plane owns that text? what does the art look like without
+     * it?), so it MUST default to all-on, or every image gate would be measuring the
+     * mask instead of the core. Deliberately NOT part of a savestate. */
+    static constexpr uint8_t kLayerScr1     = 0x01;
+    static constexpr uint8_t kLayerScr2     = 0x02;
+    static constexpr uint8_t kLayerSprBack  = 0x04;   /* PR.C = 1, behind both planes */
+    static constexpr uint8_t kLayerSprMid   = 0x08;   /* PR.C = 2, between the planes */
+    static constexpr uint8_t kLayerSprFront = 0x10;   /* PR.C = 3, in front of all    */
+    static constexpr uint8_t kLayerAll      = 0x1F;
+    uint8_t layer_mask = kLayerAll;
+
     void render_scanline(uint32_t line);
     void snapshot_raster_line(uint32_t line) {
         if (line < kVisibleScanlines)

@@ -48,10 +48,13 @@ named: anonymous is a fine answer and the translation is just as welcome.
 **Keep `\n` where it is.** It is a line break in a message box or an overlay; the
 surrounding lines were sized around it.
 
-**Length is a real constraint.** Most of these strings sit in buttons, tab labels
-and a 160-pixel-wide card subtitle. If your language needs twice the characters,
-prefer a shorter wording over a correct-but-clipped one — `library`, `settings`,
-the `view_*`, `sort_*` and `hkn_*` families are the tight ones.
+**Length is a real constraint — with one exception.** The **sidebar** is not one:
+`library`, `settings`, `m_resume` and `m_debug` size the sidebar to themselves, and
+a label too long for one line is wrapped onto two. Write those in full; Portuguese
+ships "Ferramentas de depuração" and it is not clipped. Everywhere else the space
+is fixed: tab labels, the `view_*`, `sort_*` and `hkn_*` families, and a
+160-pixel-wide card subtitle. If your language needs twice the characters there,
+prefer a shorter wording over a correct-but-clipped one.
 
 **Keys ending in `_hint` are paragraphs**, shown under a setting to explain what
 it does. Translate the meaning, not the words; these are the only long ones.

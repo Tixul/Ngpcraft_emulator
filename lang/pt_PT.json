@@ -97,7 +97,7 @@
   "library": "Biblioteca",
   "m_audio": "Áudio",
   "m_controls": "Controlos",
-  "m_debug": "Depuração",
+  "m_debug": "Ferramentas de depuração",
   "m_loadstate": "Carregar estado (ranhura {n})",
   "m_quit": "Sair para a biblioteca",
   "m_reset": "Repor",

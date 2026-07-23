@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
 
 from core.emulator_session import EmulatorSession
 from core.k2ge import TILEMAP_TILES_PER_COL, TILEMAP_TILES_PER_ROW
+import ngpc_settings
 
 
 LCD_WIDTH = 160
@@ -130,9 +131,11 @@ class EmulatorWindow(QMainWindow):
         # QSettings persistence (pass 52) — remembers last-used
         # directories across runs so file dialogs open where the
         # user was last working instead of $HOME.
-        # The QSettings key path is rooted under the Anthropic-free
-        # "NgpCraft / Emulator" namespace.
-        self._settings = QSettings("NgpCraft", "Emulator")
+        # Through `make_settings()`, never `QSettings(...)` by hand: that helper is
+        # the single place that knows the scope (and the NGPCRAFT_SETTINGS redirect
+        # the tests rely on). Building it here is what let a test run write to the
+        # user's real settings.
+        self._settings = ngpc_settings.make_settings()
         self._layout_restored = False
         # Tracks the last loaded/saved savestate path so File → Save
         # Savestate (Ctrl+S) can write back without re-prompting. Save

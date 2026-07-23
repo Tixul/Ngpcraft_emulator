@@ -54,6 +54,7 @@
   "cover_bad": "Ce fichier n'a pas pu être lu comme une image.",
   "cover_failed": "La jaquette n'a pas pu être enregistrée.",
   "cover_set": "Choisir une jaquette",
+  "covers_need_bios": "Les jaquettes sont générées en démarrant chaque jeu, ce qui demande le BIOS Neo Geo Pocket. Ajoutez un bios.bin — Réglages ▸ BIOS. Sinon, clic droit sur une carte pour choisir votre propre jaquette.",
   "crash_needs_bios": "⚠ Ce jeu a besoin du BIOS Neo Geo Pocket (non chargé).\nAjoutez un bios.bin — Réglages ▸ BIOS.",
   "fav_add": "Ajouter aux favoris",
   "fav_remove": "Retirer des favoris",

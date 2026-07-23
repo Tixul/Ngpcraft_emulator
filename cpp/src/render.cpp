@@ -204,12 +204,19 @@ void Machine::render_scanline(uint32_t line) {
         }
     }
 
+    /* 🔍 The debug layer mask (machine.hpp) gates COMPOSITION, never the line buffer
+     * above: sprite 0 still wins its pixel whether or not its priority group is shown,
+     * so hiding the front sprites reveals the SCROLL PLANE underneath -- not whatever
+     * sprite lost the pixel. Anything else would be inventing an image the chip cannot
+     * produce, and the point of this tool is to show what is really there. */
     auto blit_sprites = [&](unsigned want_prc) {
+        if (!(layer_mask & (kLayerSprBack << (want_prc - 1u)))) return;
         for (unsigned x = 0; x < kScreenWidth; ++x)
             if (owner_value[x] && owner_prc[x] == want_prc) row[x] = owner_color[x];
     };
 
     auto draw_plane = [&](bool scr1) {
+        if (!(layer_mask & (scr1 ? kLayerScr1 : kLayerScr2))) return;
         const uint32_t map  = scr1 ? kScr1Map : kScr2Map;
         const unsigned soh  = scr1 ? g.s1so_h : g.s2so_h;
         const unsigned sov  = scr1 ? g.s1so_v : g.s2so_v;
