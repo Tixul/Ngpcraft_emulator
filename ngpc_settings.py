@@ -100,6 +100,18 @@ def fullscreen(s: QSettings) -> bool:
     return bool(s.value("gfx/fullscreen", False, type=bool))
 
 
+def fs_hide_ui(s: QSettings) -> bool:
+    """Hide the sidebar and player toolbar while fullscreen -- the game alone. Default
+    on: fullscreen with chrome around it is not what 'fullscreen' usually means."""
+    return bool(s.value("gfx/fs_hide_ui", True, type=bool))
+
+
+def toolbar_autohide(s: QSettings) -> bool:
+    """Hide the player toolbar after the mouse goes still, bring it back on any move.
+    On by default -- it stays available without sitting over the game the whole time."""
+    return bool(s.value("gfx/toolbar_autohide", True, type=bool))
+
+
 def audio_enabled(s: QSettings) -> bool:
     return bool(s.value("audio/enabled", True, type=bool))
 

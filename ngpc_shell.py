@@ -584,6 +584,8 @@ class LibraryPage(QWidget):
         self._empty = QLabel()
         self._empty.setObjectName("hint")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setWordWrap(True)   # its text is set dynamically -- wrap so it never
+        self._empty.setMinimumWidth(1)  # dictates the window width
         root.addWidget(self._empty)
 
         # Why the covers are blank, said once, only when it is true.
@@ -1224,6 +1226,12 @@ class SettingsPage(QWidget):
     def _combo(self, key: str, items: list[tuple[str, str]], current: str):
         """A combo bound to a settings key. items = [(id, label_key)]."""
         c = QComboBox()
+        # Don't let a long option ("Follow the PC's clock…") stretch the combo -- and the
+        # whole settings column -- to its own width. Cap it; the dropdown still shows the
+        # full text, and the current line elides if the window is narrow.
+        c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        c.setMinimumContentsLength(12)
+        c.setMaximumWidth(240)
         for value, _labelkey in items:
             c.addItem("", value)
         idx = [v for v, _ in items].index(current) if current in [v for v, _ in items] else 0
@@ -1271,13 +1279,20 @@ class SettingsPage(QWidget):
         self._fs = QCheckBox(); self._fs.setChecked(cfg.fullscreen(self._settings))
         self._fs.toggled.connect(
             lambda b: (self._settings.setValue("gfx/fullscreen", b), self.changed.emit()))
+        self._fshide = QCheckBox(); self._fshide.setChecked(cfg.fs_hide_ui(self._settings))
+        self._fshide.toggled.connect(
+            lambda b: (self._settings.setValue("gfx/fs_hide_ui", b), self.changed.emit()))
+        self._tbautohide = QCheckBox(); self._tbautohide.setChecked(cfg.toolbar_autohide(self._settings))
+        self._tbautohide.toggled.connect(
+            lambda b: (self._settings.setValue("gfx/toolbar_autohide", b), self.changed.emit()))
         self._showfps = QCheckBox(); self._showfps.setChecked(cfg.show_fps(self._settings))
         self._showfps.toggled.connect(
             lambda b: (self._settings.setValue("gfx/show_fps", b), self.changed.emit()))
 
         self._lbl_scale = QLabel(); self._lbl_filter = QLabel(); self._lbl_color = QLabel()
         self._lbl_aspect = QLabel(); self._lbl_smooth = QLabel(); self._lbl_fs = QLabel()
-        self._lbl_showfps = QLabel(); self._lbl_mono = QLabel()
+        self._lbl_showfps = QLabel(); self._lbl_mono = QLabel(); self._lbl_fshide = QLabel()
+        self._lbl_tbautohide = QLabel()
         for r in (_row(self._lbl_scale, self._scale),
                   _row(self._lbl_mono, self._monobox),
                   _row(self._lbl_filter, self._filter),
@@ -1285,7 +1300,9 @@ class SettingsPage(QWidget):
                   _row(self._lbl_aspect, self._aspectbox),
                   _row(self._lbl_smooth, self._smooth),
                   _row(self._lbl_showfps, self._showfps),
-                  _row(self._lbl_fs, self._fs)):
+                  _row(self._lbl_fs, self._fs),
+                  _row(self._lbl_fshide, self._fshide),
+                  _row(self._lbl_tbautohide, self._tbautohide)):
             v.addWidget(r)
         v.addWidget(self._mono_hint)
         return w
@@ -1539,6 +1556,8 @@ class SettingsPage(QWidget):
         self._lbl_scale.setText(t("lcd_scale")); self._lbl_smooth.setText(t("smoothing"))
         self._lbl_filter.setText(t("filter")); self._lbl_color.setText(t("color_profile"))
         self._lbl_aspect.setText(t("aspect")); self._lbl_fs.setText(t("fullscreen"))
+        self._lbl_fshide.setText(t("fs_hide_ui"))
+        self._lbl_tbautohide.setText(t("toolbar_autohide"))
         self._lbl_showfps.setText(t("show_fps"))
         self._lbl_mono.setText(t("mono_mode")); self._mono_hint.setText(t("mono_mode_hint"))
         for box, items in ((self._filter, self._filter_items),
@@ -1647,6 +1666,31 @@ class OverlayMenu(QWidget):
 
 
 # ---------------------------------------------------------------- play
+class _Canvas(QLabel):
+    """The game surface. A QLabel like before, but it reports pointer movement (mouse
+    tracking on, so it fires with no button held) so the toolbar can auto-hide when the
+    mouse goes still and come back the moment it moves. No paintEvent override -- that is
+    what turns a stray exception into a hard abort (see the debugger's gauge); a plain
+    label showing a pixmap cannot."""
+
+    def __init__(self, on_activity, on_doubleclick) -> None:
+        super().__init__()
+        self._on_activity = on_activity
+        self._on_doubleclick = on_doubleclick
+        self.setMouseTracking(True)
+
+    def mouseMoveEvent(self, e) -> None:  # type: ignore[override]
+        self._on_activity()
+        super().mouseMoveEvent(e)
+
+    def mouseDoubleClickEvent(self, e) -> None:  # type: ignore[override]
+        # Double-click toggles fullscreen -- the standard way in and out, and the way
+        # back that a fullscreen with no visible chrome needs.
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._on_doubleclick()
+        super().mouseDoubleClickEvent(e)
+
+
 class PlayPage(QWidget):
     exit_requested = pyqtSignal()
     debug_requested = pyqtSignal()
@@ -1719,11 +1763,20 @@ class PlayPage(QWidget):
         self.sink = None
         self.audio = None
         self.debt = 0.0
+        self._reblit_pending = False       # one deferred re-fit at a time (see _reblit_soon)
+        # Toolbar auto-hide: a still mouse hides the bar after a moment; any move brings it
+        # back. `_idle_hidden` is the transient hide, kept apart from the user's saved
+        # show/hide preference so the two never fight (see refresh_toolbar).
+        self._idle_hidden = False
+        self._autohide_ms = 2500
+        self._autohide_timer = QTimer(self); self._autohide_timer.setSingleShot(True)
+        self._autohide_timer.timeout.connect(self._idle_hide_toolbar)
         self.wall_last = time.perf_counter()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        self.lcd = QLabel(); self.lcd.setObjectName("lcd")
+        self.lcd = _Canvas(self._on_pointer_activity, self._toggle_fullscreen)
+        self.lcd.setObjectName("lcd")
         self.lcd.setAlignment(Qt.AlignmentFlag.AlignCenter)   # centres the (letterboxed) frame
         outer.addWidget(self.lcd, 1)                          # stretch 1 -> fills the page
         self.overlay = QLabel(""); self.overlay.setObjectName("overlay")
@@ -1911,6 +1964,7 @@ class PlayPage(QWidget):
 
     def stop(self) -> None:
         self.timer.stop()
+        self._autohide_timer.stop(); self._idle_hidden = False   # no game -> no idle hide
         self._commit_playtime()
         if self._rom_path is not None:    # keep this ROM's watches + breakpoints
             try:
@@ -1970,10 +2024,7 @@ class PlayPage(QWidget):
         self.osd.setVisible(cfg.show_fps(self._settings)); self.osd.raise_()
         if cfg.rewind_seconds(self._settings) != (self._rewind.maxlen // 60 if self._rewind_on else 0):
             self._rebuild_rewind_buffer()      # rewind length changed -> resize the ring
-        show_bar = bool(self._settings.value("gfx/toolbar", True, type=bool))
-        self.toolbar.setVisible(show_bar); self._bar_show.setVisible(not show_bar)
-        if not show_bar:
-            self._position_bar_show()
+        self.refresh_toolbar()      # preference + fullscreen-hide + idle auto-hide, one place
         # Real fullscreen on the top-level window (was previously only a canvas-fill flag).
         win = self.window()
         if win is not None:
@@ -1982,7 +2033,8 @@ class PlayPage(QWidget):
             elif not self._fullscreen and win.isFullScreen():
                 win.showNormal()
         if self.machine is not None:
-            self._blit()          # re-fit after any settings change
+            self._blit()          # re-fit after any settings change (filter/colour/aspect)
+            self._reblit_soon()   # ...and again once a fullscreen/toolbar change has laid out
 
     def _open_audio(self) -> None:
         fmt = QAudioFormat()
@@ -2072,6 +2124,14 @@ class PlayPage(QWidget):
 
     def keyPressEvent(self, e: QKeyEvent) -> None:  # noqa: N802
         k = e.key()
+        # Escape LEAVES fullscreen first -- the universal 'get me out', and the reason a
+        # fullscreen with hidden chrome is never a trap. Only then does Escape fall through
+        # to its normal binding (the pause menu) when windowed. The menu's own Escape is
+        # handled while it has focus, so this fires only when no menu is open.
+        if k == int(Qt.Key.Key_Escape):
+            win = self.window()
+            if win is not None and win.isFullScreen():
+                self._toggle_fullscreen(); return
         # Window size is the one hotkey that is not rebindable -- it needs Ctrl, so
         # it can never shadow a joypad key. Checked first so a plain digit stays free.
         if (e.modifiers() & Qt.KeyboardModifier.ControlModifier) and \
@@ -2317,10 +2377,14 @@ class PlayPage(QWidget):
         self.apply_debug()                 # a reboot clears core breakpoints -> re-arm
 
     def _toggle_fullscreen(self) -> None:
-        self._settings.setValue("gfx/fullscreen", not cfg.fullscreen(self._settings))
+        # Base the flip on the WINDOW's real state, not the stored flag: double-click, the
+        # hotkey and Escape all reach this, and if the two ever drifted a toggle could send
+        # you deeper into fullscreen instead of out.
+        win = self.window()
+        going_fs = not (win is not None and win.isFullScreen())
+        self._settings.setValue("gfx/fullscreen", going_fs)
         self.apply_settings()
-        if self.machine is not None:
-            self._blit()
+        self._reblit_soon()   # showFullScreen/showNormal lays out next turn -- fit to it then
 
     def set_window_scale(self, k: int) -> None:
         """Preset window size: make the canvas exactly k x (160*k by 152*k), keeping the
@@ -2334,6 +2398,7 @@ class PlayPage(QWidget):
         win.resize(SCREEN_W * k + dw, SCREEN_H * k + dh)
         if self.machine is not None:
             self._blit()
+            self._reblit_soon()   # the resize lays out next turn -- fit to the real box then
 
     # ---- player toolbar ---------------------------------------------------
     def _make_toolbar(self) -> QFrame:
@@ -2399,13 +2464,87 @@ class PlayPage(QWidget):
             button.setToolTip(f"{base} ({key})" if key else base)
 
     def _toggle_toolbar(self, show: bool | None = None) -> None:
-        show = (not self.toolbar.isVisible()) if show is None else show
-        self.toolbar.setVisible(show)
-        self._bar_show.setVisible(not show)
-        if not show:
-            self._position_bar_show()
+        # Flip the saved PREFERENCE (not the transient idle state): base the toggle on
+        # what the user last chose, so pressing it while the bar is idle-hidden still
+        # does the intuitive thing.
+        pref = bool(self._settings.value("gfx/toolbar", True, type=bool))
+        show = (not pref) if show is None else show
         self._settings.setValue("gfx/toolbar", show)
+        self._idle_hidden = False          # a manual toggle clears an idle hide
+        self.refresh_toolbar()
+        # Hiding/showing the toolbar hands its height to the LCD, but this widget does not
+        # resize (only its inner layout), so nothing else re-fits the frame. Do it once the
+        # layout has settled -- otherwise a paused game keeps the old, mis-scaled picture.
+        self._reblit_soon()
         self.setFocus()
+
+    def _fs_hides_chrome(self) -> bool:
+        win = self.window()
+        return (win is not None and win.isFullScreen()
+                and cfg.fs_hide_ui(self._settings))
+
+    def _toolbar_wants_visible(self) -> bool:
+        """Whether the user wants the toolbar at all -- their saved show/hide preference.
+        Fullscreen no longer forces it off: it makes it AUTO-HIDE instead (see
+        `_autohide_active`), so a mouse move still brings it back over the game. Kept off
+        `isVisible()`, which also needs the window shown and so lies in a headless test."""
+        return bool(self._settings.value("gfx/toolbar", True, type=bool))
+
+    def _autohide_active(self) -> bool:
+        """The toolbar auto-hides (still mouse -> gone, any move -> back) when the user
+        turned that on, OR whenever fullscreen is hiding the chrome -- so a fullscreen
+        toolbar is reachable by moving the mouse instead of being gone for good."""
+        return cfg.toolbar_autohide(self._settings) or self._fs_hides_chrome()
+
+    def refresh_toolbar(self) -> None:
+        """The ONE place that sets the toolbar's (and its 'show' nub's) visibility, from
+        the inputs that must not fight: the saved preference, the idle/fullscreen
+        auto-hide, and its transient hidden state."""
+        want = self._toolbar_wants_visible()
+        autohide = self._autohide_active()
+        self.toolbar.setVisible(want and not (autohide and self._idle_hidden))
+        # The 'show toolbar' nub is the windowed way back when the user HID it on purpose;
+        # in fullscreen a mouse move reveals the bar instead, so no nub there.
+        nub = (not want) and not self._fs_hides_chrome()
+        self._bar_show.setVisible(nub)
+        if nub:
+            self._position_bar_show()
+        self._arm_autohide()
+
+    # ---- toolbar auto-hide (still mouse -> hide; any move -> show) ----------
+    def _arm_autohide(self) -> None:
+        """(Re)start the idle countdown, but only while the bar is up and something wants
+        it to auto-hide. Stopping it otherwise keeps a hidden or pinned bar from ticking."""
+        should = (self._autohide_active() and self.machine is not None
+                  and not self._idle_hidden and self._toolbar_wants_visible())
+        if should:
+            self._autohide_timer.start(self._autohide_ms)
+        else:
+            self._autohide_timer.stop()
+
+    def _on_pointer_activity(self) -> None:
+        """The canvas saw the mouse move: bring an idle-hidden bar back, or push the
+        countdown out if it is already up."""
+        if not self._autohide_active() or self.machine is None:
+            return
+        if self._idle_hidden:
+            self._idle_hidden = False
+            self.refresh_toolbar()
+            self._reblit_soon()
+        else:
+            self._arm_autohide()
+
+    def _idle_hide_toolbar(self) -> None:
+        if (not self._autohide_active() or self.machine is None
+                or self._idle_hidden or not self._toolbar_wants_visible()):
+            return
+        # Don't pull the bar out from under a cursor resting ON it -- wait another beat.
+        if self.toolbar.underMouse():
+            self._autohide_timer.start(self._autohide_ms)
+            return
+        self._idle_hidden = True
+        self.refresh_toolbar()
+        self._reblit_soon()
 
     def _position_bar_show(self) -> None:
         self._bar_show.move(self.width() - self._bar_show.width() - 8,
@@ -2764,8 +2903,12 @@ class PlayPage(QWidget):
             self.menu._center()  # noqa: SLF001
         # Follow the window: rescale the frame to the new canvas size. When running,
         # the next _tick() re-blits anyway; this keeps it live while paused/dragging.
+        # The immediate blit reads the size we have NOW (mid-resize the child may still
+        # be stale); the deferred one re-fits once the layout has settled, which is what
+        # makes a paused game come out right after a fullscreen or a maximise.
         if self.machine is not None:
             self._blit()
+            self._reblit_soon()
         if not self.toolbar.isVisible():
             self._position_bar_show()
         super().resizeEvent(e)
@@ -3066,6 +3209,25 @@ class PlayPage(QWidget):
             self.osd.setText("  ".join(parts))
             self.osd.adjustSize()
 
+    def _reblit_soon(self) -> None:
+        """Re-fit the frame AFTER Qt has settled the new layout.
+
+        Reading the LCD's size in the SAME turn a fullscreen / toolbar / sidebar change
+        happens gives the size it had BEFORE the change: the layout has not run yet. The
+        frame is then scaled to a stale box -- a wrong aspect, worst in Stretch -- and a
+        PAUSED game never fixes it, because only a running `_tick` re-blits. Hiding the
+        toolbar does not even resize this widget (only its inner layout shifts), so no
+        resizeEvent fires to correct it either. Deferring one event-loop turn reads the
+        box the layout actually produced. Coalesced so a window drag queues just one."""
+        if self.machine is None or self._reblit_pending:
+            return
+        self._reblit_pending = True
+
+        def _go() -> None:
+            self._reblit_pending = False
+            self._blit()
+        QTimer.singleShot(0, _go)
+
     def _blit(self) -> None:
         if self.machine is None:
             return
@@ -3169,6 +3331,15 @@ class Shell(QMainWindow):
             pass
 
         self._retranslate()
+        # Long help/empty-state labels wrap instead of forcing the window at least as wide
+        # as their longest sentence -- which is what kept the minimum window so big. Run
+        # after retranslate so the text is set; short field labels are left alone. The nav
+        # labels manage their own wrapping (see _fit_rail), so skip the rail.
+        for lbl in self.findChildren(QLabel):
+            if (lbl not in self._nav_text and lbl.pixmap() is None
+                    and not lbl.wordWrap() and len(lbl.text()) > 40):
+                lbl.setWordWrap(True)
+        self.setMinimumSize(360, 320)
         self._go(0)
         self._toggle_rail(not bool(self._settings.value("win/rail_collapsed", False, type=bool)))
         if rom:
@@ -3348,6 +3519,43 @@ class Shell(QMainWindow):
     def _on_settings_changed(self) -> None:
         if self.play.machine is not None:
             self.play.apply_settings()
+        # `apply_settings` may enter/leave fullscreen (which fires changeEvent), but the
+        # "hide UI in fullscreen" toggle itself changes nothing about the window state --
+        # so re-sync here too, or ticking it while already fullscreen would do nothing.
+        self._sync_fullscreen_chrome()
+
+    def _sync_fullscreen_chrome(self) -> None:
+        """In fullscreen, optionally hide the sidebar and player toolbar so the game gets
+        the whole screen. Leaving fullscreen restores them -- the toolbar to the user's
+        SAVED preference, never forced back on. Driven by the window state (so every way
+        into fullscreen is covered) and by the Settings toggle."""
+        # A WindowStateChange can fire mid-construction (restoreGeometry, the first show)
+        # before the rail and the play page exist -- ignore it until the UI is built.
+        if not hasattr(self, "_rail") or not hasattr(self, "play"):
+            return
+        hide = self.isFullScreen() and cfg.fs_hide_ui(self._settings)
+        self._rail.setVisible(not hide)
+        # On the EDGE into hidden-chrome fullscreen, start the toolbar hidden (a mouse move
+        # reveals it, like a media player); on the way back out, show it again. Edge-only,
+        # so a later re-sync while fullscreen never re-hides a bar a move just revealed.
+        was = getattr(self, "_fs_chrome_hidden", False)
+        if hide and not was:
+            self.play._idle_hidden = True
+        elif was and not hide:
+            self.play._idle_hidden = False
+        self._fs_chrome_hidden = hide
+        # The toolbar (and its nub) is the PlayPage's own call now -- it folds fullscreen,
+        # the saved preference and the idle auto-hide into one decision.
+        self.play.refresh_toolbar()
+        self.play._reblit_soon()
+
+    def changeEvent(self, e) -> None:  # type: ignore[override]
+        # The one place that reliably fires for EVERY route into or out of fullscreen --
+        # the F11 hotkey, the toolbar button, the settings checkbox, or the OS window
+        # controls -- so the chrome follows the window state no matter who changed it.
+        if e.type() == QEvent.Type.WindowStateChange:
+            self._sync_fullscreen_chrome()
+        super().changeEvent(e)
 
     def closeEvent(self, e) -> None:  # type: ignore[override]
         # Persist the window size/position, then shut the game down cleanly -- play.stop()

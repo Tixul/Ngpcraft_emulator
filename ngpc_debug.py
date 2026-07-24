@@ -23,13 +23,13 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QRect
 from PyQt6.QtGui import QImage, QPixmap, QFont, QBrush, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QPlainTextEdit, QTabWidget, QComboBox, QLineEdit, QSpinBox, QCheckBox,
     QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView,
+    QAbstractItemView, QToolTip, QApplication, QMessageBox,
 )
 
 from core import native
@@ -61,8 +61,16 @@ CHAR_RAM = 0x00A000
 CHAR_RAM_SIZE = 0x2000
 TILE_BYTES = 16
 CHAR_RAM_TILES = CHAR_RAM_SIZE // TILE_BYTES
+TILE_ATLAS_COLS = 16
+# On-screen geometry of the tile atlas, shared by the sheet builder (decode_tiles) and
+# the hover-inspect grid so a mouse position maps back to the tile it is over.
+TILE_ATLAS_PITCH = 10     # 1px frame + 8px tile + 1px frame, per cell in the sheet
+TILE_ATLAS_SCALE = 3      # the sheet is drawn at 3x
 OAM_BASE = 0x008800
 OAM_CPC = 0x008C00
+# The cartridge is mapped here; a ROM file offset is (CPU address − CART_BASE). The
+# Text tab shows both so a hit maps straight back to a byte in the .ngc on disk.
+CART_BASE = 0x200000
 # The two tilemaps, 32x32 entries of 2 bytes (mirrors cpp/src/render.cpp kScr1Map/kScr2Map).
 # Entry = [tile low 8 bits][attrib], and attrib bit 0 is tile bit 8 -- the same 9-bit index
 # sprites use, because all three consumers read the SAME character RAM.
@@ -252,7 +260,7 @@ def decode_tiles(char_bytes: bytes, palette_rgb: np.ndarray,
     px[:, :, 4] = (even >> 6) & 3; px[:, :, 5] = (even >> 4) & 3
     px[:, :, 6] = (even >> 2) & 3; px[:, :, 7] = even & 3
     rgb = palette_rgb[px]
-    cols = 16
+    cols = TILE_ATLAS_COLS
     rows = (n + cols - 1) // cols
 
     if usage is None:
@@ -262,7 +270,7 @@ def decode_tiles(char_bytes: bytes, palette_rgb: np.ndarray,
             sheet[r * 8:(r + 1) * 8, c * 8:(c + 1) * 8] = rgb[i]
         return sheet
 
-    pitch = 10                                    # 1px frame + 8px tile + 1px frame
+    pitch = TILE_ATLAS_PITCH                      # 1px frame + 8px tile + 1px frame
     sheet = np.zeros((rows * pitch, cols * pitch, 3), np.uint8)
     for i in range(n):
         r, c = divmod(i, cols)
@@ -282,6 +290,111 @@ def decode_tiles(char_bytes: bytes, palette_rgb: np.ndarray,
         sheet[y:y + pitch, x:x + pitch] = frame
         sheet[y + 1:y + 9, x + 1:x + 9] = tile
     return sheet
+
+
+class _Gauge(QLabel):
+    """A labelled bar that fills left-to-right and colours green→amber→red with the
+    value. Two moods: `usage` (full = red = running out, for a VRAM budget) and
+    `health` (full = green = all good, for 'is the game keeping up'). A neutral grey
+    state says 'no reading' -- e.g. a still screen where the frame rate can't be told.
+
+    The fill is a stylesheet gradient, not a custom `paintEvent`: a Python override
+    that paints is exactly what turns a stray exception into a hard process abort (see
+    the root conftest), and a plain QLabel with a computed stylesheet cannot."""
+
+    def __init__(self, mood: str = "usage") -> None:
+        super().__init__()
+        self._mood = mood
+        self._value = 0.0
+        self._neutral = True
+        self._caption = ""
+        self.setMinimumHeight(24)
+        self.set_value(0.0, "", neutral=True)
+
+    @staticmethod
+    def _severity_colour(sev: float) -> QColor:
+        sev = max(0.0, min(1.0, sev))
+        if sev < 0.5:                      # green -> amber
+            t = sev * 2
+            return QColor(int(60 + t * 160), int(190 + t * 10), 70)
+        t = (sev - 0.5) * 2                # amber -> red
+        return QColor(int(220 + t * 15), int(200 - t * 160), int(70 - t * 30))
+
+    def set_value(self, value: float, caption: str, *, neutral: bool = False) -> None:
+        self._value = max(0.0, min(1.0, value))
+        self._caption = caption
+        self._neutral = neutral
+        if neutral:
+            fill, frac = QColor(150, 150, 155), 1.0
+        else:
+            sev = self._value if self._mood == "usage" else (1.0 - self._value)
+            fill, frac = self._severity_colour(sev), self._value
+        c = fill.name()
+        track = "rgba(255,255,255,0.11)"
+        # A gradient that is `fill` up to `frac`, then the empty track after it.
+        edge = min(max(frac, 0.0001), 0.9999)
+        stops = (f"stop:0 {c}, stop:{edge:.4f} {c}, "
+                 f"stop:{min(edge + 0.0001, 1.0):.4f} {track}, stop:1 {track}")
+        self.setStyleSheet(
+            "QLabel {"
+            f"  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, {stops});"
+            "  border-radius: 11px; color: white; padding-left: 11px;"
+            "  font-weight: bold;"
+            "}")
+        self.setText(caption)
+
+
+class _TileGrid(QLabel):
+    """The tile atlas, made hover-inspectable. Moving over a tile reports the numbers
+    you need to poke or replace it -- its index, its VRAM address, who references it,
+    and its 16 raw bytes -- as a tooltip AND in a status line below. Clicking a tile
+    copies that block to the clipboard; the status line is selectable too, so a single
+    number is a drag-and-Ctrl+C away.
+
+    A pure view: it holds no machine data and asks a callback for the text, so the
+    debug window stays the one place that reads the core."""
+
+    def __init__(self, cell_px: int, cols: int, info) -> None:
+        super().__init__()
+        self._cell = cell_px          # on-screen pixels per tile (pitch * scale)
+        self._cols = cols
+        self._info = info             # (col, row) -> str | None  (full, copyable block)
+        self._status = None           # (text | None, copied: bool) -> None
+        self._last = None             # last block under the cursor, for a click
+        self.setMouseTracking(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+    def set_status_sink(self, fn) -> None:
+        self._status = fn
+
+    def _at(self, e) -> "str | None":
+        pix = self.pixmap()
+        if pix is None or pix.isNull():
+            return None
+        x, y = int(e.position().x()), int(e.position().y())
+        if not (0 <= x < pix.width() and 0 <= y < pix.height()):
+            return None
+        col, row = x // self._cell, y // self._cell
+        if col >= self._cols:
+            return None
+        return self._info(col, row)
+
+    def mouseMoveEvent(self, e) -> None:  # type: ignore[override]
+        text = self._at(e)
+        self._last = text
+        if text:
+            QToolTip.showText(e.globalPosition().toPoint(), text, self)
+        else:
+            QToolTip.hideText()
+        if self._status is not None:
+            self._status(text, False)
+        super().mouseMoveEvent(e)
+
+    def mousePressEvent(self, e) -> None:  # type: ignore[override]
+        text = self._at(e) or self._last
+        if text and self._status is not None:
+            self._status(text, True)
+        super().mousePressEvent(e)
 
 
 def _pixmap(arr: np.ndarray, scale: int) -> QPixmap:
@@ -331,6 +444,9 @@ class DebugWindow(QMainWindow):
         self._settings = settings
         self._frozen = False
         self._tiles_arr = None
+        self._tiles_usage = None            # last USE_* bitmask per tile, for hover
+        self._tiles_char = b""              # last raw character RAM, for hover
+        self._tiles_n = 0                   # tiles actually present last refresh
         self._pal_arr = None
         self._watch_building = False       # guards table edits from re-committing
         self._watch_rom = None             # last ROM stem shown, to reload on change
@@ -383,8 +499,23 @@ class DebugWindow(QMainWindow):
         self._tabs.addTab(self._tiles_tab(), "Tiles")
         self._tabs.addTab(self._sprites_tab(), "Sprites")
         self._tabs.addTab(self._layers_tab(), "Layers")
+        self._tabs.addTab(self._load_tab(), "Load")
+        self._tabs.addTab(self._text_tab(), "Text")
+        self._tabs.addTab(self._crack_tab(), "Crack")
+        self._tabs.addTab(self._pointers_tab(), "Pointers")
+        self._tabs.addTab(self._compare_tab(), "Compare")
         self._tabs.currentChanged.connect(lambda _i: self.refresh())
         v.addWidget(self._tabs, 1)
+
+        # Long help/description labels wrap instead of dictating a huge minimum WIDTH: an
+        # unwrapped sentence forces the whole window at least as wide as the sentence, which
+        # is why the debugger could not be made small. Wrapping lets it shrink; the text
+        # just reflows onto more lines. Short field/value labels are left alone.
+        for lbl in self.findChildren(QLabel):
+            if (lbl.pixmap() is None and not lbl.wordWrap()
+                    and len(lbl.text()) > 45):
+                lbl.setWordWrap(True)
+        self.setMinimumSize(360, 320)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_timer)
@@ -2248,12 +2379,63 @@ class DebugWindow(QMainWindow):
         who.addWidget(shared)
         who.addStretch()
         lay.addLayout(who)
-        self._tile_label = QLabel(); self._tile_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._tile_label = _TileGrid(
+            TILE_ATLAS_PITCH * TILE_ATLAS_SCALE, TILE_ATLAS_COLS, self._tile_info)
+        self._tile_label.set_status_sink(self._tile_status)
         sc = QScrollArea(); sc.setWidget(self._tile_label); sc.setWidgetResizable(True)
         lay.addWidget(sc)
+
+        # Hover reads a tile out; the line stays put so you can select a number from it,
+        # and a click copies the whole block. Read-only + monospace, like the dumps.
+        self._tile_status_line = QLineEdit(); self._tile_status_line.setReadOnly(True)
+        self._tile_status_line.setFont(QFont(_MONO, 10))
+        self._tile_status_line.setPlaceholderText(
+            "Hover a tile for its address; click it to copy.")
+        lay.addWidget(self._tile_status_line)
+
         lay.addLayout(self._export_row(
             lambda: self._save_png(self._tiles_arr, "tiles.png"), "💾 Save PNG…"))
         return w
+
+    def _tile_info(self, col: int, row: int) -> "str | None":
+        """The copyable block for the tile at (col, row), or None past the last one."""
+        idx = row * TILE_ATLAS_COLS + col
+        if idx >= self._tiles_n:
+            return None
+        addr = CHAR_RAM + idx * TILE_BYTES
+        usage = self._tiles_usage
+        u = int(usage[idx]) if usage is not None and idx < len(usage) else 0
+        consumers = [n for f, n in ((USE_SCR1, "SCR1"), (USE_SCR2, "SCR2"),
+                                    (USE_SPRITE, "sprites")) if u & f]
+        if len(consumers) > 1:
+            who = "shared (" + ", ".join(consumers) + ")"
+        elif consumers:
+            who = consumers[0]
+        else:
+            who = "unused"
+        raw = self._tiles_char[idx * TILE_BYTES:(idx + 1) * TILE_BYTES]
+        hexb = " ".join(f"{b:02X}" for b in raw)
+        lines = [
+            f"tile {idx} (0x{idx:03X})",
+            f"addr 0x{addr:06X}–0x{addr + TILE_BYTES - 1:06X}",
+            f"used by {who}",
+            f"bytes {hexb}",
+        ]
+        # Past 255 a tile is only reachable as a sprite via the attribute's bit 0.
+        if idx >= 256:
+            lines.insert(1, f"sprite ref: code 0x{idx & 0xFF:02X} + attrib bit0")
+        return "\n".join(lines)
+
+    def _tile_status(self, text: "str | None", copy: bool) -> None:
+        """Feed the status line from a hover (copy=False) or a click (copy=True)."""
+        if not text:
+            self._tile_status_line.clear(); return
+        one = text.replace("\n", "   ")
+        if copy:
+            QApplication.clipboard().setText(text)
+            self._tile_status_line.setText("✔ copied   " + one)
+        else:
+            self._tile_status_line.setText(one)
 
     def _tile_palette_rgb(self) -> np.ndarray:
         m = self._m
@@ -2268,13 +2450,19 @@ class DebugWindow(QMainWindow):
     def _refresh_tiles(self) -> None:
         m = self._m
         if m is None:
+            self._tiles_n = 0
             self._tile_label.setText("(no game running)"); return
         char = m.read(CHAR_RAM, CHAR_RAM_SIZE)
         usage = tile_usage(m)
         show = {flag for flag, cb in self._tile_show.items() if cb.isChecked()}
         sheet = decode_tiles(char, self._tile_palette_rgb(), usage, show)
-        self._tiles_arr = np.repeat(np.repeat(sheet, 3, 0), 3, 1)
-        self._tile_label.setPixmap(_pixmap(sheet, 3))
+        # Keep what hover needs: the bytes, the per-tile usage, and how many tiles there are.
+        self._tiles_char = char
+        self._tiles_usage = usage
+        self._tiles_n = len(char) // TILE_BYTES
+        s = TILE_ATLAS_SCALE
+        self._tiles_arr = np.repeat(np.repeat(sheet, s, 0), s, 1)
+        self._tile_label.setPixmap(_pixmap(sheet, s))
 
     # ---- Sprites tab
     def _sprites_tab(self) -> QWidget:
@@ -2404,6 +2592,566 @@ class DebugWindow(QMainWindow):
             return
         self._layer_view.setPixmap(_pixmap(rgb, self._LAYER_PREVIEW_SCALE))
 
+    # ---- Load tab (live resource gauges)
+    # What a dev actually runs out of on this hardware: the 64-sprite OAM and the 512-tile
+    # character RAM. Both are read straight from VRAM, so they are exact, not estimates.
+    # The frame-rate gauge is the honest CPU signal: a cycle-duty % is useless here (the
+    # cart bus keeps the CPU ~100% busy every frame, and games spin-poll VBlank rather than
+    # HALT -- measured: 0 of 25 games ever idled), so what matters is whether the game
+    # completes its work in time, which shows up as its update rate holding at 60.
+    def _load_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Live resource use (updates as the game runs):"))
+
+        self._g_cpu = _Gauge("health")
+        self._g_spr = _Gauge("usage")
+        self._g_tile = _Gauge("usage")
+        for label, tip, g in (
+            ("Frame rate", "Does the game finish its frame in time? 60 = keeping up. "
+                           "Grey = nothing moving on screen, so it can't be told. A pure "
+                           "CPU-cycle % is not meaningful on NGPC: the cart bus keeps the "
+                           "CPU busy every frame, so it would read ~100% always.", self._g_cpu),
+            ("Sprites", "Active entries in the 64-sprite OAM. Red = near the hardware limit.",
+             self._g_spr),
+            ("Char RAM", "Distinct tiles referenced, of 512 in character RAM. Red = the "
+                         "tile budget is nearly full.", self._g_tile),
+        ):
+            lab = QLabel(label); lab.setFixedWidth(90)
+            lab.setToolTip(tip); g.setToolTip(tip)
+            row = QHBoxLayout(); row.addWidget(lab); row.addWidget(g, 1)
+            lay.addLayout(row)
+
+        lay.addStretch(1)
+        note = QLabel(
+            "Sprites and Char RAM are read straight from VRAM — exact counts, not "
+            "estimates. Frame rate is inferred from the sprite table changing, so it is a "
+            "hint: it reads grey on a still screen where nothing updates.")
+        note.setObjectName("hint"); note.setWordWrap(True)
+        lay.addWidget(note)
+        return w
+
+    def _refresh_load(self) -> None:
+        m = self._m
+        if m is None:
+            for g in (self._g_cpu, self._g_spr, self._g_tile):
+                g.set_value(0.0, "(no game running)", neutral=True)
+            return
+        # Sprites: the same 'is it in use' test the Sprites tab uses.
+        oam = m.read(OAM_BASE, 64 * 4)
+        active = sum(1 for i in range(64)
+                     if not ((oam[i * 4 + 1] >> 3) & 3 == 0 and oam[i * 4 + 2] == 0
+                             and oam[i * 4 + 3] == 0))
+        self._g_spr.set_value(active / 64, f"Sprites   {active} / 64")
+        # Char RAM: distinct tiles referenced by the two planes and OAM.
+        used = int((tile_usage(m) != 0).sum())
+        self._g_tile.set_value(used / CHAR_RAM_TILES,
+                               f"Char RAM   {used} / {CHAR_RAM_TILES} tiles")
+        # Frame rate: the honest overload signal (see the class comment).
+        play = self._play
+        if play is not None and hasattr(play, "perf"):
+            fps = play.perf().get("game_fps", 0.0)
+            if fps <= 0.5:
+                self._g_cpu.set_value(0.0, "Frame rate   — (nothing moving)", neutral=True)
+            else:
+                self._g_cpu.set_value(min(1.0, fps / 60.0), f"Frame rate   {fps:4.0f} / 60 fps")
+        else:
+            self._g_cpu.set_value(0.0, "Frame rate   —", neutral=True)
+
+    # ---- Text tab (character-table tools; ANY rom, nothing game-specific)
+    # A ROM is text plus code plus art; this tab is the text half a fan-translation
+    # lives in. It reads live memory through a USER-loaded .tbl (byte<->character map),
+    # so it is a general tool: point it at any game with its own table. Three jobs --
+    # DECODE a region into readable strings, SEARCH for a phrase by its exact bytes
+    # (table), or crack an unknown encoding by letter spacing (relative, no table).
+    # The heavy lifting is in `core/texttable.py`; this is only wiring.
+    def _text_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        self._txt_table = None                        # loaded TextTable, or None
+
+        top = QHBoxLayout()
+        self._txt_load = QPushButton("Load table (.tbl)…"); self._txt_load.setObjectName("ghost")
+        self._txt_load.clicked.connect(self._txt_pick_table)
+        self._txt_tbl_lbl = QLabel("no table loaded"); self._txt_tbl_lbl.setObjectName("hint")
+        top.addWidget(self._txt_load); top.addWidget(self._txt_tbl_lbl, 1)
+        lay.addLayout(top)
+
+        # -- decode a region into strings
+        dec = QHBoxLayout()
+        dec.addWidget(QLabel("Decode at"))
+        self._txt_addr = QLineEdit("200000"); self._txt_addr.setFixedWidth(120)
+        self._txt_addr.setFont(QFont(_MONO, 10))
+        self._txt_addr.setToolTip("Address in hex, or a symbol name when a .map is loaded.")
+        self._txt_addr.editingFinished.connect(self._txt_decode)
+        dec.addWidget(self._txt_addr)
+        dec.addWidget(QLabel("bytes"))
+        self._txt_len = QSpinBox(); self._txt_len.setRange(16, 8192); self._txt_len.setValue(256)
+        self._txt_len.valueChanged.connect(self._txt_decode)
+        dec.addWidget(self._txt_len)
+        go = QPushButton("Decode"); go.setObjectName("ghost"); go.clicked.connect(self._txt_decode)
+        dec.addWidget(go); dec.addStretch()
+        lay.addLayout(dec)
+
+        self._txt_out = QPlainTextEdit(); self._txt_out.setReadOnly(True)
+        self._txt_out.setFont(QFont(_MONO, 10))
+        lay.addWidget(self._txt_out, 1)
+        lay.addLayout(self._export_row(
+            lambda: self._save_text(self._txt_out.toPlainText(), "text_dump.txt")))
+
+        # -- search: by table (exact bytes) or relative (unknown encoding)
+        sr = QHBoxLayout()
+        sr.addWidget(QLabel("Find"))
+        self._txt_find = QLineEdit(); self._txt_find.setFixedWidth(200)
+        self._txt_find.returnPressed.connect(self._txt_search)
+        sr.addWidget(self._txt_find)
+        self._txt_mode = QComboBox(); self._txt_mode.addItems(["Table", "Relative"])
+        self._txt_mode.setToolTip(
+            "Table: the exact bytes the loaded table encodes the text to.\n"
+            "Relative: crack an unknown encoding — match the SPACING between the "
+            "letters, no table needed. Type a word you can read on screen.")
+        sr.addWidget(self._txt_mode)
+        sr.addWidget(QLabel("from"))
+        self._txt_from = QLineEdit("200000"); self._txt_from.setFixedWidth(100)
+        self._txt_from.setFont(QFont(_MONO, 10))
+        sr.addWidget(self._txt_from)
+        sr.addWidget(QLabel("KiB"))
+        self._txt_size = QSpinBox(); self._txt_size.setRange(1, 8192); self._txt_size.setValue(2048)
+        sr.addWidget(self._txt_size)
+        sb = QPushButton("Search"); sb.setObjectName("ghost"); sb.clicked.connect(self._txt_search)
+        sr.addWidget(sb)
+        scan = QPushButton("Scan strings"); scan.setObjectName("ghost")
+        scan.setToolTip("List every run of text in the region (needs a table). "
+                        "Export the result for a script dump.")
+        scan.clicked.connect(self._txt_scan)
+        sr.addWidget(scan); sr.addStretch()
+        lay.addLayout(sr)
+
+        self._txt_hits = QPlainTextEdit(); self._txt_hits.setReadOnly(True)
+        self._txt_hits.setFont(QFont(_MONO, 10))
+        lay.addWidget(self._txt_hits, 1)
+        lay.addLayout(self._export_row(
+            lambda: self._save_text(self._txt_hits.toPlainText(), "text_search.txt")))
+
+        # A table chosen last time comes back automatically.
+        saved = self._settings.value("paths/text_table", "", type=str)
+        if saved and Path(saved).is_file():
+            self._txt_load_table(saved)
+        return w
+
+    @staticmethod
+    def _rom_off(addr: int) -> str:
+        return f" (ROM 0x{addr - CART_BASE:06X})" if addr >= CART_BASE else ""
+
+    def _txt_pick_table(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Character table", "", "Table (*.tbl);;All files (*)")
+        if path:
+            self._txt_load_table(path)
+
+    def _txt_load_table(self, path: str) -> None:
+        from core.texttable import parse_tbl
+        try:
+            src = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self._txt_tbl_lbl.setText(f"could not read table: {exc}"); return
+        self._txt_table = parse_tbl(src)
+        self._settings.setValue("paths/text_table", path)
+        terms = " ".join(t.hex().upper() for t in self._txt_table.terminators) or "none"
+        self._txt_tbl_lbl.setText(
+            f"{Path(path).name} — {len(self._txt_table)} entries · end token: {terms}")
+        self._txt_decode()
+
+    def _txt_decode(self) -> None:
+        m = self._m
+        if m is None:
+            self._txt_out.setPlainText("(no game running)"); return
+        if self._txt_table is None:
+            self._txt_out.setPlainText("Load a .tbl table to decode text."); return
+        addr = self._resolve_addr(self._txt_addr.text())
+        if addr is None:
+            self._txt_out.setPlainText("bad address"); return
+        data = m.read(addr & 0xFFFFFF, self._txt_len.value())
+        lines, i = [], 0
+        while i < len(data):
+            text, used = self._txt_table.decode(data[i:], stop_at_end=True)
+            if used == 0:
+                break
+            a = addr + i
+            lines.append(f"{a:06X}{self._rom_off(a)}  {text!r}")
+            i += used
+        self._txt_out.setPlainText("\n".join(lines) if lines else "(nothing)")
+
+    def _txt_search(self) -> None:
+        m = self._m
+        if m is None:
+            self._txt_hits.setPlainText("(no game running)"); return
+        needle = self._txt_find.text()
+        if not needle:
+            return
+        start = self._resolve_addr(self._txt_from.text())
+        if start is None:
+            self._txt_hits.setPlainText("bad start address"); return
+        data = m.read(start & 0xFFFFFF, self._txt_size.value() * 1024)
+        mode = self._txt_mode.currentText()
+        if mode == "Table":
+            if self._txt_table is None:
+                self._txt_hits.setPlainText("Table search needs a loaded .tbl."); return
+            from core.texttable import table_search
+            hits = table_search(data, needle, self._txt_table)
+        else:
+            from core.texttable import relative_search
+            hits = relative_search(data, needle)
+        if not hits:
+            self._txt_hits.setPlainText("no match"); return
+        cap = 500
+        head = f"{len(hits)} match(es)" + (f" — showing first {cap}" if len(hits) > cap else "")
+        lines = [head]
+        for off in hits[:cap]:
+            a = start + off
+            if mode == "Table" and self._txt_table is not None:
+                ctx, _ = self._txt_table.decode(data[off:off + 32], stop_at_end=True)
+                ctx = repr(ctx)
+            else:
+                ctx = " ".join(f"{b:02X}" for b in data[off:off + min(max(len(needle), 4), 16)])
+            lines.append(f"{a:06X}{self._rom_off(a)}  {ctx}")
+        # Relative search also HANDS YOU the encoding: from the first hit, the byte each
+        # of the word's letters used -- the seed of a brand-new .tbl.
+        if mode == "Relative":
+            b0 = data[hits[0]]; c0 = ord(needle[0])
+            seed = {c: (b0 + (ord(c) - c0)) & 0xFF for c in dict.fromkeys(needle)}
+            lines.append("")
+            lines.append("derived from first hit:  " +
+                         "  ".join(f"{c!r}={b:02X}" for c, b in sorted(seed.items())))
+        self._txt_hits.setPlainText("\n".join(lines))
+
+    def _txt_scan(self) -> None:
+        """List every run of text in the search region -- a whole-region script dump.
+        Export the box to get the strings in a file, ready to translate offline."""
+        m = self._m
+        if m is None:
+            self._txt_hits.setPlainText("(no game running)"); return
+        if self._txt_table is None:
+            self._txt_hits.setPlainText("Scanning for strings needs a loaded .tbl."); return
+        start = self._resolve_addr(self._txt_from.text())
+        if start is None:
+            self._txt_hits.setPlainText("bad start address"); return
+        from core.texttable import scan_strings
+        data = m.read(start & 0xFFFFFF, self._txt_size.value() * 1024)
+        runs = scan_strings(data, self._txt_table, min_len=4)
+        if not runs:
+            self._txt_hits.setPlainText("no strings found"); return
+        cap = 5000
+        head = f"{len(runs)} string(s)" + (f" — showing first {cap}" if len(runs) > cap else "")
+        lines = [head]
+        for off, _blen, text in runs[:cap]:
+            a = start + off
+            lines.append(f"{a:06X}{self._rom_off(a)}  {text!r}")
+        self._txt_hits.setPlainText("\n".join(lines))
+
+    def _refresh_text(self) -> None:
+        # The decode view is cheap and following a live RAM buffer is useful, so keep it
+        # current -- but hold the scroll position so a running game does not yank it.
+        if self._m is None or self._txt_table is None:
+            return
+        bar = self._txt_out.verticalScrollBar(); pos = bar.value()
+        self._txt_decode()
+        bar.setValue(min(pos, bar.maximum()))
+
+    # ---- Crack tab (build a .tbl from words you can read -- ANY rom)
+    # Relative search finds WHERE a known word sits; reading the bytes under it turns
+    # that into a real mapping, even for a non-linear encoding. Feed a few readable
+    # words and this assembles a table you can save and refine.
+    def _crack_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel(
+            "Type words you can READ on screen (one per line). Each is located by "
+            "relative search; the bytes under it become a character table."))
+
+        self._crack_words = QPlainTextEdit(); self._crack_words.setFont(QFont(_MONO, 10))
+        self._crack_words.setPlaceholderText("player\nmagic\nattack\n; a common word can be pinned:\nyes @ 21A0C0")
+        self._crack_words.setMaximumHeight(110)
+        self._crack_words.setToolTip(
+            "One word per line. A word that matches in many places is ambiguous — pin it "
+            "to a spot you found (relative search in the Text tab) with 'word @ offset'.")
+        lay.addWidget(self._crack_words)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Search from"))
+        self._crack_from = QLineEdit("200000"); self._crack_from.setFixedWidth(100)
+        self._crack_from.setFont(QFont(_MONO, 10))
+        row.addWidget(self._crack_from)
+        row.addWidget(QLabel("KiB"))
+        self._crack_size = QSpinBox(); self._crack_size.setRange(1, 8192); self._crack_size.setValue(2048)
+        row.addWidget(self._crack_size)
+        cb = QPushButton("Crack → table"); cb.setObjectName("ghost")
+        cb.clicked.connect(self._crack_run)
+        row.addWidget(cb); row.addStretch()
+        lay.addLayout(row)
+
+        lay.addWidget(QLabel("Derived table (edit freely, then save or use):"))
+        self._crack_out = QPlainTextEdit(); self._crack_out.setFont(QFont(_MONO, 10))
+        lay.addWidget(self._crack_out, 1)
+
+        act = QHBoxLayout()
+        save = QPushButton("Save .tbl…"); save.setObjectName("ghost")
+        save.clicked.connect(self._crack_save)
+        use = QPushButton("Use in Text tab"); use.setObjectName("ghost")
+        use.clicked.connect(self._crack_use)
+        act.addWidget(save); act.addWidget(use); act.addStretch()
+        lay.addLayout(act)
+        return w
+
+    def _crack_run(self) -> None:
+        m = self._m
+        if m is None:
+            self._crack_out.setPlainText("(no game running)"); return
+        start = self._resolve_addr(self._crack_from.text())
+        if start is None:
+            self._crack_out.setPlainText("bad start address"); return
+        # Each line is a word, or "word @ hexaddr" to pin a common one. A pinned CPU
+        # address is turned into an offset into the region we are about to read.
+        entries: list = []
+        for line in self._crack_words.toPlainText().splitlines():
+            line = line.strip()
+            if not line or line.startswith(";"):
+                continue
+            if "@" in line:
+                word, _, off_s = line.partition("@")
+                word = word.strip()
+                addr = self._resolve_addr(off_s.strip())
+                if addr is None:
+                    self._crack_out.setPlainText(f"bad offset in: {line}"); return
+                entries.append((word, addr - start if addr >= start else addr))
+            else:
+                entries.append(line)
+        if not entries:
+            self._crack_out.setPlainText("Enter at least one word above."); return
+        from core.texttable import crack_from_words, build_tbl
+        data = m.read(start & 0xFFFFFF, self._crack_size.value() * 1024)
+        mapping, report = crack_from_words(data, entries)
+        tbl = build_tbl(mapping)
+        note = "\n".join(f"; {r}" for r in report)
+        self._crack_out.setPlainText((note + "\n" if note else "") + tbl)
+
+    def _crack_save(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save table", "table.tbl", "Table (*.tbl)")
+        if path:
+            try:
+                Path(path).write_text(self._crack_out.toPlainText(), encoding="utf-8")
+            except OSError as exc:
+                QMessageBox.warning(self, "Save table", str(exc))
+
+    def _crack_use(self) -> None:
+        """Make the edited table the Text tab's active one, without leaving the app."""
+        from core.texttable import parse_tbl
+        self._txt_table = parse_tbl(self._crack_out.toPlainText())
+        terms = " ".join(t.hex().upper() for t in self._txt_table.terminators) or "none"
+        self._txt_tbl_lbl.setText(f"(cracked) — {len(self._txt_table)} entries · end token: {terms}")
+
+    def _refresh_crack(self) -> None:
+        pass                    # on-demand only; never clobber what the user typed
+
+    # ---- Pointers tab (find references / pointer tables -- ANY rom)
+    def _pointers_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        lay.addWidget(QLabel(
+            "Find what points at an address (to repoint a moved string), or locate the "
+            "pointer tables themselves."))
+
+        cfgrow = QHBoxLayout()
+        cfgrow.addWidget(QLabel("Pointer"))
+        self._ptr_width = QComboBox(); self._ptr_width.addItems(["32-bit LE", "24-bit LE", "16-bit LE"])
+        cfgrow.addWidget(self._ptr_width)
+        cfgrow.addWidget(QLabel("base +"))
+        self._ptr_base = QLineEdit("000000"); self._ptr_base.setFixedWidth(90)
+        self._ptr_base.setFont(QFont(_MONO, 10))
+        self._ptr_base.setToolTip("Added to the stored value to get a CPU address. 0 for "
+                                  "absolute pointers; a bank base for 16-bit offsets.")
+        cfgrow.addWidget(self._ptr_base)
+        cfgrow.addWidget(QLabel("scan from"))
+        self._ptr_from = QLineEdit("200000"); self._ptr_from.setFixedWidth(90)
+        self._ptr_from.setFont(QFont(_MONO, 10))
+        cfgrow.addWidget(self._ptr_from)
+        cfgrow.addWidget(QLabel("KiB"))
+        self._ptr_size = QSpinBox(); self._ptr_size.setRange(1, 8192); self._ptr_size.setValue(2048)
+        cfgrow.addWidget(self._ptr_size)
+        cfgrow.addStretch()
+        lay.addLayout(cfgrow)
+
+        findrow = QHBoxLayout()
+        findrow.addWidget(QLabel("Find pointers to"))
+        self._ptr_target = QLineEdit(); self._ptr_target.setFixedWidth(120)
+        self._ptr_target.setFont(QFont(_MONO, 10))
+        self._ptr_target.setPlaceholderText("address or symbol")
+        self._ptr_target.returnPressed.connect(self._ptr_find)
+        findrow.addWidget(self._ptr_target)
+        findrow.addWidget(QLabel("± "))
+        self._ptr_tol = QSpinBox(); self._ptr_tol.setRange(0, 256); self._ptr_tol.setValue(0)
+        self._ptr_tol.setToolTip("Tolerance: also catch a pointer this many bytes into the target.")
+        findrow.addWidget(self._ptr_tol)
+        fb = QPushButton("Find"); fb.setObjectName("ghost"); fb.clicked.connect(self._ptr_find)
+        findrow.addWidget(fb)
+        findrow.addSpacing(20)
+        findrow.addWidget(QLabel("min run"))
+        self._ptr_run = QSpinBox(); self._ptr_run.setRange(2, 4096); self._ptr_run.setValue(8)
+        findrow.addWidget(self._ptr_run)
+        tb = QPushButton("Scan tables"); tb.setObjectName("ghost"); tb.clicked.connect(self._ptr_scan)
+        findrow.addWidget(tb); findrow.addStretch()
+        lay.addLayout(findrow)
+
+        self._ptr_out = QPlainTextEdit(); self._ptr_out.setReadOnly(True)
+        self._ptr_out.setFont(QFont(_MONO, 10))
+        lay.addWidget(self._ptr_out, 1)
+        lay.addLayout(self._export_row(
+            lambda: self._save_text(self._ptr_out.toPlainText(), "pointers.txt")))
+        return w
+
+    def _ptr_params(self) -> "tuple | None":
+        width = {0: 4, 1: 3, 2: 2}[self._ptr_width.currentIndex()]
+        try:
+            base = int(self._ptr_base.text(), 16)
+        except ValueError:
+            self._ptr_out.setPlainText("bad base"); return None
+        start = self._resolve_addr(self._ptr_from.text())
+        if start is None:
+            self._ptr_out.setPlainText("bad scan-from address"); return None
+        return width, base, start
+
+    def _ptr_find(self) -> None:
+        m = self._m
+        if m is None:
+            self._ptr_out.setPlainText("(no game running)"); return
+        p = self._ptr_params()
+        if p is None:
+            return
+        width, base, start = p
+        target = self._resolve_addr(self._ptr_target.text())
+        if target is None:
+            self._ptr_out.setPlainText("bad target address"); return
+        from core.pointers import find_pointers_to
+        data = m.read(start & 0xFFFFFF, self._ptr_size.value() * 1024)
+        hits = find_pointers_to(data, target, base=base, width=width,
+                                tolerance=self._ptr_tol.value())
+        if not hits:
+            self._ptr_out.setPlainText("no pointer found"); return
+        cap = 2000
+        lines = [f"{len(hits)} pointer(s) to {target:06X}"
+                 + (f" — showing first {cap}" if len(hits) > cap else "")]
+        for off in hits[:cap]:
+            a = start + off
+            lines.append(f"{a:06X}{self._rom_off(a)}")
+        self._ptr_out.setPlainText("\n".join(lines))
+
+    def _ptr_scan(self) -> None:
+        m = self._m
+        if m is None:
+            self._ptr_out.setPlainText("(no game running)"); return
+        p = self._ptr_params()
+        if p is None:
+            return
+        width, base, start = p
+        from core.pointers import scan_pointer_tables
+        size = self._ptr_size.value() * 1024
+        data = m.read(start & 0xFFFFFF, size)
+        # Plausible target range: the region we are scanning, in CPU space.
+        lo = (start & 0xFFFFFF)
+        tables = scan_pointer_tables(data, base=base, width=width,
+                                     lo=lo, hi=lo + size, min_run=self._ptr_run.value())
+        if not tables:
+            self._ptr_out.setPlainText("no pointer table found"); return
+        cap = 2000
+        lines = [f"{len(tables)} table(s)"
+                 + (f" — showing first {cap}" if len(tables) > cap else ""),
+                 "offset            count  first→"]
+        for off, count, first in tables[:cap]:
+            a = start + off
+            lines.append(f"{a:06X}{self._rom_off(a)}  {count:5d}  {first:06X}")
+        self._ptr_out.setPlainText("\n".join(lines))
+
+    def _refresh_pointers(self) -> None:
+        pass                    # on-demand only
+
+    # ---- Compare tab (byte-diff against a second ROM -- ANY pair)
+    # A released patch is an oracle: what it changed is the text. Diff the running cart
+    # against a second .ngc and, with a table loaded, read both sides of each change.
+    def _compare_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        self._cmp_path = None
+
+        top = QHBoxLayout()
+        load = QPushButton("Load ROM B…"); load.setObjectName("ghost")
+        load.clicked.connect(self._cmp_pick)
+        self._cmp_lbl = QLabel("no second ROM loaded"); self._cmp_lbl.setObjectName("hint")
+        top.addWidget(load); top.addWidget(self._cmp_lbl, 1)
+        lay.addLayout(top)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Compare from"))
+        self._cmp_from = QLineEdit("200000"); self._cmp_from.setFixedWidth(100)
+        self._cmp_from.setFont(QFont(_MONO, 10))
+        row.addWidget(self._cmp_from)
+        row.addWidget(QLabel("KiB"))
+        self._cmp_size = QSpinBox(); self._cmp_size.setRange(1, 8192); self._cmp_size.setValue(2048)
+        row.addWidget(self._cmp_size)
+        cb = QPushButton("Compare"); cb.setObjectName("ghost"); cb.clicked.connect(self._cmp_run)
+        row.addWidget(cb); row.addStretch()
+        lay.addLayout(row)
+
+        self._cmp_out = QPlainTextEdit(); self._cmp_out.setReadOnly(True)
+        self._cmp_out.setFont(QFont(_MONO, 10))
+        lay.addWidget(self._cmp_out, 1)
+        lay.addLayout(self._export_row(
+            lambda: self._save_text(self._cmp_out.toPlainText(), "rom_diff.txt")))
+        return w
+
+    def _cmp_pick(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Second ROM", "", "NGPC ROM (*.ngc *.ngp);;All (*)")
+        if path:
+            self._cmp_path = path
+            self._cmp_lbl.setText(Path(path).name)
+
+    def _cmp_run(self) -> None:
+        m = self._m
+        if m is None:
+            self._cmp_out.setPlainText("(no game running)"); return
+        if not self._cmp_path:
+            self._cmp_out.setPlainText("Load a second ROM to compare against."); return
+        start = self._resolve_addr(self._cmp_from.text())
+        if start is None:
+            self._cmp_out.setPlainText("bad start address"); return
+        try:
+            romb = Path(self._cmp_path).read_bytes()
+        except OSError as exc:
+            self._cmp_out.setPlainText(f"could not read ROM B: {exc}"); return
+        size = self._cmp_size.value() * 1024
+        a = m.read(start & 0xFFFFFF, size)
+        # ROM B is a cartridge image, so its file offset for a CPU address is addr-CART_BASE.
+        b_off = (start - CART_BASE) if start >= CART_BASE else start
+        b = romb[b_off:b_off + size]
+        n = min(len(a), len(b))
+        if n == 0:
+            self._cmp_out.setPlainText("nothing to compare (ROM B too short for that range)."); return
+        from core.romdiff import diff_ranges
+        ranges = diff_ranges(a[:n], b[:n])
+        if not ranges:
+            self._cmp_out.setPlainText("no differences in that range."); return
+        cap = 2000
+        lines = [f"{len(ranges)} changed range(s)"
+                 + (f" — showing first {cap}" if len(ranges) > cap else "")]
+        for off, sa, sb in ranges[:cap]:
+            addr = start + off
+            if self._txt_table is not None:
+                ta = repr(self._txt_table.decode(sa, stop_at_end=False)[0])
+                tb = repr(self._txt_table.decode(sb, stop_at_end=False)[0])
+            else:
+                ta = sa.hex(" ").upper()
+                tb = sb.hex(" ").upper()
+            lines.append(f"{addr:06X}{self._rom_off(addr)}  A:{ta}")
+            lines.append(f"{'':>{6 + len(self._rom_off(addr))}}  B:{tb}")
+        self._cmp_out.setPlainText("\n".join(lines))
+
+    def _refresh_compare(self) -> None:
+        pass                    # on-demand only
+
     # ---- refresh dispatch
     def refresh(self) -> None:
         if self._m is not None and self._play is not None:
@@ -2416,4 +3164,5 @@ class DebugWindow(QMainWindow):
          self._refresh_events, self._refresh_mem, self._refresh_watch,
          self._refresh_breaks, self._refresh_ramsearch, self._refresh_audio,
          self._refresh_palette, self._refresh_tiles, self._refresh_sprites,
-         self._refresh_layers)[idx]()
+         self._refresh_layers, self._refresh_load, self._refresh_text,
+         self._refresh_crack, self._refresh_pointers, self._refresh_compare)[idx]()

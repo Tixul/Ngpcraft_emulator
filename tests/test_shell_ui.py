@@ -490,6 +490,409 @@ def test_debug_exports_and_trace_to_file(app, tmp_path, monkeypatch):
         w.close()
 
 
+def test_tile_hover_reports_address_and_click_copies(app):
+    """The tile viewer answers 'which tile is this, where does it live, who uses it,
+    what are its bytes' on hover, and a click puts that on the clipboard -- the numbers
+    you need to poke or replace a tile. Pure data path, no ROM: the caches hover reads
+    are set directly and `_tile_info` is asked for a specific cell."""
+    import numpy as np
+    import ngpc_debug as dbg_mod
+    from PyQt6.QtWidgets import QApplication
+
+    dbg = dbg_mod.DebugWindow(None, cfg.make_settings())
+    try:
+        n = 300                                    # past 255, so the sprite-only note fires
+        char = bytearray(n * dbg_mod.TILE_BYTES)
+        char[5 * 16:5 * 16 + 3] = b"\xDE\xAD\xBE"  # a fingerprint in tile 5's bytes
+        usage = np.zeros(dbg_mod.CHAR_RAM_TILES, np.uint8)
+        usage[5] = dbg_mod.USE_SCR1 | dbg_mod.USE_SPRITE     # shared, to exercise the label
+        dbg._tiles_char = bytes(char)
+        dbg._tiles_usage = usage
+        dbg._tiles_n = n
+
+        # tile 5 -> col 5, row 0. Address is CHAR_RAM + 5*16 = 0x00A050.
+        info = dbg._tile_info(5, 0)
+        assert "tile 5 (0x005)" in info
+        assert "0x00A050" in info and "0x00A05F" in info
+        assert "shared" in info and "SCR1" in info and "sprites" in info
+        assert "DE AD BE" in info
+
+        # a tile past the last one present has nothing to say
+        assert dbg._tile_info(0, n // 16 + 1) is None
+
+        # a high tile carries the 9-bit sprite-addressing note
+        assert "sprite ref" in dbg._tile_info(299 % 16, 299 // 16)
+
+        # a click copies the block and the status line confirms it
+        dbg._tile_status(info, copy=True)
+        assert QApplication.clipboard().text() == info
+        assert dbg._tile_status_line.text().startswith("✔ copied")
+        # a hover just shows it, without touching the clipboard
+        dbg._tile_status(dbg._tile_info(0, 0), copy=False)
+        assert not dbg._tile_status_line.text().startswith("✔")
+
+        # the grid's hit size is locked to the sheet geometry, so a click lands on the
+        # tile under the cursor and not its neighbour.
+        assert dbg._tile_label._cell == dbg_mod.TILE_ATLAS_PITCH * dbg_mod.TILE_ATLAS_SCALE
+    finally:
+        dbg.close()
+
+
+def test_text_tab_decodes_and_searches_via_a_loaded_table(app, tmp_path):
+    """The Text tab is the fan-translation half of the debugger, and it works on ANY
+    ROM through a user .tbl. With a table loaded and a stub machine standing in for the
+    core, it decodes a region into strings, finds a phrase by its exact bytes, and --
+    with no table -- cracks the encoding by letter spacing. No emulator, no real ROM."""
+    import ngpc_debug as dbg_mod
+    from core.texttable import parse_tbl
+
+    class _FakeMem:                       # the slice of address space the tab reads
+        def __init__(self, blob): self._blob = blob
+        def read(self, addr, n): return bytes(self._blob[addr:addr + n])
+
+    class _FakePlay:                      # `_m` is a property off `_play.machine`
+        def __init__(self, mem): self.machine = mem
+
+    # 0x10='h' 0x11='i', FF terminates. "hi"<end> planted at offset 0x20.
+    blob = bytearray(0x400)
+    blob[0x20:0x23] = bytes([0x10, 0x11, 0xFF])
+    dbg = dbg_mod.DebugWindow(None, cfg.make_settings())
+    try:
+        dbg._play = _FakePlay(_FakeMem(blob))
+        dbg._txt_table = parse_tbl("10=h\n11=i\n/FF=<end>")
+
+        # decode: the string and its address show up
+        dbg._txt_addr.setText("000020"); dbg._txt_len.setValue(16); dbg._txt_decode()
+        assert "000020" in dbg._txt_out.toPlainText()
+        assert "'hi'" in dbg._txt_out.toPlainText()
+
+        # table search: the exact bytes are found at 0x20
+        dbg._txt_from.setText("000000"); dbg._txt_size.setValue(1)
+        dbg._txt_find.setText("hi"); dbg._txt_mode.setCurrentText("Table")
+        dbg._txt_search()
+        hits = dbg._txt_hits.toPlainText()
+        assert "1 match" in hits and "000020" in hits
+
+        # relative search: no table needed, and it derives the encoding it found
+        dbg._txt_mode.setCurrentText("Relative"); dbg._txt_search()
+        rel = dbg._txt_hits.toPlainText()
+        assert "000020" in rel
+        assert "'h'=10" in rel and "'i'=11" in rel, "relative hit hands back the bytes"
+    finally:
+        dbg.close()
+
+
+def test_fullscreen_is_exited_by_escape_and_double_click(app, monkeypatch):
+    """Regression for 'stuck in fullscreen': Escape and a double-click both return to
+    windowed. The real fullscreen transition crashes under offscreen QPA, so the window
+    state is mocked and the heavy apply is stubbed -- what is checked is that both routes
+    clear the fullscreen setting, base the flip on the window's real state, and that
+    Escape only intercepts WHILE fullscreen."""
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QKeyEvent, QMouseEvent
+
+    class _FakeWin:
+        def __init__(self, fs): self._fs = fs
+        def isFullScreen(self): return self._fs
+
+    w = shell.Shell()
+    try:
+        p = w.play
+        state = {"fs": True}
+        monkeypatch.setattr(p, "window", lambda: _FakeWin(state["fs"]))
+        monkeypatch.setattr(p, "apply_settings", lambda: None)   # skip the real transition
+        monkeypatch.setattr(p, "_reblit_soon", lambda: None)
+
+        esc = QKeyEvent(QEvent.Type.KeyPress, int(Qt.Key.Key_Escape),
+                        Qt.KeyboardModifier.NoModifier)
+
+        # Escape while fullscreen -> the setting is cleared
+        p._settings.setValue("gfx/fullscreen", True)
+        p.keyPressEvent(esc)
+        assert not cfg.fullscreen(p._settings), "Escape in fullscreen returns to windowed"
+
+        # double-click on the canvas while fullscreen -> cleared too
+        p._settings.setValue("gfx/fullscreen", True)
+        dbl = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.NoModifier)
+        p.lcd.mouseDoubleClickEvent(dbl)
+        assert not cfg.fullscreen(p._settings), "double-click in fullscreen returns to windowed"
+
+        # a double-click while WINDOWED goes the other way (into fullscreen)
+        state["fs"] = False
+        p._settings.setValue("gfx/fullscreen", False)
+        p.lcd.mouseDoubleClickEvent(dbl)
+        assert cfg.fullscreen(p._settings), "double-click windowed -> fullscreen"
+    finally:
+        w.close()
+
+
+def test_toolbar_auto_hides_when_idle_and_returns_on_move(app):
+    """Feature: the player toolbar hides after the mouse goes still and comes back on any
+    move, staying available without sitting over the game. The idle hide is transient and
+    kept apart from the user's saved show/hide preference. State is driven directly (no
+    real timer/mouse), and `isHidden()` is checked -- `isVisible()` also needs the window
+    shown, which a headless test is not."""
+    w = shell.Shell()
+    try:
+        p = w.play
+        p.machine = object()                       # a game is 'running'
+        w._settings.setValue("gfx/toolbar", True)
+        w._settings.setValue("gfx/toolbar_autohide", True)
+
+        p.refresh_toolbar()
+        assert not p.toolbar.isHidden(), "windowed + preference on -> toolbar up"
+        assert p._autohide_timer.isActive(), "the idle countdown is armed"
+
+        # the mouse goes still -> the idle timeout hides it (but not the preference)
+        p._idle_hide_toolbar()
+        assert p._idle_hidden and p.toolbar.isHidden()
+
+        # any move brings it back and re-arms the countdown
+        p._on_pointer_activity()
+        assert not p._idle_hidden and not p.toolbar.isHidden()
+        assert p._autohide_timer.isActive()
+
+        # option off -> a still mouse must NOT hide it
+        w._settings.setValue("gfx/toolbar_autohide", False)
+        p._idle_hide_toolbar()
+        assert not p.toolbar.isHidden()
+
+        # a manual hide is the preference (nub shown), never an idle hide, and stops the timer
+        w._settings.setValue("gfx/toolbar_autohide", True)
+        p._toggle_toolbar(False)
+        assert p.toolbar.isHidden() and not p._bar_show.isHidden()
+        assert not p._autohide_timer.isActive(), "nothing up to auto-hide"
+    finally:
+        p.machine = None
+        w.close()
+
+
+def test_both_windows_can_be_made_small(app):
+    """Long, unwrapped help/description labels used to force an enormous minimum window
+    (main ~1732 wide, debugger ~3266) -- you could not shrink either. They wrap now, so
+    both windows honour a small size. Regression for 'let me make the windows smaller'."""
+    import ngpc_debug as dbg_mod
+    from PyQt6.QtWidgets import QApplication
+
+    w = shell.Shell()
+    try:
+        w.show(); QApplication.processEvents()
+        w.resize(420, 360); QApplication.processEvents()
+        assert w.width() <= 460 and w.height() <= 400, \
+            f"main window stuck large: {w.width()}x{w.height()}"
+
+        d = dbg_mod.DebugWindow(w, cfg.make_settings())
+        try:
+            d.show(); QApplication.processEvents()
+            d.resize(400, 340); QApplication.processEvents()
+            assert d.width() <= 440 and d.height() <= 380, \
+                f"debug window stuck large: {d.width()}x{d.height()}"
+        finally:
+            d.close()
+    finally:
+        w.close()
+
+
+def test_sync_fullscreen_chrome_is_safe_before_the_ui_exists():
+    """A WindowStateChange can fire mid-construction (restoreGeometry / first show) before
+    the rail and play page exist. `_sync_fullscreen_chrome` must no-op then, not crash --
+    regression for the AttributeError on `_rail` at startup. Called on a bare object so it
+    exercises the guard without a full window."""
+    class _Bare:
+        pass
+    shell.Shell._sync_fullscreen_chrome(_Bare())   # must not raise
+
+
+def test_fullscreen_hides_and_restores_sidebar_and_toolbar(app, monkeypatch):
+    """Feature: fullscreen can hide the sidebar and the player toolbar so the game gets
+    the whole screen, and leaving fullscreen puts them back — the toolbar to the user's
+    saved preference, never forced on. Driven by `_sync_fullscreen_chrome`; the window
+    state is mocked so no real (and offscreen-crashy) fullscreen transition is needed.
+    `isHidden()` is checked rather than `isVisible()` because the test window is not
+    shown, which would make everything report not-visible regardless."""
+    w = shell.Shell()
+    try:
+        state = {"fs": False}
+        monkeypatch.setattr(w, "isFullScreen", lambda: state["fs"])
+        w._settings.setValue("gfx/fs_hide_ui", True)
+        w._settings.setValue("gfx/toolbar", True)      # user keeps the toolbar normally
+
+        state["fs"] = False; w._sync_fullscreen_chrome()
+        assert not w._rail.isHidden() and not w.play.toolbar.isHidden(), "windowed: chrome shown"
+
+        state["fs"] = True; w._sync_fullscreen_chrome()
+        assert w._rail.isHidden() and w.play.toolbar.isHidden(), "fullscreen: chrome hidden"
+        assert w.play._bar_show.isHidden(), "no 'show toolbar' nub either"
+
+        # ...but the toolbar is only AUTO-hidden: a mouse move brings it back over the game
+        # (the sidebar stays gone). This is the fix for 'toolbar never shows in fullscreen'.
+        w.play.machine = object()
+        w.play._on_pointer_activity()
+        assert not w.play.toolbar.isHidden(), "a move reveals the fullscreen toolbar"
+        assert w._rail.isHidden(), "...but not the sidebar"
+        w.play.machine = None
+        w.play._idle_hidden = True     # back to the resting hidden state for the next step
+
+        state["fs"] = False; w._sync_fullscreen_chrome()
+        assert not w._rail.isHidden() and not w.play.toolbar.isHidden(), "restored on exit"
+
+        # the option off -> fullscreen keeps the chrome
+        w._settings.setValue("gfx/fs_hide_ui", False)
+        state["fs"] = True; w._sync_fullscreen_chrome()
+        assert not w._rail.isHidden() and not w.play.toolbar.isHidden(), "opt off: chrome kept"
+
+        # option on, but the toolbar was hidden by choice -> exit must not force it back
+        w._settings.setValue("gfx/fs_hide_ui", True)
+        w._settings.setValue("gfx/toolbar", False)
+        state["fs"] = True; w._sync_fullscreen_chrome()
+        assert w._rail.isHidden()
+        state["fs"] = False; w._sync_fullscreen_chrome()
+        assert not w._rail.isHidden() and w.play.toolbar.isHidden(), "toolbar stays as the user left it"
+    finally:
+        w.close()
+
+
+def test_paused_frame_refits_after_a_layout_change(app):
+    """Hiding the toolbar / going fullscreen resizes the canvas, but only a RUNNING tick
+    re-blits — so a paused game kept an old, mis-scaled (stretched) frame. These paths now
+    schedule a deferred re-fit once the layout has settled. Regression for the user report
+    'aspect stretches after fullscreen and hiding the sidebar/toolbar'."""
+    from PyQt6.QtWidgets import QApplication
+
+    w = shell.Shell()
+    try:
+        play = w.play
+        play.machine = object()                 # non-None so the blit guard passes
+        calls = []
+        play._blit = lambda: calls.append(1)     # count re-fits; skip the real numpy/Qt path
+
+        # two requests in one turn collapse to a single deferred blit (no drag storm)
+        play._reblit_soon(); play._reblit_soon()
+        assert calls == [], "the re-fit is deferred, not immediate"
+        QApplication.processEvents()
+        assert len(calls) == 1, "exactly one deferred re-fit ran"
+
+        # hiding the toolbar fires no resizeEvent of its own, yet must still re-fit
+        calls.clear()
+        play._toggle_toolbar(False)
+        QApplication.processEvents()
+        assert calls, "hiding the toolbar must re-fit the paused frame"
+    finally:
+        play.machine = None
+        w.close()
+
+
+def test_load_tab_gauges_read_vram_and_frame_rate(app):
+    """The Load tab reads exact VRAM budgets (sprites, tiles) and shows the frame-rate
+    as the honest overload signal, greyed when nothing is moving. Stub machine, no core."""
+    import ngpc_debug as dbg_mod
+
+    # A machine whose OAM has 2 active sprites and whose tilemaps reference a few tiles.
+    mem = bytearray(0x10000)
+    # OAM at 0x8800: sprite 0 active (priority bits set), sprite 1 active (has position)
+    mem[0x8800 + 1] = 0x08          # sprite 0: priority != 0 -> active
+    mem[0x8804 + 2] = 40            # sprite 1: H position set -> active
+    # SCR1 map at 0x9000: make one entry point at tile 5
+    mem[0x9000] = 5
+
+    class _FakeMem:
+        def read(self, addr, n): return bytes(mem[addr:addr + n])
+
+    class _FakePlay:
+        def __init__(self, mem_): self.machine = mem_; self._perf = {}
+        def perf(self): return self._perf
+    play = _FakePlay(_FakeMem())
+
+    dbg = dbg_mod.DebugWindow(None, cfg.make_settings())
+    try:
+        dbg._play = play
+
+        play._perf = {"game_fps": 60.0}
+        dbg._refresh_load()
+        assert "2 / 64" in dbg._g_spr._caption, "two active sprites counted"
+        assert not dbg._g_spr._neutral and dbg._g_spr._value == 2 / 64
+        assert "/ 512 tiles" in dbg._g_tile._caption
+        # keeping up at 60 -> health gauge full, not neutral
+        assert dbg._g_cpu._value == 1.0 and not dbg._g_cpu._neutral
+
+        # a still screen (no sprite movement) -> frame-rate gauge goes neutral/grey
+        play._perf = {"game_fps": 0.0}
+        dbg._refresh_load()
+        assert dbg._g_cpu._neutral, "nothing moving -> can't tell the rate -> grey"
+    finally:
+        dbg.close()
+
+
+def test_gauge_colour_runs_green_to_red():
+    """Low severity is green-ish, high severity is red-ish (independent of Qt state)."""
+    import ngpc_debug as dbg_mod
+    lo = dbg_mod._Gauge._severity_colour(0.0)
+    hi = dbg_mod._Gauge._severity_colour(1.0)
+    assert lo.green() > lo.red(), "low = green"
+    assert hi.red() > hi.green(), "high = red"
+
+
+def test_fantrad_tabs_crack_pointers_compare(app, tmp_path):
+    """The Crack / Pointers / Compare tabs, end to end against a stub machine: crack a
+    table from a readable word, find a pointer to an address, and diff a second ROM.
+    All ROM-agnostic; no emulator, no real cartridge."""
+    import ngpc_debug as dbg_mod
+    from core.texttable import parse_tbl
+
+    letters = {c: 0xA4 + i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz")}
+    enc = lambda s: bytes(letters[c] for c in s)
+
+    class _FakeMem:
+        def __init__(self, blob): self._blob = blob
+        def read(self, addr, n): return bytes(self._blob[addr:addr + n])
+
+    class _FakePlay:
+        def __init__(self, mem): self.machine = mem
+
+    # A little cart image: a word to crack, and a 32-bit pointer to address 0x000040.
+    blob = bytearray(0x800)
+    blob[0x10:0x10 + 5] = enc("magic")
+    blob[0x100:0x104] = (0x000040).to_bytes(4, "little")
+    dbg = dbg_mod.DebugWindow(None, cfg.make_settings())
+    try:
+        dbg._play = _FakePlay(_FakeMem(blob))
+
+        # -- Crack: one readable word -> a table with its letters
+        dbg._crack_words.setPlainText("magic")
+        dbg._crack_from.setText("000000"); dbg._crack_size.setValue(1)
+        dbg._crack_run()
+        out = dbg._crack_out.toPlainText()
+        assert "A8=e" not in out                      # 'e' not in "magic"
+        assert f"{letters['m']:02X}=m".upper() in out.upper()
+        dbg._crack_use()                              # adopt it in the Text tab
+        assert dbg._txt_table is not None and dbg._txt_table.encode("magic") == enc("magic")
+
+        # -- Pointers: find the reference to 0x000040
+        dbg._ptr_width.setCurrentIndex(0)             # 32-bit LE
+        dbg._ptr_base.setText("000000")
+        dbg._ptr_from.setText("000000"); dbg._ptr_size.setValue(1)
+        dbg._ptr_target.setText("000040"); dbg._ptr_tol.setValue(0)
+        dbg._ptr_find()
+        assert "000100" in dbg._ptr_out.toPlainText()
+
+        # -- Compare: a second ROM that differs in one spot. Use a full-alphabet table
+        # so BOTH sides decode (the cracked one only knew "magic"'s letters).
+        dbg._txt_table = parse_tbl("".join(f"{v:02X}={c}\n" for c, v in letters.items()))
+        romb = bytearray(blob)
+        romb[0x10:0x15] = enc("power")                # "magic" -> "power"
+        romb_path = tmp_path / "romB.ngc"
+        romb_path.write_bytes(bytes(romb))
+        dbg._cmp_path = str(romb_path)
+        dbg._cmp_from.setText("000000"); dbg._cmp_size.setValue(1)
+        dbg._cmp_run()
+        diff = dbg._cmp_out.toPlainText()
+        assert "000010" in diff and "'magic'" in diff and "'power'" in diff
+    finally:
+        dbg.close()
+
+
 def test_custom_cover_survives_a_cache_version_bump(app, tmp_path, monkeypatch):
     """The bug a user hit: a title screen they placed by hand came back as the
     default rendered one after every update. The cover cache prunes anything that

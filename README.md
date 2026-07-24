@@ -25,7 +25,9 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
 - **Console boot** — with a real BIOS, *Boot BIOS* powers the console on for real: the
   Neo Geo Pocket intro plays and the game then boots on its own, exactly like hardware.
 - **Video**: integer / fit / stretch scaling, scanline / LCD-grid / CRT filters,
-  colour profiles, real fullscreen. The canvas follows the window; size presets `Ctrl+1…5`.
+  colour profiles, real fullscreen — which **hides the sidebar and toolbar** for the game
+  alone (optional); **double-click or `Esc`** returns to windowed. The canvas follows the
+  window; size presets `Ctrl+1…5`.
 - **Black-and-white cartridges, in colour** — an NGP game on an NGPC is *colourised*, the way
   a Game Boy game is on a Game Boy Color. Both machines are selectable — see
   [Monochrome cartridges](#monochrome-cartridges-on-a-colour-console).
@@ -36,7 +38,8 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
 - **Speed control** — fast-forward (hold `Tab`) and 0.25×…4× (`[` / `]` or the toolbar).
 - **Rewind** — hold `,` (or the ⏪ toolbar button) to run the game backward; release to
   resume. `.` steps one frame forward. Buffer length configurable (Off / 10 / 20 / 30 s).
-- **Screenshots** (`F12`, folder configurable), **FPS overlay**, a hideable **player toolbar**.
+- **Screenshots** (`F12`, folder configurable), **FPS overlay**, and a **player toolbar**
+  that can auto-hide when the mouse goes still and reappear on the next move (optional).
 - **Controller support** — an Xbox-style (XInput) pad alongside the keyboard, plus
   **turbo / autofire** on A and B at 5–20 presses per second.
 - **Fully remappable** — console buttons *and* every in-game hotkey, with a warning when
@@ -47,8 +50,25 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
   explicitly. Switches live, no restart.
 - **Debug tools** (`F1`) — a real debugger: symbols, instruction stepping, call stack,
   raster event timeline, read *and* write watchpoints, an editable hex view with access
-  highlighting, RAM search, **show/hide any video layer** on the live picture, and audio
-  analysis with **VGM export**. See [Debugging](#debugging-f1).
+  highlighting, RAM search, **show/hide any video layer** on the live picture, a tile
+  viewer that **names every tile's address on hover** (click to copy), a **Load** tab with
+  live green→red gauges for the **sprite (OAM)** and **character-RAM tile** budgets read
+  straight from VRAM, and audio analysis with **VGM export**. See [Debugging](#debugging-f1).
+- **Fan-translation tools** — everything works on **any ROM**, driven by a character
+  table you load (`.tbl`); nothing is game-specific. Four tabs:
+  - **Text** — decode a region into strings, **search** for a phrase by its exact bytes,
+    **scan** a whole region for every string (a script dump you can export to a file), and
+    a **relative search** that finds a word under an *unknown* encoding by its letter
+    spacing (no table needed).
+  - **Crack** — type words you can read on screen and it **builds the table for you**:
+    each word is located by relative search (or pinned with `word @ offset`), and the bytes
+    under it become a `.tbl` you can save or use straight away.
+  - **Pointers** — **find every pointer to an address** (to repoint a moved string) or
+    **locate the pointer tables** themselves. 16/24/32-bit LE, with a base for bank offsets.
+  - **Compare** — byte-**diff against a second ROM**: an existing patch's changed ranges
+    *are* the text, shown decoded on both sides.
+
+  Every result shows its ROM file offset (`address − 0x200000`).
 - **ROM analysis** — right-click a game to boot it, drive it, and report what is wrong
   with it. See [ROM analysis](#rom-analysis).
 - **Crash reports** — a ROM fault writes a detailed `crashes/*.txt` (reason, PC, opcode,
@@ -277,7 +297,7 @@ It asks first. **Your games and their saves are not touched** — those live in 
 | Key | Action |
 |-----|--------|
 | Arrows / X / C / Enter | D-pad / A / B / Option |
-| `Esc` | Pause menu · `P` pause · `F5` reset |
+| `Esc` | Exit fullscreen if fullscreen, else pause menu · `P` pause · `F5` reset |
 | `F2` / `F4` / `F3` | save / load state · change slot |
 | `Tab` (hold) · `[` / `]` | fast-forward · slower / faster |
 | `F12` · `F11` · `Ctrl+1…5` | screenshot · fullscreen · window size 1×…5× |
@@ -386,7 +406,53 @@ write log can show that.
   written back losslessly, so a title screen's background comes out as a clean plate you can
   edit and re-import. Hiding a layer changes the *picture* and nothing else — no machine
   state, no timing — so ticking everything back on restores the frame bit for bit.
-- Plus the live viewers: CPU, palette, tiles, sprites — each with an Export button.
+- Plus the live viewers: CPU, palette, tiles, sprites — each with an Export button. In the
+  **Tiles** view, **hover any tile** to read its index, its **VRAM address**, which planes
+  reference it, and its 16 raw bytes; **click to copy** that block, or select it from the
+  status line — the numbers you need to poke or replace a tile.
+
+### Load — live resource gauges
+
+Green→red bars for what a game actually runs out of on this hardware, updating as it plays:
+
+- **Sprites (OAM)** — active entries of the 64 the hardware has;
+- **Char RAM** — distinct tiles referenced, of 512 in character RAM.
+
+Both are read straight from VRAM, so they are exact counts. A third bar, **Frame rate**,
+is the honest CPU-headroom signal: it shows whether the game finishes its work in time
+(60 = keeping up), inferred from the sprite table changing, and reads grey on a still
+screen where nothing updates. A raw CPU-cycle percentage is deliberately *not* shown — on
+this machine the slow cartridge bus keeps the CPU busy every frame, so it would read ~100%
+always and tell you nothing; whether the game holds 60 is the number that matters.
+
+### Fan-translation — Text · Crack · Pointers · Compare
+
+Tools for translating a game, all working on **any ROM**: they read live memory through a
+character table **you** load (`.tbl`, the romhacking-standard format), and every result
+shows its **ROM file offset** (`address − 0x200000`) so a hit maps straight back to a byte
+in the cartridge file. Nothing here is specific to one game.
+
+- **Text** — load a `.tbl`, then **decode** any region into readable strings, **search**
+  for a phrase by the exact bytes it encodes to, or **scan** a whole region for every
+  string at once and export it — a script dump to translate offline. A **relative search**
+  finds a word under an *unknown* encoding by the spacing between its letters, needing no
+  table at all — the first tool when you are cracking a game from scratch.
+- **Crack** — type words you can read on screen and it **builds the table for you**: each
+  is located by relative search (or pinned with `word @ offset` when a common word matches
+  in many places), and the real bytes under it become a `.tbl` you can edit, save, or use
+  in the Text tab straight away. It reads the actual bytes, so a non-linear encoding cracks
+  as easily as an alphabetical one.
+- **Pointers** — **find every pointer to an address** (the entries to patch when a string
+  moves) or **locate the pointer tables** themselves. Pointer width 16 / 24 / 32-bit LE,
+  with a base added to the stored value for bank-relative offsets, and a tolerance to catch
+  a pointer into the middle of a string.
+- **Compare** — byte-**diff the running cartridge against a second `.ngc`**. An existing
+  translation is an oracle: the ranges it changed *are* the text, and with a table loaded
+  they are shown decoded on both sides.
+
+> These tools **find and read**; they do not write the ROM. Injecting the translated text
+> and repointing it back into a `.ngc` is a separate build step — this is the discovery and
+> verification side of that workflow.
 
 ## ROM analysis
 
