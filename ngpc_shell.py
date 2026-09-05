@@ -3520,10 +3520,12 @@ class PlayPage(QWidget):
         # and stamps 1998-01-01 over the chip. So the date the BIOS just showed the player
         # would be gone by the time the game reads it. Snapshot it, hand it straight back.
         clock = self.machine.rtc()
-        self.machine.set_battery_ram(b"")   # the game boots with clean work RAM (instant state)
-        self.machine.reset(bios_handoff=True)
-        self.machine.set_battery_ram(coin)  # coin cell back in the buffer (mem stays clean)
-        self.machine.set_rtc(clock)         # and the clock the BIOS was running
+        # ⚡ THE RESET RELOADS THE PRISTINE CART IMAGE, so the cartridge's SAVE and the
+        # console's settings page have to be carried over it by hand -- exactly as a power
+        # cycle does. Done in the session, next to `reboot`, which has the same rule; see
+        # `NativeSession.handoff_reset` for the two reports this closes (a separate-file
+        # save that never loaded, and the BIOS config reset at every launch).
+        self.session.handoff_reset(coin, clock)
         self.apply_debug()                  # re-arm breakpoints/write-log after the reset
         self._did_handoff = True
         self.overlay.setText("")

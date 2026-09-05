@@ -69,6 +69,51 @@
 > il n'y a pas de modele de timing) ; endurance des cellules ; protection de bloc non
 > persistee (le format n'a pas de place, et aucun autre emulateur ne la garde).
 
+> ## 🔴 MISE A JOUR 2026-09-05 — « Fichier separe » ne RECHARGEAIT rien (rapport joueur)
+>
+> Reglages du joueur: horloge alignee sur le PC, **demarrage console complet**, saves
+> **en fichier separe**, reglages portables. Symptomes: le `.flash` apparait bien dans
+> `saves/`, aucun jeu ne le relit, et **le BIOS est reinitialise a chaque lancement**.
+> Confirme, puis reproduit sur sa propre sauvegarde (Bust-A-Move Pocket).
+>
+> **Une seule cause pour les deux moities: la remise a zero du hand-off BIOS -> cartouche.**
+> A la fin du demarrage console, `_bios_handoff_assist` appelait `reset(bios_handoff=True)`
+> directement -- et `reset_memory` **RECHARGE L'IMAGE VIERGE DE LA ROM**, c'est-a-dire un
+> reset d'usine de la puce flash au milieu d'un boot. Donc:
+>
+> * la sauvegarde restauree au demarrage etait effacee juste avant que le jeu parte. En
+>   mode « dans la .ngc » l'image vierge PORTE la sauvegarde, donc rien ne se voyait: le
+>   defaut n'etait visible **que** en fichier separe. Sauver marchait toujours, d'ou un
+>   fichier a jour dans `saves/` que personne ne relisait.
+> * la page de reglages du BIOS (0x6C00-0x6FFF) etait remplacee par celle de la mise sous
+>   tension, et `commit_system_ram` -- qui persiste la page VIVANTE -- la stampait sur la
+>   pile bouton en sortant. Mesure: 0x11223344 en 0x6DD8 relu a zero.
+>
+> Corrige dans `NativeSession.handoff_reset`, a cote de `reboot`, qui applique la meme
+> regle depuis toujours: **rien de la cartouche ni de la pile bouton ne change parce que
+> le CPU a ete reinitialise.**
+>
+> ⛔ **La pile bouton se repare a l'ECRITURE, pas en la reposant en RAM.** Recopier la
+> page sauvegardee par-dessus la memoire vive -- ce que fait le hand-off INSTANTANE -- a
+> **GELE LE JEU**: Bust-A-Move Pocket, 109 images distinctes tombees a 8, ecran titre sans
+> sa ligne « push a button », plus aucune touche active. Le joueur l'a rapporte dans la
+> foulee. Les deux chemins ne sont pas symetriques: cote instantane cette page est un
+> **fichier** ecrit par une session precedente, cote demarrage console c'est la **RAM de
+> travail vivante du vrai BIOS**, scratch compris, et la remise a zero vient justement de
+> semer la page a laquelle la cartouche a droit. Donc la RAM garde ce que le reset a semis,
+> et c'est `commit_system_ram` qui persiste la **pile capturee au hand-off**
+> (`cell_captured`) au lieu de relire une page qui n'est plus la reponse de la console.
+>
+> ⚠️ **Et la sauvegarde ne se recopie PAS depuis la memoire vive.** Le BIOS vient
+> d'identifier la puce, qui reste en **autoselect**: elle repond son ID et 0xFF partout
+> ailleurs. La premiere version du correctif snapshotait la memoire et remettait donc
+> 256 Kio de 0xFF a la place de la sauvegarde -- **elle detruisait exactement ce qu'elle
+> devait sauver**, et la mesure sur la ROM du joueur est la seule chose qui l'a montre.
+> On relit le FICHIER, qui est l'etat exact d'avant (rien n'ecrit la puce entre les deux).
+>
+> Tests: `tests/test_save_sidecar_mode.py`, les deux derniers -- verifies rouges sur
+> l'ancien comportement, verts sur le nouveau.
+
 ## 1. But
 
 Le projet doit gerer correctement les sauvegardes persistantes des jeux.

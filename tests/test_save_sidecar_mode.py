@@ -7,9 +7,14 @@ la session autrement -- `save_to_rom=False, sidecar=True` -- et ce chemin-la n'a
 aucune couverture. Signale par un joueur: « quand les sauvegardes in-game sont en
 Fichier separe, ni le BIOS ni aucun jeu ne sauvegarde ou ne recharge ses donnees ».
 
-Ce fichier ne reproduit PAS ce symptome (le mecanisme tient sur les trois formes
-ci-dessous), et c'est precisement pour ca qu'il existe: sans lui, la prochaine passe
-recommencerait a douter du mecanisme au lieu de chercher plus haut.
+✅ CAUSE TROUVEE (les deux derniers tests). Le mecanisme du mode tient -- les trois
+premiers tests le montrent -- et c'est justement pour ca qu'il fallait chercher PLUS
+HAUT: la sauvegarde etait bien restauree, puis DETRUITE par la remise a zero qui donne
+la main a la cartouche a la fin du demarrage console (`reset_memory` recharge l'image
+vierge de la ROM). En mode « dans la .ngc » cette image porte deja la sauvegarde, donc
+seul le fichier separe le montrait. La meme remise a zero ecrasait la page de reglages
+du BIOS -- l'autre moitie du rapport, « ca reinitialise mon BIOS ». Voir
+`NativeSession.handoff_reset`.
 
 ⚠️ CHAQUE SESSION ECRIT DES OCTETS DIFFERENTS. Reprogrammer la meme charge utile ne peut
 pas echouer -- une cellule NOR fait un ET, donc programmer un octet sur lui-meme le laisse
@@ -27,7 +32,7 @@ REPO = Path(__file__).resolve().parents[1]
 HLE_IMAGE = REPO / "hle_bios" / "bios_hle.bin"
 RETAIL_BIOS = REPO / "bios.bin"
 
-from core import native  # noqa: E402
+from core import flash_file, native  # noqa: E402
 
 XWA, XBC, XDE, XHL = 0, 1, 2, 3
 CODE, SRC = 0x004000, 0x004100
@@ -159,6 +164,89 @@ class SeparateFileMode(unittest.TestCase):
                              "le boot du BIOS a efface la sauvegarde restauree")
         finally:
             s2.close()
+
+    @unittest.skipUnless(RETAIL_BIOS.exists(), "needs the retail bios.bin (gitignored)")
+    def test_the_hand_off_into_the_cartridge_keeps_the_save(self):
+        """⛔ LE TROU EXACT DU RAPPORT, et ce que le test au-dessus ne fait pas.
+
+        `test_it_survives_a_real_console_boot` laisse tourner le BIOS -- et le BIOS,
+        lui, ne touche pas la sauvegarde. Ce qui la detruisait, c'est l'ETAPE SUIVANTE:
+        la remise a zero qui donne la main a la cartouche, parce que `reset_memory`
+        RECHARGE L'IMAGE VIERGE de la ROM. En mode « dans la .ngc » cette image contient
+        deja la sauvegarde et rien ne se voyait; en fichier separe la .ngc est vierge,
+        donc la sauvegarde restauree partait a chaque lancement.
+
+        ⚠️ Et elle ne peut PAS etre recopiee depuis la memoire vive: le BIOS vient
+        d'identifier la puce, qui reste en AUTOSELECT et repond 0xFF partout ailleurs
+        que sur ses quatre octets d'ID -- la premiere version du correctif a remis ce
+        0xFF a la place de la sauvegarde. D'ou l'assertion sur l'autoselect ci-dessous:
+        elle fige la raison pour laquelle on relit le FICHIER.
+        """
+        SAVE_AT = 0x2F8000          # ou un vrai jeu sauvegarde: en haut de la puce
+        cart = self.dir / "handoff.ngc"
+        cart.write_bytes(_rom(0x200000))
+        flash = self.dir / "handoff.flash"
+        payload = bytes((i * 23 + 5) & 0xFF for i in range(256))
+        flash_file.write(flash, [(SAVE_AT, payload)])
+
+        s = self._session(cart, flash, 0x200000, bios=RETAIL_BIOS, real_bios=True,
+                          boot=470)
+        try:
+            self.assertTrue(s.save_loaded, "le fichier separe n'a meme pas ete lu")
+            coin, clock = s.machine.battery_ram(), s.machine.rtc()
+            s.handoff_reset(coin, clock)
+            self.assertEqual(s.machine.read(SAVE_AT, 256), payload,
+                             "le passage BIOS -> cartouche a efface la sauvegarde")
+            self.assertFalse(s.machine.flash_dirty(),
+                             "remettre la sauvegarde n'est pas une ecriture du jeu")
+            s.machine.run_frames(60)
+            self.assertEqual(s.machine.read(SAVE_AT, 256), payload,
+                             "perdue une fois le jeu parti")
+        finally:
+            s.close()
+
+    @unittest.skipUnless(RETAIL_BIOS.exists(), "needs the retail bios.bin (gitignored)")
+    def test_the_hand_off_keeps_the_console_settings_without_touching_the_game(self):
+        """L'AUTRE MOITIE DU MEME RAPPORT: « ca reinitialise mon BIOS a chaque jeu ».
+
+        La remise a zero seme une page de reglages de mise sous tension, et
+        `commit_system_ram` persiste la page VIVANTE -- donc la config du joueur etait
+        remplacee par celle-la en sortant. Ce qui compte est donc ce qui ATTERRIT DANS LE
+        FICHIER, pas ce qu'il y a en memoire.
+
+        ⛔ ET LA MEMOIRE VIVE, ON N'Y TOUCHE PAS. Le premier correctif recopiait la page
+        sauvegardee par-dessus la RAM, comme le fait le hand-off instantane -- et il A GELE
+        LE JEU: mesure sur Bust-A-Move Pocket, 109 images distinctes tombees a 8, l'ecran
+        titre sans sa ligne « push a button » et plus aucune touche active. C'est le
+        symptome que le joueur a rapporte ensuite. Les deux chemins ne sont pas
+        symetriques: ici la page sauvegardee est la RAM DE TRAVAIL VIVANTE du vrai BIOS,
+        et la cartouche a droit a celle que la remise a zero vient de semer pour elle.
+        La 2e assertion garde cette porte fermee.
+        """
+        cart = self.dir / "cell.ngc"
+        cart.write_bytes(_rom(0x200000))
+        flash = self.dir / "cell.flash"
+        s = self._session(cart, flash, 0x200000, bios=RETAIL_BIOS, real_bios=True,
+                          boot=470)
+        s.ram_path = self.dir / "system.ram"      # jamais la vraie pile bouton
+        s.rtc_path = self.dir / "system.rtc"
+        marker = bytes([0x11, 0x22, 0x33, 0x44])
+        try:
+            s.machine.write(0x006DD8, marker)     # un reglage fait dans l'ecran du BIOS
+            seeded_before = s.machine.read(0x006C00, 0x400)
+            s.handoff_reset(s.machine.battery_ram(), s.machine.rtc())
+            self.assertNotEqual(s.machine.read(0x006C00, 0x400), seeded_before,
+                                "la page vivante devrait etre celle du reset")
+            self.assertNotEqual(s.machine.read(0x006DD8, 4), marker,
+                                "on a repose la page du BIOS sur la RAM du jeu: c'est ce "
+                                "qui gelait la cartouche")
+            self.assertTrue(s.commit_system_ram())
+        finally:
+            s.close()
+        cell = (self.dir / "system.ram").read_bytes()
+        off = 0x006DD8 - native.RAM_START
+        self.assertEqual(cell[off:off + 4], marker,
+                         "le lancement d'un jeu a efface les reglages de la console")
 
 
 if __name__ == "__main__":

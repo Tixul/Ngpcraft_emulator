@@ -415,6 +415,12 @@ class NativeSession:
         # wizard on the player's behalf -- once. From the next launch the console remembers,
         # and its own setup screen is the only thing that changes it.
         self.started_unconfigured = self.system_ram_baseline is None
+        # ⚡ Set by `handoff_reset` once the BIOS has handed the console to the cartridge:
+        # from that moment the settings page in live RAM is the one the RESET seeded for
+        # the game, not the console's own answer, and `commit_system_ram` must persist the
+        # cell captured at the hand-off instead. See handoff_reset for what it cost to
+        # learn that the two hand-off paths are not symmetrical here.
+        self.cell_captured = False
 
         if self.real_bios:
             if self.system_ram_baseline is not None:
@@ -550,11 +556,18 @@ class NativeSession:
         base = bytearray(self.system_ram_baseline
                          if self.system_ram_baseline is not None
                          else bytes(native.RAM_SIZE))
-        page_start, page_end = self._SETTINGS_PAGE
-        live = self.machine.read(page_start, page_end - page_start)
-        lo = page_start - native.RAM_START
-        if lo + len(live) <= len(base):
-            base[lo:lo + len(live)] = live
+        # ⛔ ...EXCEPT ONCE THE CARTRIDGE HAS THE CONSOLE. `handoff_reset` captured the
+        # cell the BIOS left -- setup screen included -- and then reset, which seeds a
+        # power-on settings page for the game. Re-reading live RAM after that persists
+        # THAT page, which is how a launch came to wipe the player's console config.
+        # The captured cell is already the baseline, so there is simply nothing to
+        # overlay: what the BIOS knew is what the console keeps.
+        if not self.cell_captured:
+            page_start, page_end = self._SETTINGS_PAGE
+            live = self.machine.read(page_start, page_end - page_start)
+            lo = page_start - native.RAM_START
+            if lo + len(live) <= len(base):
+                base[lo:lo + len(live)] = live
         self.ram_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.ram_path.with_suffix(".tmp")
         tmp.write_bytes(bytes(base))
@@ -716,6 +729,65 @@ class NativeSession:
         self._frame_count = 0
         self.stop_status = None
         self.stop_pc = 0
+
+    def handoff_reset(self, coin_cell: bytes, clock: object) -> None:
+        """The BIOS -> CARTRIDGE hand-off, with everything non-volatile carried across.
+
+        The console-boot path runs the real BIOS first, then resets into the cartridge's
+        entry point to hand it the same clean slate the instant boot gives it. That reset
+        is `reset_memory`, and `reset_memory` RELOADS THE PRISTINE CART IMAGE -- so it is
+        a factory reset of the flash chip in the middle of a boot. Two things that must
+        survive a power-on were being destroyed by it:
+
+          * ⚡ THE GAME'S SAVE. The save is put into the chip in `__init__`, and this
+            reset laid the pristine ROM back over it. In "save into the .ngc" mode the
+            pristine image IS the file the save was written into, so nothing showed; in
+            SEPARATE-FILE mode the .ngc is untouched and the save was wiped at every
+            launch -- the .flash sat in `saves/`, was rewritten correctly on exit, and
+            never came back. Reported by a player (console boot + separate file),
+            reproduced bare: `flash_restore` then `reset(bios_handoff=True)` reads 0xFF.
+          * ⚡ THE COIN CELL. The reset seeds a power-on settings page, and handing the
+            cell back to the BUFFER afterwards does not touch live RAM -- so
+            `commit_system_ram`, which persists the LIVE page, stamped that power-on page
+            over the player's console settings on the way out. Measured: a cell holding
+            0x11223344 at 0x6DD8 read back all zeros after the hand-off. That is the
+            "it resets my BIOS whenever I start a game" half of the same report.
+
+        ⛔ AND THE CELL IS FIXED ON THE *WRITE* SIDE, NOT BY PUTTING IT BACK IN RAM.
+        Laying the saved page over live RAM here -- `_restore_bios_settings_page`, which
+        is exactly what the INSTANT hand-off does -- FROZE THE GAME. Measured on Bust-A-
+        Move Pocket: 109 distinct frames became 8, the title came up without its "push a
+        button" line and no input did anything, which is precisely what the player then
+        reported. The two paths are not symmetrical: in the instant hand-off that page
+        holds a cell SAVED by an earlier session, while here it is the real BIOS's LIVE
+        work RAM, scratch and all, and the hand-off reset has just seeded the page the
+        cartridge is entitled to. So live RAM keeps what the reset seeded, and
+        `commit_system_ram` is told to persist the CAPTURED CELL instead of re-reading
+        a page that is no longer the console's answer. See `cell_captured`.
+
+        ⛔ AND THE SAVE IS NOT SNAPSHOTTED FROM LIVE MEMORY, the way `reboot` does it.
+        The BIOS has just probed the cartridge, which leaves the chip in AUTOSELECT: it
+        answers its ID, and `flash_id_read` gives 0xFF for every address that is not one
+        of the four ID bytes. Measured on Bust-A-Move Pocket with the player's own save
+        file: the snapshot came back all 0xFF and put THAT back, so the first version of
+        this fix wiped the save just as thoroughly as the bug it replaced. Nothing has
+        written the chip between `__init__` and here -- only the BIOS ran, and it does
+        not save -- so the save FILE is the exact pre-reset state, and re-reading it is
+        both simpler and immune to whatever mode the chip is left in.
+        """
+        was_dirty = self.machine.flash_dirty()
+        self.machine.set_battery_ram(b"")   # the game boots on clean work RAM
+        self.machine.reset(bios_handoff=True)
+        self.machine.set_battery_ram(coin_cell)   # the cell back in the buffer...
+        self.system_ram_baseline = coin_cell
+        self.machine.set_rtc(clock)
+        # ...and it is THIS that gets persisted, rather than the page the reset seeded.
+        self.cell_captured = True
+        self._restore_save()                      # the cartridge, as the player left it
+        if not was_dirty:
+            # Putting the save back is not the game writing one: leaving the chip marked
+            # dirty would make every launch rewrite the save file it never changed.
+            self.machine.flash_clear_dirty()
 
     # -- running ------------------------------------------------------------
 
