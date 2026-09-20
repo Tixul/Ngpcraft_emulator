@@ -521,10 +521,26 @@ def test_mirror_play_is_left_alone(app):
         page.machine = page._mirror = None
 
 
-def _bare_window():
-    """La fenetre du shell, sans jeu charge: `_start_net` et ses compagnons ne
-    touchent a la console que par `self.play.overlay`, qui existe des la construction."""
-    return shell.Shell()
+@pytest.fixture
+def bare_window(app):
+    """Keep the shell alive until its real network workers have stopped."""
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    win = shell.Shell()
+    try:
+        yield win
+    finally:
+        workers = list(win._net_retiring)
+        if win._net_thread is not None:
+            workers.append(win._net_thread)
+        # Some tests install a sentinel in place of a running machine.
+        win.play.machine = None
+        win._cancel_net_attempt()
+        win.close()
+        assert all(not worker.isRunning() for worker in workers), (
+            "a network worker outlived its test window")
+        win.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 # --------------------------------------------------------------------------
@@ -544,9 +560,9 @@ def _bare_window():
 # Deux choses sont donc gelees ici: le delai n'est plus de l'ordre de la minute, et une
 # attente VIVANTE se voit -- son texte avance.
 
-def test_the_waiting_message_counts_so_a_dead_attempt_is_visible(app, monkeypatch):
+def test_the_waiting_message_counts_so_a_dead_attempt_is_visible(app, monkeypatch, bare_window):
     """Le texte d'attente doit CHANGER tant que la tentative est en vie."""
-    win = _bare_window()
+    win = bare_window
     seen = []
     win.play.overlay.setText = lambda t: seen.append(t)      # type: ignore[assignment]
     monkeypatch.setattr(shell._NetConnect, "HOST_TIMEOUT_S", 30.0)
@@ -563,9 +579,9 @@ def test_the_waiting_message_counts_so_a_dead_attempt_is_visible(app, monkeypatc
         app.processEvents()
 
 
-def test_the_clock_stops_when_the_attempt_does(app, monkeypatch):
+def test_the_clock_stops_when_the_attempt_does(app, monkeypatch, bare_window):
     """...et il s'arrete quand elle finit, sinon il recouvrirait le verdict."""
-    win = _bare_window()
+    win = bare_window
     monkeypatch.setattr(shell._NetConnect, "HOST_TIMEOUT_S", 30.0)
     assert win._start_net("host", "", free_port(), "⏳ attente")
     assert win._net_clock is not None
@@ -622,10 +638,10 @@ def _is_listening(win) -> bool:
     return th is not None and getattr(th, "_srv", None) is not None
 
 
-def test_closing_the_address_card_keeps_the_host_listening(app, monkeypatch):
+def test_closing_the_address_card_keeps_the_host_listening(app, monkeypatch, bare_window):
     from PyQt6.QtWidgets import QInputDialog
     port = free_port()
-    win = _bare_window()
+    win = bare_window
     win.play.machine = object()                      # « un jeu tourne »
     monkeypatch.setattr(QInputDialog, "getInt",
                         staticmethod(lambda *a, **k: (port, True)))
@@ -651,23 +667,23 @@ def test_closing_the_address_card_keeps_the_host_listening(app, monkeypatch):
         app.processEvents()
 
 
-def test_cancelling_stops_the_clock(app, monkeypatch):
+def test_cancelling_stops_the_clock(app, monkeypatch, bare_window):
     """⛔ ET LE COMPTEUR MEURT AVEC LA TENTATIVE. Ajoute pour qu'une attente MORTE se
     voie, il en fabriquait une vivante: annulee, la tentative gardait un compteur qui
     avancait -- exactement l'ecran qu'on essayait de rendre impossible."""
     monkeypatch.setattr(shell._NetConnect, "HOST_TIMEOUT_S", 30.0)
-    win = _bare_window()
+    win = bare_window
     assert win._start_net("host", "", free_port(), "⏳ attente")
     assert win._net_clock is not None
     win._cancel_net_attempt()
     assert win._net_clock is None, "le compteur survit a l'annulation"
 
 
-def test_joining_your_own_pc_says_so(app, monkeypatch):
+def test_joining_your_own_pc_says_so(app, monkeypatch, bare_window):
     """« 127.0.0.1 » est legitime (deux fenetres sur un PC) mais se fait prendre pour
     « l'adresse du serveur qu'on m'a donnee ». On ne la refuse pas, on la NOMME."""
     monkeypatch.setattr(shell._NetConnect, "JOIN_TIMEOUT_S", 30.0)
-    win = _bare_window()
+    win = bare_window
     seen = []
     win.play.overlay.setText = lambda t: seen.append(t)   # type: ignore[assignment]
     assert win._start_net("join", "127.0.0.1", free_port(), "⏳ connexion")
