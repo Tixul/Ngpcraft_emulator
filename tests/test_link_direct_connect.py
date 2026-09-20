@@ -571,7 +571,9 @@ def test_the_waiting_message_counts_so_a_dead_attempt_is_visible(app, monkeypatc
         assert seen, "aucun texte pose au demarrage"
         first = seen[-1]
         assert "⏳ attente" in first, first
-        assert wait_until(lambda: (app.processEvents(), len(seen) > 1)[1], 3.0), \
+        # A timer callback can arrive before a full second has elapsed, so
+        # another setText call may still display 0:00. Wait for visible progress.
+        assert wait_until(lambda: (app.processEvents(), seen[-1] != first)[1], 3.0), \
             "le texte n'a jamais bouge: rien ne distingue une attente morte"
         assert seen[-1] != first
     finally:
