@@ -7,3 +7,6 @@ pygame>=2.5
 # falls back to a 7z/7za command-line tool if one is on PATH. Only a .7z with
 # neither py7zr nor a 7z CLI present reports a clear error.
 py7zr>=0.20
+
+# Animated GIF capture/export.
+Pillow>=10.0

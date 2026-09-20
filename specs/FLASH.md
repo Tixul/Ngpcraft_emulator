@@ -119,6 +119,22 @@ below could be flawless and the BIOS would still refuse, having touched nothing.
 🔑 **Every layer was correct and the save still went nowhere.** The failure was a byte
 nobody had thought to hand over.
 
+### ⛔ And the hand-off's RESET reloads the pristine cart image (2026-09-05)
+
+The console-boot path plays the BIOS for real and then resets into the cartridge's entry
+point. That reset is `reset_memory`, which **reloads the ROM image** — a factory reset of
+the chip in the middle of a boot. Anything restored into the flash before it is gone. In
+"save into the .ngc" mode the reloaded image *is* the file the save was written into, so
+it hid; in **separate-file** mode the save was wiped at every launch. See `SAVE_POLICY.md`
+and `NativeSession.handoff_reset`.
+
+⚠️ **And you cannot copy the cartridge out of memory at that moment.** The BIOS has just
+run its autoselect probe (§4) and the chip is still in `FlashReadId`: it answers its four
+ID bytes and **0xFF for every other address**. Measured — a snapshot taken there is
+256 KiB of 0xFF, and putting it back destroys exactly what it was meant to save. The save
+FILE is the state to restore from; nothing writes the chip between the restore and the
+hand-off.
+
 **The encoding was not guessed.** Booting the real BIOS with a 4 / 8 / 16 Mbit cartridge
 and reading the byte back gives 1 / 2 / 3. That experiment doubles as proof the
 autoselect model in §4 is right: **the BIOS could only have learnt the size by asking
@@ -142,9 +158,26 @@ AA @ 5555 · 55 @ 2AAA · then
     9A @ 5555   protect prefix -> ... 9A @ addr : that block becomes read-only
 ```
 
-* **program** → `mem[addr] &= data` (a NOR cell only goes down).
-* **erase** → the block is filled with `0xFF`, then the chip answers **one** read with
-  `0xFF` and returns to being memory: that is the "done" a driver's status poll waits for.
+* **program** → `mem[addr] &= data` (a NOR cell only goes down), **then the chip is BUSY**
+  for the program time.
+* **erase** → the block is filled with `0xFF`, **the chip is BUSY** for the erase time,
+  and only then does it answer one read with `0xFF` and return to being memory: that is
+  the "done" a driver's status poll waits for.
+* **busy** → while an operation runs, every read of the window answers **status**, not
+  contents: DQ7 = the complement of the bit 7 being written (0 while erasing), DQ6
+  toggles on every read, DQ5 = 0. Nothing matches what the driver asked for, so its poll
+  loop spins — which is the point. Commands sent during the window are swallowed.
+* **a program that cannot succeed** (a 1 asked over a 0, which is a slot programmed twice
+  with no erase between) **never comes back**. MEASURED on the cartridge: 262 143 turns of
+  the shipped poll loop, **2.45 seconds**, and **no DQ5** — the AMD datasheets describe an
+  internal timer and a DQ5 flag, and this part does not do it. The driver leaves on its own
+  timeout or not at all, and every one of those seconds is spent with interrupts masked.
+  The reset command (`F0`) does get the chip back, which is also measured.
+* **durations** (`hw_test_flash_timing`, 16 Mbit cart, two runs): an 8 KB block erase
+  **57.5 ms** (353 389 cycles, mean of four measurements spread 53.0-62.5 ms -- the erase
+  is NOT a constant), one byte programmed **33.0 µs** (203 cycles), a 64 KB block erase
+  441 ms. Scaling by block size is measured at **7.67x** for 8x the size; the code scales
+  linearly and is 4 % high.
 * **autoselect** → `0x98` (Toshiba), then the **device ID, which names the SIZE**:
   `0xAB` (4 Mbit) · `0x2C` (8) · `0x2F` (16), then `0x02`, then `0x80`.
 * An **empty slot has no chip** and answers nothing (`flash_present()`).
@@ -324,10 +357,44 @@ accepted it.
 
 ## 7. Not modelled (documented, not faked)
 
-* **DQ7/DQ5 status polling / erase timing.** We erase and program synchronously, so a
-  driver's poll loop reads the final value immediately. The *outcome* is right; there is
-  no timing model. (The erase's one-shot `0xFF` acknowledge is what the BIOS's poll
-  actually consumes.)
+* ~~**DQ7/DQ5 status polling / erase timing.**~~ **MODELLED and MEASURED, 2026-09-10** —
+  see § 3. `04_MY_PROJECTS/hw_test_flash_timing` is the ROM: it reports the poll turns the
+  shipped AMD stubs actually spend, calibrated against 60 frames of that same loop on the
+  same silicon. `ngpc_set_flash_timing` is the dial; all three zero restores the
+  synchronous chip, for bisecting a corpus change.
+
+  **Both figures our documentation carried were wrong.** `NGPC_FLASH_SAVE_GUIDE.md` gave an
+  8 KB erase as ~5-15 ms — and made that the REASON block 33 was chosen; `OPEN_ITEMS.md`
+  gave ~1 s. It is 57.5 ms. The 2026-03 hardware trials agree with the measurement from
+  both sides (`FLASH_SAVE_RESEARCH.md`): a 64 KB block erase took the console down on a
+  ~100 ms watchdog, an 8 KB one did not. **But the margin is a factor of two, not an order
+  of magnitude**, which is not what the table claimed.
+### 🩺 And now it SAYS SO: `flash-busy-fetch`
+
+A hardware-safety finding, alongside the starved watchdog and the stack in the system page:
+**the CPU fetched an instruction out of a chip that was programming or erasing.** That is
+the single unambiguous signature of this entire class of bug -- a driver that forgot its
+`di`, a stub left in the cartridge instead of copied to RAM, a reset sent to a working chip
+-- and until the busy window existed it could not even happen here.
+
+Edge-triggered, carrying the PC that fetched first. Counted, never fatal on its own,
+because a console does not stop at that instruction either: it runs the garbage. It shows
+up in `ngpc_native.py --json` under `hw_safety`, and `--hw-guard` does NOT stop on it.
+
+```
+"hw_safety": {"counts": {"watchdog-starved": 0, "system-stack": 0, "flash-busy-fetch": 0}}
+```
+
+* **A busy chip is SLOWER TO READ on silicon, and we do not model it.** The same poll
+  loop takes 111.00 lines per 1024 turns against an idle chip -- which our core reproduces
+  EXACTLY -- and 120 lines against one that is erasing, where our core still says 112.
+  The cartridge has an 8.1 % asymmetry we do not. ⚠️ The busy measurement runs with the
+  cart write-enable armed and the idle one does not, so the cause may be that line rather
+  than the busy state; a probe that arms /WE without starting an operation separates them.
+* **The watchdog period.** `kWatchdogTimeoutCycles` is one CPU second here; the hardware
+  trials say ~100 ms. Now that an erase costs real time, that gap is testable for the first
+  time — a 64 KB erase should reproduce the 2026-03 crash and will not while the period is
+  ten times too long.
 * **Write-cycle endurance** (~100 000 per cell, `FlashMem.txt`). Not counted.
 * **The Python core** still has its own older, separate flash model (`core/flash.py`),
   which models the *direct* AMD path against the writable overlay. It is not the core

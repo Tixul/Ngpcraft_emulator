@@ -1119,6 +1119,27 @@ void Machine::bios_flash_syscall_hint() {
     else if (vector == 6) flash_adopt_capacity_from_save(card, b3[2] & 0x00FFFFFFu);   /* XDE3 */
 }
 
+/* Arm the busy window. The BYTES ARE ALREADY COMMITTED when this is called -- what the
+ * window changes is what a READ of the window answers until it closes, which is the only
+ * thing the silicon does differently. `after` is what the chip becomes when it closes:
+ * FlashAck for an erase (the one-shot 0xFF a BIOS poll consumes), FlashRead for a
+ * program, FlashFailed for a program that cannot succeed.
+ *
+ * `cycles == 0` is the synchronous chip this model used to be: no window at all. */
+void Machine::flash_begin_busy(int chip, uint64_t cycles, uint8_t dq7, uint8_t after) {
+    if (cycles == 0) {
+        flash_mode[chip] = (after == FlashFailed) ? uint8_t(FlashRead) : after;
+        return;
+    }
+    /* kFlashNever: the window never closes. Measured -- see the constants in machine.hpp:
+     * an impossible program on this cartridge answers status for as long as it is asked,
+     * and a driver only ever leaves on its own timeout. */
+    flash_busy_until[chip] = (cycles == kFlashNever) ? kFlashNever : total_cycles + cycles;
+    flash_busy_dq7[chip]   = dq7;
+    flash_after_busy[chip] = after;
+    flash_mode[chip]       = FlashBusy;
+}
+
 /* ⚠️ A NOR CELL ONLY GOES DOWN. Programming ANDs; only an erase restores the ones. */
 void Machine::flash_program(int chip, uint32_t base, uint32_t addr, uint8_t data) {
     flash_adopt_capacity_from_save(chip, addr - base);
@@ -1127,6 +1148,22 @@ void Machine::flash_program(int chip, uint32_t base, uint32_t addr, uint8_t data
     const uint8_t before = mem[addr];
     const uint8_t after  = uint8_t(before & data);
     if (after != before) { mem[addr] = after; flash_dirty[chip] = true; }
+
+    /* ASKING A 0 BACK UP TO 1 IS NOT A SLOW WRITE, IT IS A WRITE THAT NEVER LANDS.
+     *
+     * ⛔ AND THE CHIP NEVER ADMITS IT. Measured on the cartridge (hw_test_flash_timing,
+     * ROW 9): 262 143 turns of the poll -- 2.45 SECONDS -- and no DQ5. The driver leaves
+     * on its own iteration ceiling or not at all, and every one of those seconds is spent
+     * with interrupts masked on a cartridge that has stopped being memory. That is the
+     * mechanism behind a save that passes in an emulator and takes the console down.
+     *
+     * `flash_fail_cycles` defaults to kFlashNever for exactly that reason. A finite value
+     * gives the DQ5 behaviour the AMD datasheets describe, for a part that has it. */
+    const bool impossible = (data & uint8_t(~before)) != 0;
+    flash_begin_busy(chip,
+                     impossible ? flash_fail_cycles : flash_program_cycles,
+                     uint8_t(~data & 0x80),
+                     impossible ? uint8_t(FlashFailed) : uint8_t(FlashRead));
 }
 
 void Machine::flash_erase_block(int chip, uint32_t base, uint32_t addr) {
@@ -1136,14 +1173,20 @@ void Machine::flash_erase_block(int chip, uint32_t base, uint32_t addr) {
     const auto& b = flash_blocks[chip][blk];
     for (uint32_t i = 0; i < b.length; ++i) mem[base + b.offset + i] = 0xFF;
     flash_dirty[chip] = true;
+    /* The erase's cost is the BLOCK'S, not a constant: 8 KB is the save block every game
+     * of this project uses, 64 KB is the one the watchdog cannot survive. */
+    flash_begin_busy(chip, flash_erase_per8k_cycles * b.length / 0x2000, 0x00, FlashAck);
 }
 
 void Machine::flash_erase_all(int chip, uint32_t base) {
+    uint32_t total = 0;
     for (const auto& b : flash_blocks[chip]) {
         if (!b.writable) continue;
         for (uint32_t i = 0; i < b.length; ++i) mem[base + b.offset + i] = 0xFF;
+        total += b.length;
     }
     flash_dirty[chip] = true;
+    flash_begin_busy(chip, flash_erase_per8k_cycles * total / 0x2000, 0x00, FlashAck);
 }
 
 /* The AMD/Fujitsu command state machine. Every cart-window write the CPU makes is
@@ -1195,9 +1238,39 @@ bool Machine::flash_command(uint32_t addr, uint8_t value) {
     uint8_t& step = flash_step[chip];
     uint8_t& mode = flash_mode[chip];
 
+    /* A CHIP THAT IS WORKING IS NOT LISTENING. Commands sent during a program or an
+     * erase are swallowed by the silicon, and one that has raised DQ5 accepts nothing
+     * but a reset -- which is exactly how a driver is supposed to clear it. */
+    if (mode == FlashBusy) {
+        /* ⚡ THE RESET WORKS ON A CHIP THAT IS STUCK, NOT ON ONE THAT IS WORKING, and the
+         * cartridge taught us both halves.
+         *
+         *   * hw_test_flash_timing ROW 10: right after a program that can never complete,
+         *     the byte reads back as 0x5A -- and the only thing between the two is the
+         *     stub's closing AA/55/F0. So F0 gets a STUCK chip back.
+         *   * The counter-check ROM sent an F0 to a chip in the middle of a real erase,
+         *     by accident, and THE CONSOLE DIED: the reset was ignored, the chip stayed
+         *     busy, and the return fetched its next instruction out of status bits. Our
+         *     model accepted that F0 and survived, so it hid the bug -- which is exactly
+         *     the permissiveness this whole chantier is about.
+         *
+         * The endless window is the failed program; a finite one is work in progress. */
+        if (value == 0xF0 && flash_busy_until[chip] == kFlashNever) {
+            mode = FlashRead; step = 0; return true;
+        }
+        if (total_cycles < flash_busy_until[chip]) return true;
+        mode = flash_after_busy[chip];
+    }
+    if (mode == FlashFailed) {
+        if (value == 0xF0) { mode = FlashRead; step = 0; }
+        return true;
+    }
+
     if (mode == FlashWrite) {                    /* the cycle after A0 IS the data */
+        /* flash_program decides what the chip becomes -- busy, then read or DQ5-failed.
+         * Do NOT set `mode` here: this line used to say FlashRead and it overwrote the
+         * busy window one instruction after it was armed. */
         flash_program(chip, base, addr, value);
-        mode = FlashRead;
         step = 0;
         return true;
     }
@@ -1218,8 +1291,10 @@ bool Machine::flash_command(uint32_t addr, uint8_t value) {
     if (step == 4 && cmd == 0x2AAA && value == 0x55) { step = 5; return true; }
     if (step == 5) {
         step = 0;
-        if (cmd == 0x5555 && value == 0x10) { flash_erase_all(chip, base); mode = FlashAck; return true; }
-        if (value == 0x30) { flash_erase_block(chip, base, addr); mode = FlashAck; return true; }
+        /* Same here: the erase arms its own busy window and FlashAck is what it
+         * becomes when that window closes, not what it is now. */
+        if (cmd == 0x5555 && value == 0x10) { flash_erase_all(chip, base); return true; }
+        if (value == 0x30) { flash_erase_block(chip, base, addr); return true; }
         if (value == 0x9A) {                                        /* protect a block */
             const int blk = flash_block_of(chip, offset);
             if (blk >= 0) { flash_blocks[chip][blk].writable = false; flash_dirty[chip] = true; }
@@ -1241,6 +1316,24 @@ bool Machine::flash_id_read(uint32_t addr, uint8_t& out) const {
     else if (addr >= 0x800000 && addr <= 0x9FFFFF) { chip = 1; base = 0x800000; }
     if (chip < 0 || !flash_present(chip)) return false;
 
+    /* THE CHIP IS BUSY: it answers status, not contents, and it answers it to EVERY read
+     * of its window -- a poll, a data fetch, an instruction fetch, a micro-DMA. */
+    if (flash_mode[chip] == FlashBusy) {
+        if (total_cycles < flash_busy_until[chip]) {
+            flash_dq6[chip] ^= 0x40;                    /* DQ6 toggles while it works */
+            out = uint8_t(flash_busy_dq7[chip] | flash_dq6[chip]);
+            return true;
+        }
+        const_cast<Machine*>(this)->flash_mode[chip] = flash_after_busy[chip];
+        if (flash_mode[chip] == FlashRead) return false;   /* memory again */
+    }
+    /* It gave up, and it says so until something resets it. DQ5 is the only bit a
+     * driver has to tell "not yet" from "never". */
+    if (flash_mode[chip] == FlashFailed) {
+        flash_dq6[chip] ^= 0x40;
+        out = uint8_t(flash_busy_dq7[chip] | flash_dq6[chip] | 0x20);
+        return true;
+    }
     if (flash_mode[chip] == FlashAck) {
         /* An erase answers ONE read and then the chip is memory again -- that is the
          * "done" the driver's status-poll loop is waiting for. */

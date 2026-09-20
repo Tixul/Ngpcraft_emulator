@@ -387,7 +387,9 @@ class HygieneRec(Structure):
 # The two hardware-safety findings, as bits (`ngpc_set_hw_guard`, `Violation.kind`).
 HW_WATCHDOG = 0x1
 HW_SYSTEM_STACK = 0x2
-HW_KINDS = {HW_WATCHDOG: "watchdog-starved", HW_SYSTEM_STACK: "system-stack"}
+HW_FLASH_BUSY_FETCH = 0x4
+HW_KINDS = {HW_WATCHDOG: "watchdog-starved", HW_SYSTEM_STACK: "system-stack",
+            HW_FLASH_BUSY_FETCH: "flash-busy-fetch"}
 
 
 class Violation(Structure):
@@ -589,6 +591,8 @@ def _bind(path: Path) -> ctypes.CDLL:
     lib.ngpc_rtc_advance.restype = None
     lib.ngpc_set_timing_silicon.argtypes = [c_void_p, c_uint32, c_uint32]
     lib.ngpc_set_timing_silicon.restype = None
+    lib.ngpc_set_flash_timing.argtypes = [c_void_p, c_uint32, c_uint32, c_uint32]
+    lib.ngpc_set_flash_timing.restype = None
     lib.ngpc_set_byte_extra.argtypes = [c_void_p, c_uint32]
     lib.ngpc_set_byte_extra.restype = None
     lib.ngpc_set_uart_unplugged.argtypes = [c_void_p, c_int]
@@ -959,6 +963,23 @@ class NativeMachine:
             self.set_timing_legacy()
             return
         self._lib.ngpc_set_timing_silicon(self._h, int(word_wait), int(bios_wait))
+
+    def set_flash_timing(self, program: int, erase_per_8k: int, fail: int) -> None:
+        """How long the cartridge flash is BUSY, in machine cycles.
+
+        `program` per byte, `erase_per_8k` per 8 KB of block, `fail` the time a chip
+        spends on a program it cannot do (a 1 asked over a 0) before it raises DQ5.
+
+        ALL THREE ZERO restores the synchronous chip the core was until 2026-09-10 --
+        the byte committed inside the command's own bus cycle, a status poll that exits
+        on its first turn, no busy window at all. That is the A/B switch for attributing
+        a corpus change to this model rather than arguing about it.
+
+        ⚠️ The defaults are DOCUMENTED, NOT MEASURED, and our documentation contradicts
+        itself about the erase by a factor of a hundred. hw_test_flash_timing
+        (04_MY_PROJECTS) measures all three on the cartridge; its answer belongs here.
+        """
+        self._lib.ngpc_set_flash_timing(self._h, int(program), int(erase_per_8k), int(fail))
 
     def set_byte_extra(self, pct: int) -> None:
         """EXPERIMENT: add pct% to the derived serial byte time."""
@@ -1464,7 +1485,8 @@ class NativeMachine:
         """
         self._lib.ngpc_set_hw_guard(self._h, stop_mask)
 
-    def hw_violations(self, kind: int = HW_WATCHDOG | HW_SYSTEM_STACK) -> int:
+    def hw_violations(self, kind: int = HW_WATCHDOG | HW_SYSTEM_STACK
+                      | HW_FLASH_BUSY_FETCH) -> int:
         """How many findings of the given kind(s) since the last reset."""
         return int(self._lib.ngpc_hw_violations(self._h, kind))
 

@@ -3154,6 +3154,7 @@ class PlayPage(QWidget):
         self.timer.start(4)
 
     def stop(self) -> None:
+        self._gif_finish(wait=True)
         self.timer.stop()
         self._autohide_timer.stop(); self._idle_hidden = False   # no game -> no idle hide
         # ⚡ The mirror owns a SECOND console and a socket. Left attached, they outlive
@@ -3729,6 +3730,8 @@ class PlayPage(QWidget):
         btn("📂", "tb_load_state", lambda: self.load_state(), action=cfg.HK_LOAD)
         h.addSpacing(10)
         btn("📷", "tb_screenshot", self.screenshot, action=cfg.HK_SHOT)
+        import ngpc_gif
+        ngpc_gif.install_button(self, h, REPO)
         h.addSpacing(10)
         rw = QPushButton("⏪"); rw.setObjectName("barBtn")
         rw.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -4104,6 +4107,7 @@ class PlayPage(QWidget):
         else:
             self._leave_rewind()                        # branch from here if we had scrubbed
             self.machine.run_frames(1)
+            self._gif_feed()
             self._rewind.append(self._capture_state())
             self._flash("⏩ +1 f")
         self._drain_audio_silently()
@@ -5309,6 +5313,7 @@ class PlayPage(QWidget):
             # purpose: a second place that also holds values would race this one,
             # and which won would depend on where in the frame each ran.
             self.cheats.apply(self.machine)
+            self._gif_feed()
             for hook in self.frame_hooks:        # per-frame debug sampling, if subscribed
                 try:
                     hook()

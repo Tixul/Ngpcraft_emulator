@@ -242,5 +242,56 @@ ailleurs et est deja en grande partie ecrite cote toolchain :
   savestates) seront persistees dans `<rom>.sram` quand le HLE
   flash sera livre.
 
+## 10. Ce que le modele NE couvre PAS encore
+
+Deux aveuglements, mesures le 07/09 sur un jeu qui **s'eteignait sur console et
+passait ici sans une faute comptee**. Les deux touchent la sauvegarde, aucun ne
+touche son CONTENU : ils touchent OU on ecrit et COMBIEN DE TEMPS ca prend.
+
+### 10.1 On adopte la capacite que l'adresse du jeu rend correcte
+
+`flash_adopt_capacity_from_save` re-presente la cartouche a la capacite dans
+laquelle l'adresse de sauvegarde du jeu tombe. Un homebrew qui code `0x1FA000`
+en dur fait donc presenter la carte en 16 Mbit, **et son adresse devient juste
+par construction**, quelle que soit la puce reelle.
+
+Le circuit se referme : `0x6C58` est derive de la capacite presentee, donc un
+jeu qui lit cet octet apres nous avoir fait adopter sa propre adresse **lit sa
+propre hypothese**.
+
+L'heuristique a sa raison d'etre -- un homebrew qui pilote la puce directement ne
+passe jamais par le `swi 1`, son adresse est tout ce qu'on a. Ce qui manque n'est
+pas de la supprimer, c'est de la SIGNALER : une ROM qui ne sauvegarde que parce
+qu'on a adopte son adresse est exactement celle qui mourra sur une cartouche
+d'une autre taille, et nous sommes le seul endroit qui puisse le dire.
+
+### 10.2 L'effacement d'un bloc ne coute rien
+
+| | cycles |
+|---|---|
+| effacer 8 Kio, notre modele | **~400** |
+| effacer 8 Kio, silicium | **~6 144 000** (≈ 1 s) |
+
+La boucle d'attente du stub sort au premier tour parce que la puce se declare
+prete tout de suite. Cette seconde-la est passee **interruptions masquees** : sur
+la console, plus de VBlank, plus de chien de garde rafraichi, plus de Z80 servi.
+Chez nous l'operation est atomique, donc rien de ce qui depend du temps ne peut
+se manifester -- y compris la periode du chien de garde, qui est par ailleurs une
+hypothese non mesuree.
+
+**La marche a suivre, en quatre points, est dans `OPEN_ITEMS.md`, section du
+2026-09-07.**
+
+⚠️ **Mise a jour du 08/09 : c'est 10.2 le principal, pas 10.1.** L'adresse
+corrigee, le jeu s'eteignait encore -- il plantait sur un circuit et pas sur un
+autre, et aussi en achetant une piece au garage, donc loin de toute fin de
+course. Le seul point commun est la sauvegarde, et la seule chose qui distingue
+une sauvegarde d'une autre est son RANG : la seizieme deborde le bloc et
+declenche l'EFFACEMENT. C'est l'operation elle-meme qui tue, pas l'endroit.
+Tant que sa seconde n'est pas facturee, aucune ROM ne peut echouer ici comme
+elle echoue sur la cartouche.
+
+---
+
 Quand cette politique evolue, **mettre a jour le master strategy
 index** plutot que de dupliquer l'info ici.

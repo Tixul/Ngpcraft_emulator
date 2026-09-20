@@ -738,19 +738,34 @@ struct Machine {
     uint32_t hw_guard_stop = 0;
     uint64_t hw_watchdog_count = 0;
     uint64_t hw_stack_count = 0;
+    uint64_t hw_flash_fetch_count = 0;
     uint32_t hw_n = 0;
     ViolationRec hw[kHwSize] = {};
     bool stack_in_system = false;
+    bool fetching_busy_flash = false;
 
     inline void hw_reset() {
-        hw_watchdog_count = hw_stack_count = 0;
+        hw_watchdog_count = hw_stack_count = hw_flash_fetch_count = 0;
         hw_n = 0;
         stack_in_system = false;
+        fetching_busy_flash = false;
     }
 
     inline void note_violation(uint32_t kind, uint32_t pc, uint32_t detail) {
-        if (kind == NGPC_HW_WATCHDOG) ++hw_watchdog_count; else ++hw_stack_count;
+        if (kind == NGPC_HW_WATCHDOG)           ++hw_watchdog_count;
+        else if (kind == NGPC_HW_SYSTEM_STACK)  ++hw_stack_count;
+        else                                    ++hw_flash_fetch_count;
         if (hw_n < kHwSize) hw[hw_n++] = {pc, detail, total_cycles, kind, 0};
+    }
+
+    /* Is this PC inside a cartridge window whose chip is mid-operation? The first test is
+     * an OR of two bytes that are zero for the whole life of a ROM that never saves, so
+     * the hot path pays one load and one branch. */
+    inline bool pc_in_busy_flash(uint32_t pc) const {
+        if (!(flash_mode[0] | flash_mode[1])) return false;
+        if (pc >= 0x200000 && pc <= 0x3FFFFF) return flash_mode[0] == FlashBusy;
+        if (pc >= 0x800000 && pc <= 0x9FFFFF) return flash_mode[1] == FlashBusy;
+        return false;
     }
 
     /* A/D converter state. Owned by the machine so a conversion survives across
@@ -1723,7 +1738,30 @@ struct Machine {
      * simply stores the byte writes data the silicon could not have produced, and it
      * would hide exactly the bug a homebrew author needs to see: a slot programmed
      * twice without an erase in between. */
-    enum FlashMode : uint8_t { FlashRead = 0, FlashReadId = 1, FlashWrite = 2, FlashAck = 3 };
+    /* ⏱️ AND IT TAKES TIME. A chip that is programming or erasing STOPS BEING MEMORY:
+     * every read of its window answers a status byte instead of contents, and it does so
+     * for as long as the operation runs. That window is the reason a flash stub is
+     * copied into RAM and runs with interrupts masked -- an interrupt taken inside it
+     * fetches its handler out of status bits.
+     *
+     * Committing the byte inside the bus cycle that carries the command, as this model
+     * did until 2026-09-10, deletes that window entirely: the driver's status poll exits
+     * on its FIRST turn, and nothing that depends on the elapsed time can happen. The
+     * measurement is hw_test_flash_timing (04_MY_PROJECTS), which reports the poll turns
+     * the shipped AMD stubs actually spend: ZERO here, against 108 116 turns per second
+     * of the same loop on the same machine.
+     *
+     *   FlashBusy    the operation is running. Reads answer status: DQ7 = the COMPLEMENT
+     *                of the bit 7 being written (0 while erasing), DQ6 toggles on every
+     *                read, DQ5 = 0. Nothing matches what the driver asked for, so its
+     *                poll loop spins -- which is the point.
+     *   FlashFailed  the chip gave up: DQ5 = 1, and it stays that way until a reset
+     *                command (0xF0). This is what a NOR cell asked to go back UP does --
+     *                programming a 1 over a 0 without an erase. Silicon says so itself
+     *                after its internal timeout; a synchronous model says nothing at all
+     *                and the driver burns its whole timeout rope instead. */
+    enum FlashMode : uint8_t { FlashRead = 0, FlashReadId = 1, FlashWrite = 2, FlashAck = 3,
+                               FlashBusy = 4, FlashFailed = 5 };
 
     struct FlashBlock { uint32_t offset; uint32_t length; bool writable; };
 
@@ -1731,6 +1769,63 @@ struct Machine {
     uint8_t  flash_step[2] = {0, 0};      /* how far into the AA/55/xx sequence */
     bool     flash_dirty[2] = {false, false};
     std::vector<FlashBlock> flash_blocks[2];
+
+    /* The busy window, in the machine clock the rest of the timing model uses. */
+    uint64_t        flash_busy_until[2] = {0, 0};
+    uint8_t         flash_busy_dq7[2]   = {0, 0};   /* already complemented */
+    uint8_t         flash_after_busy[2] = {FlashRead, FlashRead};
+    mutable uint8_t flash_dq6[2]        = {0, 0};   /* toggles on every status read */
+
+    /* ✅ MEASURED ON THE CARTRIDGE -- hw_test_flash_timing, 16 Mbit cart, two full runs.
+     *
+     * The ROM counts the turns the shipped AMD poll loop actually spends, and converts
+     * them with a rate measured by the SAME loop, at the SAME RAM address, INTERRUPTS OFF
+     * and WHILE THE CHIP IS WORKING -- the only state in which an erase's turns are
+     * counted. Timed against RAS.V, which does not care about the interrupt mask.
+     *
+     *      8 KB block erase   5 856 turns (mean of 4)  ->  353 389 cycles   57.5 ms
+     *      one byte programmed        3.363 turns      ->      203 cycles   33.0 us
+     *      64 KB block erase       44 910 turns        ->  2 710 000 cycles  441 ms
+     *
+     * ⚠️ THE ERASE IS NOT A CONSTANT. The four 8 KB measurements were 5 392, 5 672, 5 993
+     * and 6 365 turns -- 53.0 to 62.5 ms, an 18 % SPREAD, twice within a single run. The
+     * number above is their mean and the spread is the honest error bar. A model that
+     * prices it to the cycle is pricing noise.
+     *
+     * ⛔ AND BOTH FIGURES OUR DOCUMENTATION CARRIED WERE WRONG. NGPC_FLASH_SAVE_GUIDE.md
+     * gave an 8 KB erase as ~5-15 ms -- and made that the REASON block 33 was chosen;
+     * OPEN_ITEMS.md gave ~1 s. It is 57.5 ms. Block 33 is still the right choice and its
+     * margin under a ~100 ms watchdog is LESS THAN TWO, not the order of magnitude the
+     * table implied.
+     *
+     * ✅ ERASE SCALING BY SIZE IS NOW MEASURED, and linear is close: a 64 KB block costs
+     * 7.67 times an 8 KB one, against the 8.00 the code assumes. Kept linear, 4 % high. */
+    static constexpr uint64_t kFlashProgramCycles    = 203;      /* 33.0 us per byte */
+    static constexpr uint64_t kFlashErasePer8KCycles = 353389;   /* 57.5 ms per 8 KB */
+
+    /* ⛔ AND A PROGRAM THAT CANNOT SUCCEED NEVER SAYS SO. This cartridge was asked to put
+     * 0xFF back over a 0x5A -- a NOR cell pulled back up, which no erase-less write can do
+     * -- and it did NOT raise DQ5 in 262 143 turns of the poll: 2.45 SECONDS. The stub
+     * escaped on its own iteration ceiling, not on anything the chip said.
+     *
+     * That is the opposite of what an AMD datasheet describes, and it is the measurement
+     * that matters most here, because it is the mechanism: two and a half seconds spent
+     * INTERRUPTS MASKED, no V-blank, no watchdog refresh from the game's handler, a
+     * micro-DMA still reading a cartridge that has stopped being memory. A save that
+     * "works" in an emulator and takes the console down.
+     *
+     * So the default is kFlashNever: the chip stays busy, DQ5 stays clear, and only a
+     * reset command gets it back. The DQ5 path below stays reachable for a part that does
+     * behave the way the datasheets say -- but not this one, and not by default. */
+    static constexpr uint64_t kFlashNever = ~uint64_t(0);
+
+    /* The dial. 0 = the old synchronous chip, kept so a corpus run can be bisected
+     * against the model that shipped before this one. */
+    uint64_t flash_program_cycles     = kFlashProgramCycles;
+    uint64_t flash_erase_per8k_cycles = kFlashErasePer8KCycles;
+    uint64_t flash_fail_cycles        = kFlashNever;
+
+    void flash_begin_busy(int chip, uint64_t cycles, uint8_t dq7, uint8_t after);
 
     void flash_build_blocks(int chip, uint32_t size);
     void flash_adopt_capacity_from_save(int chip, uint32_t offset);
