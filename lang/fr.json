@@ -318,5 +318,15 @@
  "lobby_mode_ask": "🪞 Jeu miroir ?\n\nOui — miroir : les 2 consoles tournent sur les 2 PC et seules les manettes passent. Pleine vitesse quel que soit le ping, et le seul mode où le match VS de Card Fighters' Clash tient. Exige le même BIOS et la même version des 2 côtés.\n\nNon — câble : le câble link de la console, relayé. Marche avec n'importe quelle version, mais le jeu attend le réseau.",
  "settings_restored_title": "Réglages restaurés",
  "settings_restored": "Vos réglages étaient absents du magasin système ; ils ont été restaurés depuis la sauvegarde de l'émulateur ({n} restaurés).\n\nLa sauvegarde est conservée à côté de l'émulateur, dans settings_backup.ini.",
- "host_other_addrs": "• Autres adresses de ce PC : {addrs} — c'est ici qu'apparaît celle d'un réseau privé virtuel (Tailscale, ZeroTier), à utiliser pour jouer à distance sans toucher à ta box"
+ "host_other_addrs": "• Autres adresses de ce PC : {addrs} — c'est ici qu'apparaît celle d'un réseau privé virtuel (Tailscale, ZeroTier), à utiliser pour jouer à distance sans toucher à ta box",
+ "gif_no_frames": "Aucune frame capturée",
+ "gif_export_failed": "Échec de l’export GIF : ",
+ "gif_record_tooltip": "Enregistrer un GIF animé",
+ "gif_title": "Capture GIF",
+ "gif_seconds": "Secondes",
+ "gif_game_frames": "Frames du jeu",
+ "gif_capture_hint": "Temps du jeu ; pauses exclues. Pixels bruts, sans filtres.",
+ "gif_fps": "Images du GIF par seconde",
+ "gif_delay": "Délai avant capture (secondes réelles ; 0 = immédiat)",
+ "gif_start": "Démarrer"
 }

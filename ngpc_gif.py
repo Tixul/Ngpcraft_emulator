@@ -69,19 +69,19 @@ def install_button(page, layout, repo):
         def run(self):
             try:
                 saved = self.recording.save(self.path)
-                self.result.emit(str(self.path) if saved else text("No frames captured", "Aucune frame capturée"))
+                self.result.emit(str(self.path) if saved else t("gif_no_frames"))
             except Exception as exc:
-                self.result.emit(text("GIF export failed: ", "Échec de l’export GIF : ") + str(exc))
+                self.result.emit(t("gif_export_failed") + str(exc))
             finally:
                 self.recording.images.clear()
 
-    def text(en, fr):
-        return fr if cfg.language(page._settings) == "fr" else en
+    def t(key):
+        return cfg.tr(cfg.language(page._settings), key)
 
     button = QPushButton("GIF")
     button.setObjectName("barBtn")
     button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    button.setToolTip(text("Record an animated GIF", "Enregistrer un GIF animé"))
+    button.setToolTip(t("gif_record_tooltip"))
     layout.addWidget(button)
     page._gif_recording = None
     page._gif_encoder = None
@@ -148,10 +148,10 @@ def install_button(page, layout, repo):
         if page.machine is None:
             return
         dialog = QDialog(page)
-        dialog.setWindowTitle(text("GIF capture", "Capture GIF"))
+        dialog.setWindowTitle(t("gif_title"))
         box = QVBoxLayout(dialog)
         unit = QComboBox()
-        unit.addItems([text("Seconds", "Secondes"), text("Game frames", "Frames du jeu")])
+        unit.addItems([t("gif_seconds"), t("gif_game_frames")])
         unit.setCurrentIndex(max(0, min(1, int(page._settings.value("gif/unit", 0)))))
         amount = QSpinBox()
         fps = QComboBox()
@@ -169,8 +169,7 @@ def install_button(page, layout, repo):
             amount.setRange(1, 60 if unit.currentIndex() == 0 else 3600)
             frames = amount.value() * 60 if unit.currentIndex() == 0 else amount.value()
             info.setText(f"{frames} frames = {frames / 60:g} s\n160 × 152 px · " +
-                         text("Game time; pauses excluded. Raw pixels, no filters.",
-                              "Temps du jeu ; pauses exclues. Pixels bruts, sans filtres."))
+                         t("gif_capture_hint"))
 
         refresh()
         amount.setValue(int(page._settings.value("gif/amount", 10)))
@@ -179,14 +178,13 @@ def install_button(page, layout, repo):
         refresh()
         box.addWidget(unit)
         box.addWidget(amount)
-        box.addWidget(QLabel(text("GIF images per second", "Images du GIF par seconde")))
+        box.addWidget(QLabel(t("gif_fps")))
         box.addWidget(fps)
-        box.addWidget(QLabel(text("Start delay (real seconds; 0 = immediate)",
-                                     "Délai avant capture (secondes réelles ; 0 = immédiat)")))
+        box.addWidget(QLabel(t("gif_delay")))
         box.addWidget(delay)
         box.addWidget(info)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(text("Start", "Démarrer"))
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(t("gif_start"))
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         box.addWidget(buttons)

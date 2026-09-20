@@ -318,5 +318,15 @@
  "lobby_mode_ask": "🪞 Mirror play?\n\nYes — mirror: both consoles run on both PCs and only the buttons cross. Full speed whatever the ping, and the only mode Card Fighters' Clash's VS match survives. Needs the same BIOS and the same build on both sides.\n\nNo — cable: the console's own link cable, relayed. Works with any build, but the game waits for the network.",
  "settings_restored_title": "Settings restored",
  "settings_restored": "Your settings were missing from the system store and have been restored from the emulator's own backup ({n} restored).\n\nThe backup is kept beside the emulator as settings_backup.ini.",
- "host_other_addrs": "• Other addresses on this PC: {addrs} — a virtual private network (Tailscale, ZeroTier) shows up here, and that is the one to use to play remotely without touching your router"
+ "host_other_addrs": "• Other addresses on this PC: {addrs} — a virtual private network (Tailscale, ZeroTier) shows up here, and that is the one to use to play remotely without touching your router",
+ "gif_no_frames": "No frames captured",
+ "gif_export_failed": "GIF export failed: ",
+ "gif_record_tooltip": "Record an animated GIF",
+ "gif_title": "GIF capture",
+ "gif_seconds": "Seconds",
+ "gif_game_frames": "Game frames",
+ "gif_capture_hint": "Game time; pauses excluded. Raw pixels, no filters.",
+ "gif_fps": "GIF images per second",
+ "gif_delay": "Start delay (real seconds; 0 = immediate)",
+ "gif_start": "Start"
 }
