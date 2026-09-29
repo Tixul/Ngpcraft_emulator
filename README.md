@@ -17,6 +17,16 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
 
 <img width="1076" height="761" alt="emulateur01" src="https://github.com/user-attachments/assets/24dd060d-5b35-4ef6-83dd-916a618ba244" />
 
+## Available versions
+
+| Version | Installation and details |
+| --- | --- |
+| Desktop | Python/Qt application described below; standalone builds in [Releases](https://github.com/Tixul/Ngpcraft_emulator/releases). |
+| Libretro 0.4 | [RetroArch core](libretro/README.md), with sources and a [Windows x64 prebuilt](libretro/prebuilt/windows-x86_64/). Compiles the same `cpp/` sources and `hle_bios/` firmware as the desktop. |
+| Android 1.1 | [Native Android application](android/README.md), Android 7.0+, universal signed APK. Prepared for manual publication in Releases. |
+
+The Android 1.1 and Libretro 0.4 update includes the desktop flash timing model and current clean-room HLE BIOS. Android sources are maintained separately; this repository contains its installation notes, while APKs are distributed as release assets.
+
 ## Features
 
 - **Library** with cover thumbnails (grid / list / compact), live-reflowing — plus
