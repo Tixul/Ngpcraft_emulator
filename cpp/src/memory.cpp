@@ -13,6 +13,7 @@
 #include <cstring>
 
 #include "machine.hpp"
+#include "z80.hpp"   /* io_action_write: a micro-DMA store must ACT like a CPU store */
 
 namespace ngpc {
 
@@ -1393,6 +1394,14 @@ bool Machine::micro_dma_service(unsigned vector_index) {
                  * the one doing it. Same window, same fields, `pc` = the DMA'd source. */
                 if (a >= elog_lo && a <= elog_hi)
                     note_event(kEventWrite, a, mem[a], src + i);
+                /* ⚡ ...AND THE ACTION THAT WRITE TRIGGERS. The CPU store path hands every
+                 * byte to io_action_write; this one only stored it. A sampled voice is
+                 * streamed exactly this way -- timer0 fires a micro-DMA that copies a word
+                 * of PCM to 0xA2/0xA3 (mode 0x09, /Mic's udmadac 2012) with no CPU write
+                 * at all -- so the bytes sat in mem[0xA2] (125 distinct codes in 300
+                 * frames, measured) while the speaker stayed at peak 0. Same for a DMA
+                 * aimed at the Z80 or watchdog registers. */
+                io_action_write(*this, a, mem[a]);
             }
             switch (kind) {
                 case 0: dst += size; break;         /* (DMAD+) <- (DMAS)  */

@@ -113,6 +113,28 @@ class DacTests(unittest.TestCase):
         self.assertGreater(high, 0)
         self.assertAlmostEqual(abs(low), abs(high), delta=abs(high) // 4)
 
+    def test_a_MICRO_DMA_store_drives_the_DAC_too(self) -> None:
+        """The way a homebrew streams PCM: timer0 fires a micro-DMA that copies a word of
+        samples to 0xA2/0xA3 (mode 0x09, /Mic's udmadac 2012). No CPU store ever touches
+        the DAC. The DMA used to write mem[0xA2] only, so the byte sat there and the
+        speaker stayed at peak 0 -- while the same ROM is audible on a real console."""
+        self.m.bus_write(0x4000, 0xFF)               # source: one word of full-scale PCM
+        self.m.bus_write(0x4001, 0xFF)
+        st = self.m.cpu()
+        st.cregs[0x00] = 0x4000                      # DMAS0
+        st.cregs[0x10] = DAC_LEFT                    # DMAD0 (fixed)
+        st.cregs[0x20] = 0x0001                      # DMAC0: one transfer
+        st.cregs[0x22] = 0x09                        # DMAM0: word, source++
+        self.m.set_cpu(st)
+        self.m.bus_write(0x0024, 0x01)               # T01MOD: timer0 <- T1, 8-bit
+        self.m.bus_write(0x0022, 0x02)               # TREG0
+        self.m.bus_write(0x007C, 0x10)               # DMA0V = INTT0
+        self.m.bus_write(0x0020, 0x81)               # TRUN: prescaler + timer0 on
+        pcm = self._run()
+        frames = struct.unpack(f"<{len(pcm)//2}h", pcm)
+        self.assertGreater(max(frames[0::2]), 1000, "the DMA'd byte never reached the LEFT DAC")
+        self.assertGreater(max(frames[1::2]), 1000, "the word's 2nd byte never reached 0xA3")
+
 
 @unittest.skipUnless(native.available(), "native core not built")
 @unittest.skipUnless(SONIC.exists() and BIOS.exists(), "needs the retail cartridge + BIOS")
