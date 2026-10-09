@@ -62,7 +62,11 @@ from core.link import run_two_consoles_interleaved
 # 2 : le message d'empreinte porte desormais l'horodatage et l'echo (mesure de
 # l'aller-retour). Sa taille change, donc un pair d'avant ne peut pas le lire -- et la
 # version le lui dit proprement au lieu de le laisser desynchroniser sa lecture.
-PROTOCOL_VERSION = 2
+# 3 : l'echo est avance du temps ou on l'a garde (voir `MirrorSession._echo`), et le
+# retard SUIT l'aller-retour. Meme taille de message -- mais un pair d'avant renvoie
+# l'echo brut, gonfle jusqu'a 1 s, et ferait grimper notre retard a son plafond. Mieux
+# vaut le refuser proprement que jouer avec 300 ms de lag sans savoir pourquoi.
+PROTOCOL_VERSION = 3
 
 # Wire: [type:1][frame:4 LE][payload]. Fixed headers, so a partial read never has to
 # be guessed at -- the reader keeps whatever it cannot complete yet.
@@ -98,6 +102,34 @@ _HDR = struct.Struct("<BI")
 # a ~50 ms round trip; the host puts its own choice in the handshake.
 DEFAULT_DELAY = 3
 CHECK_EVERY = 60            # frames between desync checksums (~1 s)
+
+# ⚡ THE DELAY FOLLOWS THE LINE, ON EACH SIDE, WHILE THE MATCH RUNS.
+#
+# ⛔ WHY. The delay was a number fixed at the handshake -- 3 frames (~50 ms) unless the
+# host typed another. That covers a ~33 ms round trip: a LAN, never Internet. Past it
+# EVERY frame waits for the other PC, and the game crawls exactly like the cable mode
+# it exists to replace -- "works on the LAN, dead online", in both modes, which is
+# what the players reported. The round trip was measured (rtt_ms) and used by nothing.
+#
+# 🔑 WHY ONE SIDE MAY CHANGE IT ALONE. Every input travels with the frame number it is
+# FOR, so the delay only decides when a PC schedules its OWN button; the other PC plays
+# whatever frame-tagged stream it receives. Raising it leaves a gap of frames with no
+# input -- filled with the current pad and SENT, so both PCs still play one identical
+# stream. Lowering it just skips scheduling until `frame + delay` passes what is
+# already scheduled. Nothing is ever guessed, so nothing can desync.
+#
+# ⛔ THE SIGNAL IS THE ROUND TRIP, NOT THE STALLS -- tried, measured, dropped. Two PCs
+# never tick at exactly 60 Hz, so the faster one stalls on a regular beat whatever the
+# delay; counting those stalls drove ITS delay to 15-18 frames on a simulated 80 ms
+# line, which feeds it the peer's inputs no sooner and only lags its own buttons.
+# Following the worst recent round trip gave 5/5 on the same line, at the same speed.
+# Those one-tick drift stalls are the clock sync itself: in delay-based play a wait IS
+# the slower PC catching up, so an explicit "give a tick back" (study step 3) measured
+# to nothing and was not kept.
+ADAPT_COOLDOWN = 30         # frames after a change before another one
+ADAPT_CALM = 600            # frames (~10 s) between two steps DOWN: up is immediate
+MAX_DELAY = 20              # ~333 ms: beyond, the line is not playable anyway
+FRAME_MS = 1000 / 60
 
 
 class Pipe(Protocol):
@@ -573,6 +605,12 @@ class MirrorSession:
         # input to wait for -- pre-filled, identically on both sides.
         self.local_inputs: dict[int, int] = {f: 0 for f in range(self.delay)}
         self.peer_inputs: dict[int, int] = {f: 0 for f in range(self.delay)}
+        # The last frame our own input is scheduled for. The delay may move during the
+        # match (see ADAPT_*); this is what keeps the stream gap-free when it does.
+        self._sched_to = self.delay - 1
+        self.base_delay = self.delay            # the floor: never below what both agreed
+        self.delay_max_seen = self.delay
+        self._adapt_hold = 0                    # no change before this frame
         # ⚡ `prime` is what the bring-up read past the end of the cartridge trade:
         # whoever finished first was already sending session records. Dropping them
         # would eat the opening inputs of the match.
@@ -587,6 +625,8 @@ class MirrorSession:
         self.rtt_max_ms = 0
         self._rtt_n = 0
         self._peer_ts = 0
+        self._peer_ts_at = 0                    # our clock when that timestamp arrived
+        self._rtt_recent: deque[int] = deque(maxlen=8)
         self.desync_at: int | None = None
         self.rejected: str | None = None        # why the handshake failed, if it did
         self.greeted = False
@@ -651,6 +691,7 @@ class MirrorSession:
                 somme, leur_ts, echo = _CHECK_BODY.unpack(body)
                 self._checks[frame] = somme
                 self._peer_ts = leur_ts          # a renvoyer dans notre prochain envoi
+                self._peer_ts_at = self._now_ms()
                 if echo:
                     # L'echo est NOTRE horodatage revenu : la difference est l'aller
                     # ET le retour, sans horloge commune a supposer entre les deux PC.
@@ -660,6 +701,8 @@ class MirrorSession:
                         n = self._rtt_n = self._rtt_n + 1
                         self.rtt_avg_ms = (self.rtt_avg_ms * (n - 1) + aller_retour) / n
                         self.rtt_max_ms = max(self.rtt_max_ms, aller_retour)
+                        self._rtt_recent.append(aller_retour)
+                        self._follow_rtt()
             elif kind == _T_BYE:
                 # The peer refused, and said so instead of just dropping the socket.
                 self.rejected = self.rejected or (
@@ -702,9 +745,13 @@ class MirrorSession:
         # frame comes round -- the SAME delay the peer's input gets, so both PCs
         # simulate identical input streams.
         at = self.frame + self.delay
-        if at not in self.local_inputs:
-            self.local_inputs[at] = pad & 0xFF
-            self._send(_T_INPUT, at, bytes([pad & 0xFF]))
+        # Everything from the last scheduled frame up to `at`: one frame normally, more
+        # right after the delay grew (the gap gets the current pad, and is SENT -- the
+        # peer must play it too), none right after it shrank.
+        for f in range(self._sched_to + 1, at + 1):
+            self.local_inputs[f] = pad & 0xFF
+            self._send(_T_INPUT, f, bytes([pad & 0xFF]))
+        self._sched_to = max(self._sched_to, at)
         if self.frame not in self.peer_inputs:
             self.stalls += 1
             return "waiting"
@@ -747,7 +794,7 @@ class MirrorSession:
             self._mine[self.frame] = self.checksum()
             self._send(_T_CHECK, self.frame,
                        _CHECK_BODY.pack(self._mine[self.frame], self._now_ms(),
-                                        self._peer_ts))
+                                        self._echo()))
         for f in sorted(set(self._mine) & set(self._checks)):
             if self._mine.pop(f) != self._checks.pop(f) and self.desync_at is None:
                 self.desync_at = f
@@ -764,4 +811,50 @@ class MirrorSession:
         self.peer_inputs.pop(self.frame, None)
         self.frame += 1
         self.frames_run += 1
+        self._maybe_shrink()
         return "ran"
+
+    def _echo(self) -> int:
+        """The peer's timestamp, sent back ADVANCED BY HOW LONG WE HELD IT.
+
+        ⛔ THE ROUND TRIP ON SCREEN WAS WRONG BY UP TO A SECOND. Checksums leave once a
+        second, so the peer's timestamp waited here until our next one before going
+        back -- and that wait was counted as network. Measured on a simulated 80 ms
+        line: 1030 ms. A report of "worst 900 ms" said nothing about the line.
+        Advancing the echo by the hold time takes it out, in the same 4 bytes: a peer
+        from before this just keeps the old (inflated) reading, nothing breaks.
+        """
+        if not self._peer_ts:
+            return 0
+        held = (self._now_ms() - self._peer_ts_at) & 0xFFFFFFFF
+        return ((self._peer_ts + held) & 0xFFFFFFFF) or 1
+
+    def _follow_rtt(self) -> None:
+        """Raise the delay at once when the line needs it.
+
+        A delay of D frames covers a one-way trip of about D-1 frames (one frame of
+        slack for where in its tick each PC happens to be), so D = ceil(rtt/2) + 1 in
+        frames, from the WORST of the last few round trips: the worst is what stalls.
+        Lowering stays with _maybe_shrink, one frame at a time.
+        """
+        need = self._rtt_need()
+        if need > self.delay:
+            self.delay = min(MAX_DELAY, need)
+            self.delay_max_seen = max(self.delay_max_seen, self.delay)
+            self._adapt_hold = self.frame + ADAPT_COOLDOWN
+
+    def _rtt_need(self) -> int:
+        if not self._rtt_recent:
+            return 0
+        return int(-(-max(self._rtt_recent) // (2 * FRAME_MS))) + 1
+
+    # --- the delay, adapted ----------------------------------------------------
+    def _maybe_shrink(self) -> None:
+        """One frame less, at most every ADAPT_CALM frames, while the worst recent
+        round trip no longer needs it -- and never under what both players agreed."""
+        if self.delay <= self.base_delay or self.frame < self._adapt_hold:
+            return
+        if not self._rtt_recent or self.delay - 1 < self._rtt_need():
+            return
+        self.delay -= 1
+        self._adapt_hold = self.frame + ADAPT_CALM

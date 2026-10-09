@@ -6887,8 +6887,11 @@ class Shell(QMainWindow):
                         f" (moy {session.rtt_avg_ms:.0f}, pire {session.rtt_max_ms})")
             if session.desync_at is not None:
                 bout += f"  ⚠ desync trame {session.desync_at}"
+            # Le retard bouge pendant la partie (core/netplay.py, ADAPT_*) : le montrer,
+            # sinon « ça rame un peu » et « le retard est monté à 8 » se confondent.
             self.setWindowTitle(f"NgpCraft — mirror ⇄  {session.frames_run} frames, "
-                                f"{session.stalls} waits{bout}")
+                                f"{session.stalls} waits, retard {session.delay}"
+                                f" (max {session.delay_max_seen}){bout}")
 
         self._net_status.timeout.connect(_titre)
         self._net_status.start(500)

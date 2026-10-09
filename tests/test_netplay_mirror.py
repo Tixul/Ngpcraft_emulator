@@ -455,6 +455,155 @@ def test_a_slow_wire_costs_frames_of_delay_but_not_speed():
     assert ran >= 100, f"a delayed wire cost speed: {ran}/120 frames ran"
 
 
+def _play(a, b, ticks):
+    ran = []
+    for i in range(ticks):
+        ran.append((a.step(i & 0x3F) == "ran") + (b.step((i * 7) & 0x3F) == "ran"))
+    return ran
+
+
+def _same_streams(a, b) -> bool:
+    n1 = min(len(a.local.pads), len(b.peer.pads))
+    n2 = min(len(a.peer.pads), len(b.local.pads))
+    return (a.local.pads[:n1] == b.peer.pads[:n1]
+            and a.peer.pads[:n2] == b.local.pads[:n2])
+
+
+class _Clock:
+    """Simulated milliseconds, so a 'line' can be 80 ms long without the test taking it."""
+
+    def __init__(self) -> None:
+        self.ms = 0.0
+
+    def now(self) -> int:
+        return int(self.ms) & 0xFFFFFFFF
+
+
+class _TimedPipe:
+    """A TCP-like wire on the simulated clock: in order, `lat` +- `jit` ms one way."""
+
+    def __init__(self, clock: _Clock, lat: float, jit: float, rng) -> None:
+        self.clock, self.lat, self.jit, self.rng = clock, lat, jit, rng
+        self.peer: "_TimedPipe | None" = None
+        self.q: list[tuple[float, bytes]] = []
+        self.last = 0.0
+
+    @staticmethod
+    def pair(clock, lat, jit, seed=1):
+        rng = random.Random(seed)
+        a, b = _TimedPipe(clock, lat, jit, rng), _TimedPipe(clock, lat, jit, rng)
+        a.peer, b.peer = b, a
+        return a, b
+
+    def send(self, data: bytes) -> None:
+        if data and self.peer is not None:
+            t = max(self.peer.last,
+                    self.clock.ms + self.lat + self.rng.uniform(-self.jit, self.jit))
+            self.peer.last = t
+            self.peer.q.append((t, bytes(data)))
+
+    def recv(self) -> bytes:
+        out = bytearray()
+        while self.q and self.q[0][0] <= self.clock.ms:
+            out += self.q.pop(0)[1]
+        return bytes(out)
+
+
+def _two_pcs(monkeypatch, *, lat, jit, tick_a=1000 / 60, tick_b=1000 / 60, secs=60,
+             delay=3, seed=1, sessions=None):
+    """Two sessions on their OWN tick rates (no two PCs tick at exactly 60 Hz).
+
+    Pass `sessions` (from an earlier call) to keep playing them on a new line."""
+    import heapq
+    if sessions is None:
+        clock = _Clock()
+        monkeypatch.setattr(MirrorSession, "_now_ms", staticmethod(clock.now))
+        pa, pb = _TimedPipe.pair(clock, lat, jit, seed)
+        kw = dict(rom_hash="R", bios_hash="B", core_version="C", delay=delay)
+        a = MirrorSession(FakeMachine(), FakeMachine(), FakeLink(), pa,
+                          Handshake(host=True, **kw))
+        b = MirrorSession(FakeMachine(), FakeMachine(), FakeLink(), pb,
+                          Handshake(host=False, **kw))
+    else:
+        a, b = sessions
+        clock = a.pipe.clock
+        for pipe in (a.pipe, b.pipe):
+            pipe.lat, pipe.jit = lat, jit
+    start = clock.ms
+    events, i = [(start, 0), (start + 3.0, 1)], 0
+    rng = random.Random(seed + 1)
+    while events:
+        t, who = heapq.heappop(events)
+        if t > start + secs * 1000:
+            break
+        clock.ms = t
+        i += 1
+        (a, b)[who].step((i * (3 + who)) & 0x3F)
+        heapq.heappush(events, (t + (tick_a, tick_b)[who] + rng.uniform(-2, 2), who))
+    return a, b, secs * 1000 / max(tick_a, tick_b)
+
+
+def test_the_round_trip_on_screen_is_the_line_not_the_checksum_period(monkeypatch):
+    """⛔ IT READ UP TO A SECOND TOO HIGH. The peer sent our timestamp back with its
+    NEXT checksum, a second later, and that wait was counted as network: 1030 ms on
+    an 80 ms line. The echo now comes back advanced by the time it was held."""
+    a, b, _ = _two_pcs(monkeypatch, lat=40, jit=0, secs=20)
+    for s in (a, b):
+        assert s.rtt_ms is not None
+        assert 75 <= s.rtt_ms <= 120, f"{s.rtt_ms} ms measured on an 80 ms line"
+
+
+def test_a_line_longer_than_the_delay_grows_the_delay_instead_of_crawling(monkeypatch):
+    """⛔ "WORKS ON THE LAN, DEAD ONLINE". The delay was fixed at the handshake (3
+    frames, ~50 ms), so a longer line made EVERY frame wait -- the cable mode's own
+    failure, in the mode built to end it. It now follows the measured round trip."""
+    a, b, most = _two_pcs(monkeypatch, lat=60, jit=20, secs=60)
+    assert min(a.frames_run, b.frames_run) >= 0.95 * most, (
+        f"still crawling: {a.frames_run}/{b.frames_run} of {most:.0f}")
+    assert a.delay > 3 and b.delay > 3, "the delay never followed the line"
+    assert _same_streams(a, b), "a changed delay made the two PCs play different buttons"
+
+
+def test_the_faster_pc_does_not_lag_itself_for_the_clock_drift(monkeypatch):
+    """⛔ THE FIRST VERSION RAISED ON STALLS, and two PCs never tick at the same rate:
+    the faster one stalls on a beat whatever its delay, so it climbed to 15-18 frames
+    of lag on its own buttons for nothing. Both must end up near what the line needs."""
+    a, b, most = _two_pcs(monkeypatch, lat=40, jit=15, tick_a=16.60, tick_b=16.70, secs=90)
+    assert abs(a.delay - b.delay) <= 1, f"delays {a.delay}/{b.delay}: one PC lags itself"
+    assert max(a.delay, b.delay) <= 7
+    assert min(a.frames_run, b.frames_run) >= 0.98 * most
+    assert _same_streams(a, b)
+
+
+def test_a_raised_delay_leaves_no_frame_without_an_input():
+    """Raising the delay jumps the scheduling point forward. The frames in between must
+    get an input AND be sent, or the peer waits for them for ever."""
+    a, b = _pair(delay=3)
+    _play(a, b, 100)
+    a.delay += 4                                 # what the adaptation does, in one go
+    ran = _play(a, b, 100)
+    assert sum(ran[-50:]) == 100, "a gap in the stream froze the session"
+    assert _same_streams(a, b)
+
+
+def test_the_delay_comes_back_down_but_never_below_the_agreed_one(monkeypatch):
+    """A bad patch raises it; once the line is short again it steps back down, one
+    frame per calm period -- and never under what the two players agreed."""
+    a, b, _ = _two_pcs(monkeypatch, lat=150, jit=0, secs=20)    # a bad patch...
+    high = min(a.delay, b.delay)
+    assert high >= 8, f"a 300 ms round trip only raised the delay to {high}"
+    a, b, _ = _two_pcs(monkeypatch, lat=5, jit=0, secs=150, sessions=(a, b))  # ...then calm
+    assert a.delay < high and b.delay < high, "a quiet line kept the extra lag"
+    assert a.delay >= 3 and b.delay >= 3, "it went under what both players agreed"
+    assert _same_streams(a, b), "lowering the delay changed the buttons played"
+
+
+def test_a_good_line_keeps_the_agreed_delay(monkeypatch):
+    """A LAN must not pay a single extra frame for this."""
+    a, b, _ = _two_pcs(monkeypatch, lat=3, jit=1, secs=30)
+    assert a.delay == 3 and b.delay == 3
+
+
 def test_two_different_cartridges_are_allowed():
     """⚡ THE POINT OF TRADING THE IMAGES. Requiring the same cartridge meant requiring
     the same SAVE -- a save lives inside the image -- which two players almost never
