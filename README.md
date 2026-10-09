@@ -1337,6 +1337,7 @@ The emulator speaks more than one language because people sent theirs in.
 
 - **Português (Portugal)** — [@spotanjo3](https://github.com/spotanjo3)
   ([#1](https://github.com/Tixul/Ngpcraft_emulator/issues/1))
+- **Simplified and Traditional Chinese translations** - [Blueteemo](https://github.com/Blueteemo)
 
 Adding yours is adding one JSON file, no Python required, and an unfinished one is
 mergeable — see [TRANSLATING.md](TRANSLATING.md). You get credited here, in the file
