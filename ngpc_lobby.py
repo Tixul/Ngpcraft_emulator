@@ -8,7 +8,7 @@ compatible game -- the list shows each game's title for that reason.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QCheckBox, QInputDialog,
@@ -83,11 +83,40 @@ def _public_ip(timeout: float = 4.0) -> str:
     return ""
 
 
-class _PublicIPProbe(QThread):
+class _PublicIPProbe(QObject):
+    """Ou arrive la reponse de `_public_ip()`. UN SEUL pour toute la session.
+
+    ⛔ C'ETAIT UN QThread ENFANT DE LA FICHE, ET IL TUAIT LE PROCESSUS. La recherche
+    interroge jusqu'a trois services, 4 s chacun. Si la fiche est detruite avant la
+    reponse (fenetre fermee, application qui quitte, test qui demonte son `Shell`), Qt
+    detruit avec elle un QThread encore dans `urlopen` -- mort nette, sans trace. Sur le
+    runner Windows de la CI, ou ces services repondent lentement, la suite mourait a
+    ~65 % dans `test_closing_the_address_card_keeps_the_host_listening`; Linux et macOS
+    avaient leur reponse avant le demontage. Reproduit en local en ralentissant
+    `_public_ip` a 3 s.
+
+    Le travail reseau part donc dans un fil Python `daemon` qui n'appartient a aucun
+    widget (rien a detruire sous lui, et il ne retient pas la sortie). Il ne touche
+    qu'a cet objet-ci, qui vit autant que le module: jamais detruit sous un fil qui
+    emet. La fiche s'y branche par un vrai slot Qt, que Qt debranche seul quand la
+    fiche disparait -- une reponse tardive ne tombe alors sur personne.
+    """
     got = pyqtSignal(str)
 
-    def run(self) -> None:
-        self.got.emit(_public_ip())
+
+_probe_hub: _PublicIPProbe | None = None
+
+
+def _start_public_ip_probe(slot) -> None:
+    """Lance la recherche d'IP publique; `slot` recoit la reponse dans le fil Qt."""
+    import threading
+    global _probe_hub
+    if _probe_hub is None:
+        _probe_hub = _PublicIPProbe()          # cree dans le fil principal, sans parent
+    hub = _probe_hub
+    hub.got.connect(slot)
+    threading.Thread(target=lambda: hub.got.emit(_public_ip()),
+                     name="public-ip", daemon=True).start()
 
 
 class HostInfoDialog(QDialog):
@@ -146,9 +175,7 @@ class HostInfoDialog(QDialog):
         close.clicked.connect(self.accept)
         v.addWidget(close)
 
-        self._probe = _PublicIPProbe(self)
-        self._probe.got.connect(self._on_public_ip)
-        self._probe.start()
+        _start_public_ip_probe(self._on_public_ip)
 
     def _t(self, key: str) -> str:
         return cfg.tr(self._lang, key)
@@ -157,6 +184,7 @@ class HostInfoDialog(QDialog):
         return self._t("host_share_line").format(game=self._game,
                                                  addr=f"{ip}:{self._port}")
 
+    @pyqtSlot(str)
     def _on_public_ip(self, ip: str) -> None:
         self._pub = ip
         if ip:
