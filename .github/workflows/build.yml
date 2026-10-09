@@ -91,7 +91,11 @@ jobs:
       - name: Run the tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q
+        # -v, not -q: when the process dies outright (no summary, "exit code 1"), the
+        # dots of -q do not say WHICH test was running -- and on Windows faulthandler
+        # also prints "fatal exception" for faults something else then handles, so its
+        # dump alone can point at the wrong test. One name per line pins the real one.
+        run: pytest -v
 
       - name: Package with PyInstaller
         run: pyinstaller --noconfirm --clean NgpCraftEmulator.spec

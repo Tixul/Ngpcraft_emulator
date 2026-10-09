@@ -50,3 +50,29 @@ def _sandbox_the_coin_cell(tmp_path, monkeypatch):
         monkeypatch.setattr(shell, "_SYSTEM_RAM", cell, raising=False)
         monkeypatch.setattr(shell, "_SYSTEM_RTC", clock, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_internet_for_the_host_card(monkeypatch):
+    """La fiche d'adresse de l'hote ne sort PAS sur internet pendant les tests.
+
+    ⛔ `HostInfoDialog` demande l'IP publique a api.ipify.org & co (3 services, 4 s
+    chacun). En local ca repond en un clin d'oeil; sur le runner Windows de la CI, le
+    `connect` reste bloque -- et c'est le seul fil qui differe entre les deux runs ou la
+    suite est morte a ~65 % (« Windows fatal exception: access violation » pendant
+    `test_closing_the_address_card_keeps_the_host_listening`, un fil dans
+    `socket.create_connection`). Un test n'a rien a attendre d'un service tiers: sa
+    reponse ne se verifie pas, et sa lenteur deplace tout le reste du banc.
+
+    Sans Qt, comme ci-dessus: on n'importe `ngpc_lobby` que si Qt est deja la (le shell
+    charge, ou le module lui-meme). ⚠️ `sys.modules` seul ne suffit PAS: le shell
+    importe la fiche a la demande, dans `_show_host_info` -- un fichier de test lance
+    seul n'aurait encore jamais charge `ngpc_lobby`, et la fiche serait sortie sur le
+    reseau quand meme.
+    """
+    lobby = sys.modules.get("ngpc_lobby")
+    if lobby is None and "ngpc_shell" in sys.modules:
+        import ngpc_lobby as lobby
+    if lobby is not None:
+        monkeypatch.setattr(lobby, "_public_ip", lambda timeout=4.0: "", raising=False)
+    yield
