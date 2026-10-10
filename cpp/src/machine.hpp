@@ -616,6 +616,16 @@ struct Machine {
     std::vector<uint8_t> battery_ram;
     ngpc_cpu_t           cpu{};
     std::vector<uint32_t> breakpoints;
+    /* A run never stops on its FIRST instruction ("i > 0"): that is how a caller
+     * steps off the breakpoint it sits on, and how "stop when we come back here"
+     * works. But run_frames slices one frame into runs as short as ONE instruction
+     * near its end, so its later slices must check their first instruction too,
+     * or a breakpoint landing on a slice start passes unseen (NgpCraft Studio's
+     * debugger breaks on every VM_STEP). Set by run_frames: on every slice but a
+     * first one that resumes from the breakpoint the previous call stopped on --
+     * a frame's first instruction can be a breakpoint as well. */
+    bool break_on_first = false;
+    uint32_t break_stop_pc = 0xFFFFFFFFu;   /* PC of the last breakpoint stop */
 
     /* frame pacing */
     uint32_t scanline     = 0;

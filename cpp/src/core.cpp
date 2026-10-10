@@ -603,7 +603,11 @@ NGPC_API int ngpc_run(ngpc_t* h, uint32_t max_instrs,
         if (!m->breakpoints.empty()) {
             bool hit = false;
             for (uint32_t bp : m->breakpoints) if (bp == m->cpu.pc) { hit = true; break; }
-            if (hit && i > 0) { s.stop_status = NGPC_BREAKPOINT; s.stop_pc = m->cpu.pc; break; }
+            if (hit && (i > 0 || m->break_on_first)) {
+                s.stop_status = NGPC_BREAKPOINT; s.stop_pc = m->cpu.pc;
+                m->break_stop_pc = m->cpu.pc;
+                break;
+            }
         }
 
         const bool want_record = out_records && s.emitted < records_cap;
@@ -1090,7 +1094,11 @@ NGPC_API int ngpc_run_frames(ngpc_t* h, uint32_t frames, uint32_t max_instrs,
         if (chunk > 4096u) chunk = 4096u;
         if (chunk > budget) chunk = budget;
         ngpc_summary_t s;
+        // Only a first slice resuming from the breakpoint just stopped on skips it.
+        m->break_on_first = total.executed > 0 || m->cpu.pc != m->break_stop_pc;
+        m->break_stop_pc = 0xFFFFFFFFu;
         ngpc_run(h, chunk, nullptr, 0, &s);
+        m->break_on_first = false;
 
         total.executed     += s.executed;
         total.total_cycles += s.total_cycles;
@@ -2734,6 +2742,7 @@ NGPC_API int ngpc_set_breakpoints(ngpc_t* h, const uint32_t* pcs, uint32_t n) {
     if (!h) return -1;
     Machine* m = reinterpret_cast<Machine*>(h);
     m->breakpoints.assign(pcs, pcs + n);
+    m->break_stop_pc = 0xFFFFFFFFu;
     return 0;
 }
 
