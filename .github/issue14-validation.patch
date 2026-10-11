@@ -304,3 +304,21 @@ diff --git a/ngpc_shell.py b/ngpc_shell.py
 +                             monitor_a=page.link_monitor)
          session = MirrorSession(page.machine, peer.machine, link, pipe, hs, prime)
          page.attach_mirror(session, peer)
+diff --git a/tests/test_netplay_mirror.py b/tests/test_netplay_mirror.py
+--- a/tests/test_netplay_mirror.py
++++ b/tests/test_netplay_mirror.py
+@@ -338,7 +338,14 @@
+     x = netplay.CartExchange(
+         SocketPipe(sock), image,
+         Handshake(rom_hash=netplay._image_hash(image), bios_hash="B",
+                   core_version="C", delay=3, host=True))
++    # Protocol v4 intentionally waits for a valid peer HELLO before sending ROM
++    # chunks. Complete that prerequisite, then test actual network backpressure.
++    peer_hello = Handshake(rom_hash="peer", bios_hash="B",
++                           core_version="C", delay=3, host=False).payload()
++    record = netplay._HDR.pack(netplay._T_HELLO, 0)
++    record += len(peer_hello).to_bytes(2, "little") + peer_hello
++    assert peer.send(record) == len(record)
+     for _ in range(20):
+         x.pump()
+     assert x.pipe.pending > 0, "the double is not holding anything back"

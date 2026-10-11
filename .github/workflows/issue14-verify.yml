@@ -48,7 +48,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add core/netplay.py core/lobby.py ngpc_shell.py
+          git add core/netplay.py core/lobby.py ngpc_shell.py tests/test_netplay_mirror.py
           git rm -f .github/workflows/issue14-verify.yml .github/issue14-validation.patch
-          git commit -m 'fix(netplay): negotiate mirror scheduler and guard lobby lifecycle [skip ci]'
+          git commit -m 'fix(netplay): coordinate mirror scheduler and update HELLO-dependent regression [skip ci]'
           git push origin HEAD:refs/heads/fix/issue14-mirror-scheduler-lifecycle
