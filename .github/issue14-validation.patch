@@ -1,0 +1,306 @@
+diff --git a/core/netplay.py b/core/netplay.py
+--- a/core/netplay.py
++++ b/core/netplay.py
+@@ -57,7 +57,7 @@
+ from collections import deque
+ from typing import Protocol
+ 
+-from core.link import run_two_consoles_interleaved
++from core.link import run_two_consoles_interleaved, host_relay_forced
+ 
+ # 2 : le message d'empreinte porte desormais l'horodatage et l'echo (mesure de
+ # l'aller-retour). Sa taille change, donc un pair d'avant ne peut pas le lire -- et la
+@@ -66,7 +66,7 @@
+ # retard SUIT l'aller-retour. Meme taille de message -- mais un pair d'avant renvoie
+ # l'echo brut, gonfle jusqu'a 1 s, et ferait grimper notre retard a son plafond. Mieux
+ # vaut le refuser proprement que jouer avec 300 ms de lag sans savoir pourquoi.
+-PROTOCOL_VERSION = 3
++PROTOCOL_VERSION = 4
+ 
+ # Wire: [type:1][frame:4 LE][payload]. Fixed headers, so a partial read never has to
+ # be guessed at -- the reader keeps whatever it cannot complete yet.
+@@ -103,6 +103,24 @@
+ DEFAULT_DELAY = 3
+ CHECK_EVERY = 60            # frames between desync checksums (~1 s)
+ 
++
++def active_mirror_scheduler(link, first, second) -> str | None:
++    """Match core.link's complete dispatch; None is a run_frames-only test double.
++
++    Monitoring and the environment are NOT the only conditions. A machine without
++    serial_state() also uses the Python relay. FakeMachine lacks run() altogether,
++    and the upstream tests intentionally use that old compatibility branch.
++    """
++    if not hasattr(first, "run") or not hasattr(second, "run"):
++        return None
++    if (host_relay_forced()
++            or getattr(link, "monitor_a", None) is not None
++            or getattr(link, "monitor_b", None) is not None
++            or not hasattr(first, "serial_state")
++            or not hasattr(second, "serial_state")):
++        return "host"
++    return "native"
++
+ # ⚡ THE DELAY FOLLOWS THE LINE, ON EACH SIDE, WHILE THE MATCH RUNS.
+ #
+ # ⛔ WHY. The delay was a number fixed at the handshake -- 3 frames (~50 ms) unless the
+@@ -308,7 +326,8 @@
+ 
+     def __init__(self, *, rom_hash: str, bios_hash: str, core_version: str,
+                  delay: int = DEFAULT_DELAY, host: bool = False,
+-                 console: dict | None = None, timing: str | None = None) -> None:
++                 console: dict | None = None, timing: str | None = None,
++                 scheduler: str | None = None) -> None:
+         # Our own cartridge fingerprint: announced, never compared for equality. The
+         # receiving side checks the image it was SENT against it, which catches a
+         # truncated or corrupted transfer -- the failure that would otherwise show up
+@@ -332,6 +351,11 @@
+             from core.native import active_timing_model
+             timing = active_timing_model()
+         self.timing = timing
++        if scheduler is None:
++            scheduler = "host" if host_relay_forced() else "native"
++        if scheduler not in ("host", "native"):
++            raise ValueError("unknown mirror scheduler")
++        self.scheduler = scheduler
+         # ⚡ SETTINGS THAT SHAPE THE SENDER'S OWN CONSOLE -- announced, like the
+         # cartridge, and for the same reason.
+         #
+@@ -356,7 +380,7 @@
+         return json.dumps({
+             "v": PROTOCOL_VERSION, "rom": self.rom_hash, "bios": self.bios_hash,
+             "core": self.core_version, "delay": self.delay, "cons": self.console,
+-            "timing": self.timing,
++            "timing": self.timing, "scheduler": self.scheduler,
+         }, sort_keys=True).encode("utf-8")
+ 
+     def check(self, raw: bytes) -> str | None:
+@@ -365,8 +389,12 @@
+             them = json.loads(raw.decode("utf-8"))
+         except (ValueError, UnicodeDecodeError):
+             return "unreadable_hello"
+-        if int(them.get("v", -1)) != PROTOCOL_VERSION:
++        if not isinstance(them, dict):
++            return "unreadable_hello"
++        if type(them.get("v")) is not int or them["v"] != PROTOCOL_VERSION:
+             return "protocol_version"
++        if them.get("scheduler") != self.scheduler:
++            return "scheduler_mismatch"
+         self.peer_rom_hash = them.get("rom")     # what their image must hash to
+         cons = them.get("cons")
+         if isinstance(cons, dict):
+@@ -397,8 +425,8 @@
+         # refusing is the version that cannot be subtly wrong. The session sends its
+         # own hello with whatever it settled on, so a joiner that failed to adopt is
+         # caught there, loudly, instead of drifting.
+-        peer_delay = int(them.get("delay", -1))
+-        if peer_delay < 0:
++        peer_delay = them.get("delay")
++        if type(peer_delay) is not int or peer_delay < 0:
+             return "input_delay"
+         if peer_delay != self.delay:
+             if self.locked:
+@@ -495,7 +523,9 @@
+         # Retry whatever the transport still owes BEFORE cutting a new chunk: this is
+         # the only thing that moves the tail once the last chunk has been queued.
+         _flush(self.pipe)
+-        if self._sent < len(self._out) and _pending(self.pipe) < self.IN_FLIGHT:
++        # Never transfer ROM blocks until the peer HELLO is verified.
++        if (self.greeted and self._sent < len(self._out)
++                and _pending(self.pipe) < self.IN_FLIGHT):
+             piece = self._out[self._sent:self._sent + self._chunk]
+             self.pipe.send(_HDR.pack(_T_CHUNK, len(piece)) + piece)
+             self._sent += len(piece)
+@@ -741,6 +771,15 @@
+         self._drain()
+         if self.rejected:
+             return "rejected"
++        # Delay=3 pre-seeds three inputs. Never simulate those frames before
++        # receiving the peer's session-level HELLO and validating its settings.
++        if not self.greeted:
++            return "waiting"
++        # No hardware scheduler invariant exists for run_frames-only test doubles.
++        active = active_mirror_scheduler(self.link, self.local, self.peer)
++        if active is not None and active != self.hs.scheduler:
++            self._reject("scheduler_changed_during_session")
++            return "rejected"
+         # Our own input is scheduled for a frame in the future, and played when that
+         # frame comes round -- the SAME delay the peer's input gets, so both PCs
+         # simulate identical input streams.
+diff --git a/core/lobby.py b/core/lobby.py
+--- a/core/lobby.py
++++ b/core/lobby.py
+@@ -26,6 +26,7 @@
+ FRAME_CONTROL = 1
+ FRAME_RELAY = 2
+ _HDR = 5
++MAX_RECEIVE_FRAME = 1 << 20
+ 
+ 
+ class _Closed(Exception):
+@@ -67,7 +68,10 @@
+         self._owed = 0
+         self._owed_lock = threading.Lock()
+         self._rx_serial: deque[int] = deque()      # received serial bytes
++        self._rx_serial_lock = threading.Lock()
+         self._running = False
++        # A close during an in-progress connect must not be undone when it finishes.
++        self._closing = threading.Event()
+         self._thread: threading.Thread | None = None
+         # ⚡ THE WAKE-UP PIPE -- this is what keeps an online game at full speed.
+         # The socket thread waits in select(); without a second thing to wait ON, a
+@@ -87,10 +91,13 @@
+ 
+     # ---- lifecycle ---------------------------------------------------------
+     def start(self) -> None:
++        if self._closing.is_set() or self._thread is not None:
++            return
+         self._thread = threading.Thread(target=self._run, daemon=True)
+         self._thread.start()
+ 
+     def close(self) -> None:
++        self._closing.set()
+         self._running = False
+         self._wake()                       # so the thread leaves select() now
+         try:
+@@ -98,6 +105,13 @@
+                 self._sock.close()
+         except OSError:
+             pass
++        if self._thread is None:
++            # A user can dismiss the dialog without ever starting the worker.
++            for s in (self._wake_r, self._wake_w):
++                try:
++                    s.close()
++                except OSError:
++                    pass
+ 
+     def _wake(self) -> None:
+         """Nudge the socket thread out of select(). Called from the Qt thread."""
+@@ -150,43 +164,48 @@
+             self._enqueue(_frame(FRAME_RELAY, data))
+ 
+     def read_serial(self) -> bytes:
+-        n = len(self._rx_serial)
+-        if not n:
+-            return b""
+-        return bytes(self._rx_serial.popleft() for _ in range(n))
++        with self._rx_serial_lock:
++            if not self._rx_serial:
++                return b""
++            out = bytes(self._rx_serial)
++            self._rx_serial.clear()
++            return out
+ 
+     # ---- socket thread -----------------------------------------------------
+     def _run(self) -> None:
+-        try:
++        reason = "closed"
++        try:
++            if self._closing.is_set():
++                raise _Closed("closed")
+             self._sock = socket.create_connection((self._host, self._port), timeout=15)
+-        except Exception as e:  # noqa: BLE001
+-            self.disconnected.emit(str(e))
+-            return
+-        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+-        self._sock.setblocking(False)
+-        self._running = True
+-        self._send_control({"op": "hello", "pseudo": self._pseudo})
+-        self.connected.emit()
+-
+-        buf = bytearray()
+-        pending = bytearray()          # queued frames not yet accepted by the kernel
+-        reason = "closed"
+-        # ⚡ THE TEARDOWN BELOW MUST RUN NO MATTER HOW THIS LOOP ENDS. It closes the
+-        # wake socketpair and emits `disconnected`, and the UI is waiting for that
+-        # signal -- a thread that dies on the way out leaks two descriptors and
+-        # leaves the session looking alive forever.
+-        try:
+-            self._pump(buf, pending)
++            if self._closing.is_set():
++                raise _Closed("closed")
++            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
++            self._sock.setblocking(False)
++            self._running = True
++            if self._closing.is_set():
++                raise _Closed("closed")
++            self._send_control({"op": "hello", "pseudo": self._pseudo})
++            self.connected.emit()
++            self._pump(bytearray(), bytearray())
+         except _Closed as e:
+             reason = str(e)
++        except Exception as e:
++            # Malformed payloads or unexpected callbacks must still notify Qt.
++            reason = f"client socket loop error: {type(e).__name__}: {e}"
+         finally:
+             self._running = False
++            if self._sock is not None:
++                try:
++                    self._sock.close()
++                except OSError:
++                    pass
+             for s in (self._wake_r, self._wake_w):
+                 try:
+                     s.close()
+                 except OSError:
+                     pass
+-        self.disconnected.emit(reason)
++            self.disconnected.emit(reason)
+ 
+     def _pump(self, buf: bytearray, pending: bytearray) -> None:
+         while self._running:
+@@ -248,12 +267,15 @@
+         while len(buf) >= _HDR:
+             ftype = buf[0]
+             length = int.from_bytes(buf[1:5], "big")
++            if length > MAX_RECEIVE_FRAME:
++                raise _Closed("lobby frame too large")
+             if len(buf) < _HDR + length:
+                 return
+             payload = bytes(buf[_HDR:_HDR + length])
+             del buf[:_HDR + length]
+             if ftype == FRAME_RELAY:
+-                self._rx_serial.extend(payload)
++                with self._rx_serial_lock:
++                    self._rx_serial.extend(payload)
+             elif ftype == FRAME_CONTROL:
+                 self._dispatch(payload)
+ 
+@@ -262,7 +284,12 @@
+             obj = json.loads(payload.decode("utf-8"))
+         except Exception:
+             return
++        if not isinstance(obj, dict):
++            return
+         op = obj.get("op")
++        if op in ("joined", "peer_left"):
++            with self._rx_serial_lock:
++                self._rx_serial.clear()
+         if op == "list":
+             self.game_list.emit(obj.get("games", []))
+         elif op == "created":
+diff --git a/ngpc_shell.py b/ngpc_shell.py
+--- a/ngpc_shell.py
++++ b/ngpc_shell.py
+@@ -6739,5 +6739,9 @@
+             console={"lang": int(cfg.cart_language(self._settings)),
+                      "mono": bool(self.play._mono_console())},
+-            host=host)
++            host=host,
++            # The debug monitor changes the pair's emulation scheduler. Announce
++            # this BEFORE cartridge exchange; both peers must run the same path.
++            scheduler=("host" if (page.link_monitor is not None
++                                  or core_link.host_relay_forced()) else "native"))
+ 
+     def _begin_mirror(self, pipe, host: bool, delay: int | None = None) -> None:
+@@ -6871,5 +6871,8 @@
+         page.watches.rearm()
+         page.apply_debug()
+-        link = InProcessLink(page.machine, peer.machine)
++        # A monitor already attached before the trade must reach the mirror
++        # link too. Otherwise the negotiated schedule and the actual one differ.
++        link = InProcessLink(page.machine, peer.machine,
++                             monitor_a=page.link_monitor)
+         session = MirrorSession(page.machine, peer.machine, link, pipe, hs, prime)
+         page.attach_mirror(session, peer)
