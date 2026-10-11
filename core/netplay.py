@@ -57,7 +57,7 @@ import zlib
 from collections import deque
 from typing import Protocol
 
-from core.link import run_two_consoles_interleaved
+from core.link import run_two_consoles_interleaved, host_relay_forced
 
 # 2 : le message d'empreinte porte desormais l'horodatage et l'echo (mesure de
 # l'aller-retour). Sa taille change, donc un pair d'avant ne peut pas le lire -- et la
@@ -66,7 +66,7 @@ from core.link import run_two_consoles_interleaved
 # retard SUIT l'aller-retour. Meme taille de message -- mais un pair d'avant renvoie
 # l'echo brut, gonfle jusqu'a 1 s, et ferait grimper notre retard a son plafond. Mieux
 # vaut le refuser proprement que jouer avec 300 ms de lag sans savoir pourquoi.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # Wire: [type:1][frame:4 LE][payload]. Fixed headers, so a partial read never has to
 # be guessed at -- the reader keeps whatever it cannot complete yet.
@@ -102,6 +102,24 @@ _HDR = struct.Struct("<BI")
 # a ~50 ms round trip; the host puts its own choice in the handshake.
 DEFAULT_DELAY = 3
 CHECK_EVERY = 60            # frames between desync checksums (~1 s)
+
+
+def active_mirror_scheduler(link, first, second) -> str | None:
+    """Match core.link's complete dispatch; None is a run_frames-only test double.
+
+    Monitoring and the environment are NOT the only conditions. A machine without
+    serial_state() also uses the Python relay. FakeMachine lacks run() altogether,
+    and the upstream tests intentionally use that old compatibility branch.
+    """
+    if not hasattr(first, "run") or not hasattr(second, "run"):
+        return None
+    if (host_relay_forced()
+            or getattr(link, "monitor_a", None) is not None
+            or getattr(link, "monitor_b", None) is not None
+            or not hasattr(first, "serial_state")
+            or not hasattr(second, "serial_state")):
+        return "host"
+    return "native"
 
 # ⚡ THE DELAY FOLLOWS THE LINE, ON EACH SIDE, WHILE THE MATCH RUNS.
 #
@@ -308,7 +326,8 @@ class Handshake:
 
     def __init__(self, *, rom_hash: str, bios_hash: str, core_version: str,
                  delay: int = DEFAULT_DELAY, host: bool = False,
-                 console: dict | None = None, timing: str | None = None) -> None:
+                 console: dict | None = None, timing: str | None = None,
+                 scheduler: str | None = None) -> None:
         # Our own cartridge fingerprint: announced, never compared for equality. The
         # receiving side checks the image it was SENT against it, which catches a
         # truncated or corrupted transfer -- the failure that would otherwise show up
@@ -332,6 +351,11 @@ class Handshake:
             from core.native import active_timing_model
             timing = active_timing_model()
         self.timing = timing
+        if scheduler is None:
+            scheduler = "host" if host_relay_forced() else "native"
+        if scheduler not in ("host", "native"):
+            raise ValueError("unknown mirror scheduler")
+        self.scheduler = scheduler
         # ⚡ SETTINGS THAT SHAPE THE SENDER'S OWN CONSOLE -- announced, like the
         # cartridge, and for the same reason.
         #
@@ -356,7 +380,7 @@ class Handshake:
         return json.dumps({
             "v": PROTOCOL_VERSION, "rom": self.rom_hash, "bios": self.bios_hash,
             "core": self.core_version, "delay": self.delay, "cons": self.console,
-            "timing": self.timing,
+            "timing": self.timing, "scheduler": self.scheduler,
         }, sort_keys=True).encode("utf-8")
 
     def check(self, raw: bytes) -> str | None:
@@ -365,8 +389,12 @@ class Handshake:
             them = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return "unreadable_hello"
-        if int(them.get("v", -1)) != PROTOCOL_VERSION:
+        if not isinstance(them, dict):
+            return "unreadable_hello"
+        if type(them.get("v")) is not int or them["v"] != PROTOCOL_VERSION:
             return "protocol_version"
+        if them.get("scheduler") != self.scheduler:
+            return "scheduler_mismatch"
         self.peer_rom_hash = them.get("rom")     # what their image must hash to
         cons = them.get("cons")
         if isinstance(cons, dict):
@@ -397,8 +425,8 @@ class Handshake:
         # refusing is the version that cannot be subtly wrong. The session sends its
         # own hello with whatever it settled on, so a joiner that failed to adopt is
         # caught there, loudly, instead of drifting.
-        peer_delay = int(them.get("delay", -1))
-        if peer_delay < 0:
+        peer_delay = them.get("delay")
+        if type(peer_delay) is not int or peer_delay < 0:
             return "input_delay"
         if peer_delay != self.delay:
             if self.locked:
@@ -495,7 +523,9 @@ class CartExchange:
         # Retry whatever the transport still owes BEFORE cutting a new chunk: this is
         # the only thing that moves the tail once the last chunk has been queued.
         _flush(self.pipe)
-        if self._sent < len(self._out) and _pending(self.pipe) < self.IN_FLIGHT:
+        # Never transfer ROM blocks until the peer HELLO is verified.
+        if (self.greeted and self._sent < len(self._out)
+                and _pending(self.pipe) < self.IN_FLIGHT):
             piece = self._out[self._sent:self._sent + self._chunk]
             self.pipe.send(_HDR.pack(_T_CHUNK, len(piece)) + piece)
             self._sent += len(piece)
@@ -740,6 +770,15 @@ class MirrorSession:
         """
         self._drain()
         if self.rejected:
+            return "rejected"
+        # Delay=3 pre-seeds three inputs. Never simulate those frames before
+        # receiving the peer's session-level HELLO and validating its settings.
+        if not self.greeted:
+            return "waiting"
+        # No hardware scheduler invariant exists for run_frames-only test doubles.
+        active = active_mirror_scheduler(self.link, self.local, self.peer)
+        if active is not None and active != self.hs.scheduler:
+            self._reject("scheduler_changed_during_session")
             return "rejected"
         # Our own input is scheduled for a frame in the future, and played when that
         # frame comes round -- the SAME delay the peer's input gets, so both PCs

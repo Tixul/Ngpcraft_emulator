@@ -6738,7 +6738,11 @@ class Shell(QMainWindow):
             # BIOS file both fingerprint as "hle", and they are not the same console.
             console={"lang": int(cfg.cart_language(self._settings)),
                      "mono": bool(self.play._mono_console())},
-            host=host)
+            host=host,
+            # The debug monitor changes the pair's emulation scheduler. Announce
+            # this BEFORE cartridge exchange; both peers must run the same path.
+            scheduler=("host" if (page.link_monitor is not None
+                                  or core_link.host_relay_forced()) else "native"))
 
     def _begin_mirror(self, pipe, host: bool, delay: int | None = None) -> None:
         """Trade cartridges with the peer, then start the mirror session.
@@ -6870,7 +6874,10 @@ class Shell(QMainWindow):
         page._power_pressed = False
         page.watches.rearm()
         page.apply_debug()
-        link = InProcessLink(page.machine, peer.machine)
+        # A monitor already attached before the trade must reach the mirror
+        # link too. Otherwise the negotiated schedule and the actual one differ.
+        link = InProcessLink(page.machine, peer.machine,
+                             monitor_a=page.link_monitor)
         session = MirrorSession(page.machine, peer.machine, link, pipe, hs, prime)
         page.attach_mirror(session, peer)
         self._net_status = QTimer(self)

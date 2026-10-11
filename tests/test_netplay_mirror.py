@@ -339,6 +339,13 @@ def test_a_progress_bar_does_not_reach_100_percent_before_the_bytes_leave():
         SocketPipe(sock), image,
         Handshake(rom_hash=netplay._image_hash(image), bios_hash="B",
                   core_version="C", delay=3, host=True))
+    # Protocol v4 intentionally waits for a valid peer HELLO before sending ROM
+    # chunks. Complete that prerequisite, then test actual network backpressure.
+    peer_hello = Handshake(rom_hash="peer", bios_hash="B",
+                           core_version="C", delay=3, host=False).payload()
+    record = netplay._HDR.pack(netplay._T_HELLO, 0)
+    record += len(peer_hello).to_bytes(2, "little") + peer_hello
+    assert peer.send(record) == len(record)
     for _ in range(20):
         x.pump()
     assert x.pipe.pending > 0, "the double is not holding anything back"

@@ -26,6 +26,7 @@ from core.link_debug import deliver_injected
 FRAME_CONTROL = 1
 FRAME_RELAY = 2
 _HDR = 5
+MAX_RECEIVE_FRAME = 1 << 20
 
 
 class _Closed(Exception):
@@ -67,7 +68,10 @@ class LobbyClient(QObject):
         self._owed = 0
         self._owed_lock = threading.Lock()
         self._rx_serial: deque[int] = deque()      # received serial bytes
+        self._rx_serial_lock = threading.Lock()
         self._running = False
+        # A close during an in-progress connect must not be undone when it finishes.
+        self._closing = threading.Event()
         self._thread: threading.Thread | None = None
         # ⚡ THE WAKE-UP PIPE -- this is what keeps an online game at full speed.
         # The socket thread waits in select(); without a second thing to wait ON, a
@@ -87,10 +91,13 @@ class LobbyClient(QObject):
 
     # ---- lifecycle ---------------------------------------------------------
     def start(self) -> None:
+        if self._closing.is_set() or self._thread is not None:
+            return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def close(self) -> None:
+        self._closing.set()
         self._running = False
         self._wake()                       # so the thread leaves select() now
         try:
@@ -98,6 +105,13 @@ class LobbyClient(QObject):
                 self._sock.close()
         except OSError:
             pass
+        if self._thread is None:
+            # A user can dismiss the dialog without ever starting the worker.
+            for s in (self._wake_r, self._wake_w):
+                try:
+                    s.close()
+                except OSError:
+                    pass
 
     def _wake(self) -> None:
         """Nudge the socket thread out of select(). Called from the Qt thread."""
@@ -150,43 +164,48 @@ class LobbyClient(QObject):
             self._enqueue(_frame(FRAME_RELAY, data))
 
     def read_serial(self) -> bytes:
-        n = len(self._rx_serial)
-        if not n:
-            return b""
-        return bytes(self._rx_serial.popleft() for _ in range(n))
+        with self._rx_serial_lock:
+            if not self._rx_serial:
+                return b""
+            out = bytes(self._rx_serial)
+            self._rx_serial.clear()
+            return out
 
     # ---- socket thread -----------------------------------------------------
     def _run(self) -> None:
-        try:
-            self._sock = socket.create_connection((self._host, self._port), timeout=15)
-        except Exception as e:  # noqa: BLE001
-            self.disconnected.emit(str(e))
-            return
-        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._sock.setblocking(False)
-        self._running = True
-        self._send_control({"op": "hello", "pseudo": self._pseudo})
-        self.connected.emit()
-
-        buf = bytearray()
-        pending = bytearray()          # queued frames not yet accepted by the kernel
         reason = "closed"
-        # ⚡ THE TEARDOWN BELOW MUST RUN NO MATTER HOW THIS LOOP ENDS. It closes the
-        # wake socketpair and emits `disconnected`, and the UI is waiting for that
-        # signal -- a thread that dies on the way out leaks two descriptors and
-        # leaves the session looking alive forever.
         try:
-            self._pump(buf, pending)
+            if self._closing.is_set():
+                raise _Closed("closed")
+            self._sock = socket.create_connection((self._host, self._port), timeout=15)
+            if self._closing.is_set():
+                raise _Closed("closed")
+            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._sock.setblocking(False)
+            self._running = True
+            if self._closing.is_set():
+                raise _Closed("closed")
+            self._send_control({"op": "hello", "pseudo": self._pseudo})
+            self.connected.emit()
+            self._pump(bytearray(), bytearray())
         except _Closed as e:
             reason = str(e)
+        except Exception as e:
+            # Malformed payloads or unexpected callbacks must still notify Qt.
+            reason = f"client socket loop error: {type(e).__name__}: {e}"
         finally:
             self._running = False
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
             for s in (self._wake_r, self._wake_w):
                 try:
                     s.close()
                 except OSError:
                     pass
-        self.disconnected.emit(reason)
+            self.disconnected.emit(reason)
 
     def _pump(self, buf: bytearray, pending: bytearray) -> None:
         while self._running:
@@ -248,12 +267,15 @@ class LobbyClient(QObject):
         while len(buf) >= _HDR:
             ftype = buf[0]
             length = int.from_bytes(buf[1:5], "big")
+            if length > MAX_RECEIVE_FRAME:
+                raise _Closed("lobby frame too large")
             if len(buf) < _HDR + length:
                 return
             payload = bytes(buf[_HDR:_HDR + length])
             del buf[:_HDR + length]
             if ftype == FRAME_RELAY:
-                self._rx_serial.extend(payload)
+                with self._rx_serial_lock:
+                    self._rx_serial.extend(payload)
             elif ftype == FRAME_CONTROL:
                 self._dispatch(payload)
 
@@ -262,7 +284,12 @@ class LobbyClient(QObject):
             obj = json.loads(payload.decode("utf-8"))
         except Exception:
             return
+        if not isinstance(obj, dict):
+            return
         op = obj.get("op")
+        if op in ("joined", "peer_left"):
+            with self._rx_serial_lock:
+                self._rx_serial.clear()
         if op == "list":
             self.game_list.emit(obj.get("games", []))
         elif op == "created":
