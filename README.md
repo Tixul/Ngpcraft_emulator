@@ -143,8 +143,8 @@ Android sources are maintained separately; this repository contains its installa
   starve. The core counts them while the ROM runs — it does not halt, because neither
   halts a real console either — and the analysis names the code that did it. See [the
   hardware-safety contract](specs/HARDWARE_SAFETY.md).
-- **Translated interface** — English, French, Japanese (日本語) and Portuguese,
-  switchable live, no restart. One JSON file per language in [`lang/`](lang), so adding one
+- **Translated interface** — English, French, Japanese (日本語), Portuguese (Portugal),
+  Simplified Chinese (简体中文) and Traditional Chinese (繁體中文), switchable live, no restart. One JSON file per language in [`lang/`](lang), so adding one
   is adding a file and needs no code: see [TRANSLATING.md](TRANSLATING.md). Contributions
   welcome — including corrections to a language already there.
 
@@ -251,9 +251,9 @@ so games run, save and link out of the box.
 what the hardware runs, so anything a game does — including things no test of ours predicted
 — behaves as it does on the console. The clean-room image reproduces the documented
 *contract*, not SNK's internal state, and its coverage is measured rather than guaranteed:
-where a game pokes at BIOS internals instead of calling the API, it sees our layout. Two known
-consequences are in [Known issues](#known-issues) (*Metal Slug — 2nd Mission* refuses to fire
-or jump under the HLE image, and the mono NGP needs its own dump to boot as itself).
+where a game pokes at BIOS internals instead of calling the API, it sees our layout.
+For an authentic monochrome console boot, the mono NGP still needs its own BIOS dump;
+see [Known issues](#known-issues) for remaining limitations.
 
 So: **start with the HLE image**, and reach for a real dump when you want the boot animation,
 the console's own setup screens, or certainty on a game that misbehaves.
@@ -338,11 +338,11 @@ starts that over.
 > and a first boot re-ran the setup wizard for ever. Both are fixed: the BIOS page of the
 > coin cell is persisted as the BIOS left it.
 
-> **One commercial game we know of wants a real `bios.bin`.** *Metal Slug — 2nd Mission*
-> checks that the console really booted through its BIOS, and quietly disables **fire and
-> jump** when it decides it did not. With the real BIOS both start modes satisfy the check.
-> Under the HLE BIOS the game still runs and looks perfect; you simply can never shoot or
-> jump. This is the shape of what "certainty" buys you — one game, found by playing it.
+> **Metal Slug — 2nd Mission and the HLE BIOS.** The game checks for a fingerprint
+> of the retail BIOS's boot-time character RAM and previously disabled **fire and jump**
+> when it was missing. On a fresh hand-off start, the emulator now restores that fingerprint
+> from the player's own cartridge, without shipping SNK data. An old save state may still
+> restore the broken state — see [Known issues](#known-issues).
 
 ### Two ways to start a game
 
@@ -500,7 +500,7 @@ Takes effect the next time a game is started.
 > **What is *not* modelled.** This is a K2GE restricted to K1GE behaviour, not a separate
 > K1GE implementation: the console-type byte, the missing colour palette and the grey
 > resolution are modelled, but the machine still answers as a K2GE anywhere a game probes
-> the video chip itself, and the **NEG** (inverted display) bit is not applied on the mono
+> the video chip itself. The **NEG** (inverted display) bit is applied on the mono
 > path. Mono-console behaviour has been checked on a handful of games, not the whole corpus
 > — reports welcome.
 
