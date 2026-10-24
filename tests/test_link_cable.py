@@ -358,9 +358,35 @@ def test_sc0buf_reads_the_receive_buffer_not_the_byte_we_transmitted():
     assert m.read(0x50, 1)[0] == 0x00, (
         "the receive buffer holds its byte -- a second read must not hand back "
         "the byte we transmitted")
-    # CONTROL: the flag is still the 'new data' indicator, consumed exactly once.
-    assert m.serial_state().rx_pending == 0
-    assert m.serial_state().rx_read_count == 1
+    # A HOST read (this one) leaves the 'new data' flag to the game: only the CPU
+    # consumes it. See test_host_read_of_sc0buf_does_not_consume_the_received_byte.
+    assert m.serial_state().rx_pending == 1
+    assert m.serial_state().rx_read_count == 0
+
+
+def test_host_read_of_sc0buf_does_not_consume_the_received_byte():
+    """⛔ The debugger, the rewind history, run-ahead and libretro's serialize all read
+    memory from address 0, through SC0BUF. That read used to clear the "new data" flag
+    the GAME was about to read.
+
+    MEASURED 2026-10-24, mirror netplay: the rewind history captures only the local
+    console, so each PC ate received bytes on a different console -- Dynamite Slugger
+    and Neo Geo Cup '98 Plus desynced the moment their link started and never linked.
+    """
+    from core import native
+
+    m = native.NativeMachine(_bare_rom())
+    m.serial_set_enabled(True)
+    m.write(0x0000B2, bytes([0x00]))
+    m.serial_write_rx(bytes([0x5A]))
+    for _ in range(200):
+        m.run(64, record=False)
+        if m.serial_state().rx_pending:
+            break
+    assert m.serial_state().rx_pending == 1, "the core never presented the byte"
+    assert m.read(0, 0x100)[0x50] == 0x5A
+    assert m.serial_state().rx_pending == 1, "a host read took the byte from the game"
+    assert m.serial_state().rx_read_count == 0
 
 
 # ------------------------------------------------------------------------------

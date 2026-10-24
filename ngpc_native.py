@@ -27,6 +27,11 @@ from pathlib import Path
 
 from core import native, rom_loader
 
+# Same fallback as the shell (ngpc_shell._resolve_bios). With NO image the vector table
+# and the system-call table at 0xFFFE00 read 0: a homebrew's first BIOS call (cc900
+# templates call VECT_SYSFONTSET before anything else) jumps to address 0 two frames in.
+HLE_BIOS = Path(__file__).resolve().parent / "hle_bios" / "bios_hle.bin"
+
 # The player's save state (ngpc_shell.py, F2): magic, the CpuState struct, the
 # sound/timer block (v2+), the link-cable block (v3+), then the working image from
 # 0x0000. Same contract as core.savestate.load_shell_savestate.
@@ -195,7 +200,8 @@ def hygiene_report(machine: native.NativeMachine, *, armed: bool, rom: Path | No
 
 def cmd_run(args: argparse.Namespace) -> dict:
     rom = Path(args.rom)
-    bios = Path(args.bios).read_bytes() if args.bios else None
+    bios_path = Path(args.bios) if args.bios else (HLE_BIOS if HLE_BIOS.is_file() else None)
+    bios = bios_path.read_bytes() if bios_path else None
     # Through the archive loader, so a .zip/.7z works here exactly as it does in the
     # app -- including "Pack.zip/Game.ngc" to name one title inside a multi-game
     # archive. A bare .ngc falls straight through to a plain read.
@@ -232,7 +238,7 @@ def cmd_run(args: argparse.Namespace) -> dict:
     cpu = machine.cpu()
     out = {
         "rom": str(rom),
-        "bios": str(args.bios) if args.bios else None,
+        "bios": str(args.bios) if args.bios else ("hle" if bios_path else None),
         "state": str(args.state) if args.state else None,
         "held": args.hold or "",
         "frames": args.frames,
@@ -271,7 +277,8 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="run the native core and report what came out")
     run.add_argument("rom", help="path to a .ngc / .ngp, or an archive; "
                                  "'Pack.zip/Game.ngc' picks one title inside it")
-    run.add_argument("--bios", help="a real bios.bin; some games need it (see README)")
+    run.add_argument("--bios", help="a real bios.bin; some games need it (see README). "
+                                    "Without it the clean-room hle_bios/bios_hle.bin is used")
     run.add_argument("--state", help="a player save state (.s0) to start from")
     run.add_argument("--frames", type=int, default=1, help="frames to advance (default 1)")
     run.add_argument("--hold", help="buttons held for every frame, e.g. 'A' or 'LEFT+B'")

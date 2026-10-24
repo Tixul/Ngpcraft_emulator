@@ -2755,7 +2755,25 @@ NGPC_API int ngpc_set_link_state(ngpc_t* h, const ngpc_link_state_t* in) {
 NGPC_API int ngpc_read_mem(ngpc_t* h, uint32_t addr, uint8_t* out, uint32_t n) {
     if (!h || !out) return -1;
     Machine* m = reinterpret_cast<Machine*>(h);
+    /* ⛔ A HOST READ MUST NOT CONSUME THE BYTE THE CABLE JUST DELIVERED.
+     *
+     * read8 is the CPU's read, and the CPU reading SC0BUF (0x50) clears the "new
+     * data" flag -- that is the register's job. The host reading the same address
+     * (debugger view, rewind capture, run-ahead, libretro serialize: all of them read
+     * from 0) is not the game, and used to take that flag away from it.
+     *
+     * MEASURED 2026-10-24, mirror netplay, Dynamite Slugger "Man against Man": the
+     * rewind history captures OUR console every frame and never the mirror copy, so
+     * each PC ate received bytes on a different console. RX ring 0x6CC0 parted at
+     * frame 1076, checksum desync at 1080 on both PCs; the match never linked. Same
+     * on Neo Geo Cup '98 Plus (frame 2940). Read from 0x100 instead: no divergence.
+     * (Pocket Tennis did not diverge in the same test -- whether a byte is pending
+     * at the frame boundary depends on the game's protocol.) */
+    const bool rx_pending = m->serial_rx_pending;
+    const uint32_t rx_reads = m->serial_rx_read_count;
     for (uint32_t i = 0; i < n; ++i) out[i] = m->read8(addr + i);
+    m->serial_rx_pending = rx_pending;
+    m->serial_rx_read_count = rx_reads;
     return 0;
 }
 
