@@ -975,11 +975,8 @@ def _decode_reg_indirect_load(data: bytes) -> _DecodedInstruction | None:
         # Standard SNK cart startup runs `83 11` = ldir (byte ROM->RAM copy) --
         # the entry frontier of Shougi / Match-of-the-Millennium / Sonic /
         # Super Real Mahjong.
-        block_mnemonic = {
-            0x10: "ldi", 0x11: "ldir", 0x12: "ldd", 0x13: "lddr",
-            0x14: "cpi", 0x15: "cpir", 0x16: "cpd", 0x17: "cpdr",
-        }[op]
-        return _DecodedInstruction(length=2, mnemonic=block_mnemonic, operands=r32_name)
+        mnemonic, operands = _block_op_display(op, data[0] & 0x07, "byte")
+        return _DecodedInstruction(length=2, mnemonic=mnemonic, operands=operands)
 
     if op == 0x3F and len(data) == 3:
         return _DecodedInstruction(length=3, mnemonic="cp", operands=f"{r32_name}, 0x{data[2]:02X}")
@@ -1504,6 +1501,25 @@ def _decode_reg_indirect(data: bytes) -> _DecodedInstruction | None:
     return None
 
 
+def _block_op_display(op: int, reg: int, size_kind: str) -> tuple[str, str]:
+    """Mnemonic and operands of a block op `80+r / 90+r` + `10..17`.
+
+    The register selects the pointer PAIR for LDx (3 = (XDE+),(XHL+),
+    5 = (XIX+),(XIY+)) and the scanned pointer for CPx. asl / asm900:
+    `83 10` = ldi, `93 10` = ldiw, `85 10` = ldi (XIX+),(XIY+),
+    `83 15` = cpir A,(XHL+), `81 16` = cpd A,(XBC-).
+    """
+    suffix = "w" if size_kind == "word" else ""
+    mnemonic = _SRC_BLOCK[op] + suffix
+    step = "+" if op in (0x10, 0x11, 0x14, 0x15) else "-"
+    if op <= 0x13:
+        pair = {3: ("XDE", "XHL"), 5: ("XIX", "XIY")}.get(reg)
+        if pair is None:
+            return mnemonic, f"({R32[reg]})"
+        return mnemonic, f"({pair[0]}{step}),({pair[1]}{step})"
+    return mnemonic, f"{'WA' if suffix else 'A'}, ({R32[reg]}{step})"
+
+
 def _decode_reg_indirect_word(data: bytes) -> _DecodedInstruction | None:
     """Decode word `(r32)` instructions: [0x90+r] [op] [optional imm16]."""
     first = data[0]
@@ -1521,17 +1537,8 @@ def _decode_reg_indirect_word(data: bytes) -> _DecodedInstruction | None:
         return _DecodedInstruction(length=2, mnemonic="ldirw", operands="(XIX+),(XIY+)")
 
     if 0x10 <= op <= 0x17:
-        block_mnemonic = {
-            0x10: "ldi",
-            0x11: "ldir",
-            0x12: "ldd",
-            0x13: "lddr",
-            0x14: "cpi",
-            0x15: "cpir",
-            0x16: "cpd",
-            0x17: "cpdr",
-        }[op]
-        return _DecodedInstruction(length=2, mnemonic=block_mnemonic, operands=r32_name)
+        mnemonic, operands = _block_op_display(op, first & 0x07, "word")
+        return _DecodedInstruction(length=2, mnemonic=mnemonic, operands=operands)
 
     if 0x20 <= op <= 0x27:
         return _DecodedInstruction(length=2, mnemonic="ld", operands=f"{R16[op & 0x07]}, {r32_name}")
@@ -2833,12 +2840,7 @@ def _decode_b0_mem(data: bytes) -> _DecodedInstruction | None:
                     operands=f"{op & 0x07}, {mem}",
                 )
         if mode == 0x03:
-            r32_base = R32[(data[2] >> 2) & 0x07]
-            is_r16 = bool(secondary & 0x04)
-            if is_r16:
-                r_index = R16[(data[3] >> 2) & 0x07]
-            else:
-                r_index = R8[(data[3] >> 2) & 0x07]
+            r32_base, r_index = _indexed_operand_names(secondary, data[2], data[3])
             op = data[4]
             if 0x30 <= op <= 0x37 and len(data) == 5:
                 dest_r32 = R32[op & 0x07]
@@ -2945,7 +2947,7 @@ def _decode_secondary_indexed_load(data: bytes) -> _DecodedInstruction | None:
 
     if mode == 0x01:
         # (r32+d16): base from the secondary byte, signed 16-bit displacement.
-        r32_base = R32[(secondary >> 2) & 0x07]
+        r32_base = _rcode_r32_display(secondary)
         d16 = _s16(data, 2)
         disp_str = f"+{d16}" if d16 >= 0 else str(d16)
         mem = f"({r32_base}{disp_str})"
@@ -2997,11 +2999,7 @@ def _decode_secondary_indexed_load(data: bytes) -> _DecodedInstruction | None:
     if mode != 0x03:
         return None
 
-    r32_base = R32[(data[2] >> 2) & 0x07]
-    if secondary & 0x04:
-        r_index = R16[(data[3] >> 2) & 0x07]
-    else:
-        r_index = R8[(data[3] >> 2) & 0x07]
+    r32_base, r_index = _indexed_operand_names(secondary, data[2], data[3])
 
     if 0x20 <= op <= 0x27:
         return _DecodedInstruction(
@@ -4192,6 +4190,19 @@ def _rcode_r16_display(code: int) -> str:
         name = R16[(code >> 2) & 0x07]
         return name if (code & 0x03) == 0 else "Q" + name
     return f"r16?0x{code:02X}"
+
+
+def _indexed_operand_names(secondary: int, base_code: int, index_code: int) -> tuple[str, str]:
+    """(base, index) display names of `(r32+r8)` (secondary 0x03) / `(r32+r16)` (0x07).
+
+    Both are EXTENDED register codes, not 3-bit indexes: asm900/asl encode
+    `(XHL+A)` as `03 EC E0` and `(XIY+B)` as `03 F4 E5`. Reading the index as
+    `(code >> 2) & 7` named E0 `W` and E4 `A` -- display only, execution resolves
+    the index through `_resolve_index_displacement`.
+    """
+    index = (_rcode_r16_display(index_code) if secondary & 0x04
+             else C7_REGISTER_NAMES[index_code])
+    return _rcode_r32_display(base_code), index
 
 
 def source_memory_mode(data: bytes) -> tuple[int, str] | None:

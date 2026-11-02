@@ -452,7 +452,7 @@ class ExecuteNextTests(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "executed")
-            self.assertEqual(result.decode.assembly, "ldir (XHL)")
+            self.assertEqual(result.decode.assembly, "ldirw (XDE+),(XHL+)")
             # Toshiba list (3): the REPEATING block forms cost `7n + 1` (LDIR/LDDR)
             # and `6n + 1` (CPIR/CPDR) -- not a flat multiple of the single-step
             # form. These assertions used to freeze the flat `8n` / `6n`.
@@ -504,7 +504,7 @@ class ExecuteNextTests(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "executed")
-            self.assertEqual(result.decode.assembly, "lddr (XHL)")
+            self.assertEqual(result.decode.assembly, "lddrw (XDE-),(XHL-)")
             self.assertEqual(result.cycles_consumed, 15)
             assert result.after_cpu is not None
             assert result.after_memory is not None
@@ -606,7 +606,7 @@ class ExecuteNextTests(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "executed")
-            self.assertEqual(result.decode.assembly, "cpir (XIY)")
+            self.assertEqual(result.decode.assembly, "cpirw WA, (XIY+)")
             # Toshiba list (3): the REPEATING block forms cost `7n + 1` (LDIR/LDDR)
             # and `6n + 1` (CPIR/CPDR) -- not a flat multiple of the single-step
             # form. These assertions used to freeze the flat `8n` / `6n`.
@@ -647,7 +647,7 @@ class ExecuteNextTests(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "executed")
-            self.assertEqual(result.decode.assembly, "cpdr (XIY)")
+            self.assertEqual(result.decode.assembly, "cpdrw WA, (XIY-)")
             self.assertEqual(result.cycles_consumed, 13)
             assert result.after_cpu is not None
             # No match: full two-iteration pass, pointer retreats by 4.
@@ -3986,7 +3986,7 @@ class ExecuteNextTests(unittest.TestCase):
             )
             result = build_execute_next(base_view, cpu_state=seeded_cpu, memory_bytes={0x6000: 0xAA, 0x6001: 0xBB})
             self.assertEqual(result.status, "executed")
-            self.assertEqual(result.decode.assembly, "ldir (XHL)")
+            self.assertEqual(result.decode.assembly, "ldir (XDE+),(XHL+)")
             assert result.after_memory is not None
             self.assertEqual(result.after_memory[0x6100], 0xAA)
             self.assertEqual(result.after_memory[0x6101], 0xBB)
