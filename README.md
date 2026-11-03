@@ -194,6 +194,21 @@ PyInstaller applies **ad-hoc signing**, but Developer ID signing and notarizatio
 not configured. Initial signature validation does not establish that these remaining
 installation and persistence issues are solved.
 
+### Opening ROMs on macOS
+
+NgpCraft registers `.ngp` and `.ngc` as **Alternate** document viewers. Choose the
+app with Finder's **Open With**, double-click a ROM when NgpCraft is your chosen
+default, or drop a ROM on the app's Dock icon. Requests received during startup are
+queued until the window is ready; later requests use the existing window and ask
+before interrupting a link session. Registration does not explicitly change your
+default emulator. macOS supplies the folded-page NGP/NGC icons using the bundle's
+application artwork; correcting the upstream bundle artwork is separate work
+tracked in [PR #32](https://github.com/Tixul/Ngpcraft_emulator/pull/32).
+
+This integration does not implement safe data migration. Legacy data may be inside
+the `.app`, and the default save mode may write into ROM files. Preserve the old
+application and related data before replacing an existing installation.
+
 ### Staying up to date
 
 No need to come back to the Releases page: **Settings ▸ General ▸ Check for updates**
