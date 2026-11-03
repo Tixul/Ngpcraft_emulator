@@ -437,3 +437,36 @@ def test_import_request_is_not_forwarded_to_a_running_game(tmp_path, monkeypatch
     monkeypatch.setattr(shell, 'Shell', forbidden)
     assert shell.main() == 0
     assert calls == [{'force_import': True}]
+
+
+def test_profile_switch_during_startup_is_checked_under_writer_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    import sys
+    import ngpc_shell as shell
+    import ngpc_storage_ui as ui
+    import ngpc_single_instance as single
+    previous, next_profile = tmp_path / 'previous', tmp_path / 'next'
+    selected = [previous]
+    errors = []
+    @contextmanager
+    def lock(_):
+        selected[0] = next_profile  # Another importer committed just before lock acquisition.
+        yield
+    monkeypatch.setattr(shell, 'QApplication', lambda _: object())
+    monkeypatch.setattr(shell, 'APP_ICON', tmp_path / 'no-icon')
+    monkeypatch.setattr(shell, '_claim_windows_taskbar_identity', lambda: None)
+    monkeypatch.setattr(shell, 'REPO', previous)
+    monkeypatch.setattr(paths, 'managed', lambda: True)
+    monkeypatch.setattr(paths, 'data_root', lambda: selected[0])
+    monkeypatch.setattr(paths, 'base_root', lambda: tmp_path / 'data')
+    monkeypatch.setattr(paths, 'data_lock', lock)
+    monkeypatch.setattr(sys, 'argv', ['ngpc_shell.py'])
+    monkeypatch.setattr(ui, 'prepare', lambda: True)
+    monkeypatch.setattr(ui, 'show_error', lambda error: errors.append(str(error)))
+    monkeypatch.setattr(single, 'forward', lambda *args: False)
+    def forbidden(*args):
+        raise AssertionError('Do not write or play with inconsistent selected roots')
+    monkeypatch.setattr(paths, 'probe_writable', forbidden)
+    monkeypatch.setattr(shell, 'Shell', forbidden)
+    assert shell.main() == 1
+    assert len(errors) == 1 and 'profile changed' in errors[0]

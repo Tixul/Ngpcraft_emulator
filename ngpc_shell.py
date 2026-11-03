@@ -7993,9 +7993,11 @@ def main() -> int:
         try:
             if not prepare():
                 return 0
+            storage.enter_context(ngpc_paths.data_lock(ngpc_paths.base_root()))
+            # Recheck under the writer lock: an import may have activated another
+            # profile between module import/prepare and acquiring this lock.
             if ngpc_paths.data_root() != REPO:
                 raise ngpc_paths.DataPathError("The selected profile changed. Restart NgpCraft.")
-            storage.enter_context(ngpc_paths.data_lock(ngpc_paths.base_root()))
             ngpc_paths.probe_writable(REPO)
         except (OSError, ValueError, RuntimeError) as exc:
             storage.close()
