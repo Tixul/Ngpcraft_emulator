@@ -2817,6 +2817,7 @@ class PlayPage(QWidget):
     link_requested = pyqtSignal()         # 🔗 : two players on this PC (2nd window)
     net_host_requested = pyqtSignal()     # 🔗 : host a direct network game
     net_join_requested = pyqtSignal()     # 🔗 : join a direct network game
+    net_dreamcast_requested = pyqtSignal()  # 🔗 : cable to a Dreamcast in Flycast
     net_lobby_requested = pyqtSignal()    # 🔗 : open the online lobby (server)
     net_link_lost = pyqtSignal(str)       # the online peer went away, with the reason
     mirror_ended = pyqtSignal(str)        # a mirror session refused or desynced
@@ -4790,6 +4791,8 @@ class PlayPage(QWidget):
         m.addSeparator()
         m.addAction(t("link_host_direct"), self.net_host_requested.emit)
         m.addAction(t("link_join_direct"), self.net_join_requested.emit)
+        # NGPC <-> Dreamcast cable, through Flycast's BattleCable null modem (core.link.FlycastLink).
+        m.addAction(t("link_dreamcast"), self.net_dreamcast_requested.emit)
         m.addSeparator()
         # The second online mode, kept ALONGSIDE the cable one rather than replacing
         # it: mirror play is far faster on a slow link but demands the same cartridge,
@@ -6114,6 +6117,7 @@ class Shell(QMainWindow):
         self.play.link_frame_requested.connect(self._launch_link_2p_framed)
         self.play.net_host_requested.connect(self._host_online)
         self.play.net_join_requested.connect(self._join_online)
+        self.play.net_dreamcast_requested.connect(self._link_dreamcast)
         self.play.net_lobby_requested.connect(self._open_lobby)
         self.play.net_cancel_requested.connect(self._cancel_net_attempt)
         self.play.net_link_lost.connect(self._on_net_link_lost)
@@ -6790,6 +6794,38 @@ class Shell(QMainWindow):
         self._start_net("join", host.strip(), port,
                         cfg.tr(cfg.language(self._settings), "link_connecting")
                         .format(addr=f"{host}:{port}"))
+
+    def _link_dreamcast(self) -> None:
+        """🔗 → Dreamcast: the NGPC <-> Dreamcast cable, with the Dreamcast in Flycast.
+
+        No connection phase: Flycast's BattleCable is plain UDP with no handshake, so the
+        link is attached at once and the bytes flow as soon as both games talk (validated
+        2026-11-03: Match of the Millennium sent its VERSUS points to Capcom vs. SNK)."""
+        if self.play.machine is None or self._one_link_at_a_time(False):
+            return
+        from core.link import FLYCAST_DEFAULT_PORT, FlycastLink
+        lang = cfg.language(self._settings)
+        text, ok = QInputDialog.getText(
+            self, cfg.tr(lang, "link_dreamcast").rstrip("…"), cfg.tr(lang, "link_dreamcast_prompt"),
+            text=f"127.0.0.1:{FLYCAST_DEFAULT_PORT}")
+        if not ok or not text.strip():
+            return
+        host, _, p = text.strip().partition(":")
+        port = int(p) if p.strip().isdigit() else FLYCAST_DEFAULT_PORT
+        try:
+            net = FlycastLink(self.play.machine, peer=(host.strip() or "127.0.0.1", port))
+        except OSError as e:             # our UDP port is taken (another instance?)
+            self.play._flash(cfg.tr(lang, "link_failed").format(why=str(e)))
+            return
+        from core import netlog
+        netlog.log("connected", mode="dreamcast", peer=f"{host}:{port}")
+        self.play.attach_net_link(net)
+        self.play.overlay.setText(cfg.tr(lang, "link_dreamcast_ready"))
+        self._net_status = QTimer(self)
+        self._net_status.timeout.connect(
+            lambda: self.setWindowTitle(
+                f"NgpCraft — Dreamcast ⇄  out {net.bytes_out} B   in {net.bytes_in} B"))
+        self._net_status.start(500)
 
     def _start_net(self, mode: str, host: str, port: int, waiting: str) -> bool:
         """True when the attempt actually started.

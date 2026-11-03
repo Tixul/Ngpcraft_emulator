@@ -14,6 +14,8 @@ This module provides that relay in two shapes behind one tiny interface:
 * :class:`TcpLink`       -- one local machine + a TCP socket to a remote peer
                             (LAN / online). TCP because the cable never drops or
                             reorders bytes, which is exactly TCP's guarantee.
+* :class:`FlycastLink`   -- one local machine + a DREAMCAST in the Flycast emulator,
+                            through Flycast's "BattleCable" null-modem (UDP).
 
 Both are pumped once per emulated frame, AFTER stepping the machine(s):
 
@@ -463,6 +465,124 @@ class TcpLink:
 
         # 4) anything the debugger typed in by hand, as if the peer had sent it.
         deliver_injected(self.machine, self.monitor)
+
+    def disconnect(self) -> None:
+        self.machine.serial_set_enabled(False)
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# NGPC <-> DREAMCAST: the Flycast "BattleCable" null modem
+# ---------------------------------------------------------------------------
+# The NGPC <-> Dreamcast cable plugs the console's serial channel 0 into the
+# Dreamcast's SCIF port. Flycast emulates that port and carries it over UDP
+# (core/network/null_modem.h, Flycast 2.x), with the most trivial framing there is:
+#
+#     b"D" + <byte>     one data byte          (2-byte datagram)
+#     b"B"              a break condition      (1-byte datagram)
+#
+# no handshake, no sequence number, no checksum. Flycast binds `[network] LocalPort`
+# (default 37391) and sends to `[network] server = host:port`; with `server` empty it
+# BROADCASTS to port 37391 and adopts whoever answers first. Its SCIF reports CTS
+# always active, so no flow-control line travels either way -- which is why the
+# detect line is asserted here as soon as the link exists (see `declare_peer`).
+#
+# Launch Flycast with, for instance:
+#     flycast.exe -config "network:BattleCable=yes,network:server=127.0.0.1:42500" game.chd
+# and attach a FlycastLink bound on 42500, sending to 127.0.0.1:37391.
+#
+# UDP on localhost does not lose or reorder datagrams in practice; across a real
+# network it can, and Flycast's own NGPC-less use (two Dreamcasts) has the same
+# exposure -- this transport adds nothing to it and hides nothing from it.
+
+FLYCAST_DEFAULT_PORT = 37391        # Flycast's [network] LocalPort default
+FLYCAST_NGPC_PORT = 42500           # where this side listens (Flycast's `server`)
+
+
+class FlycastLink:
+    """Cable between one local machine and a Dreamcast running in Flycast.
+
+    Same interface as :class:`TcpLink` (``pump()`` / ``disconnect()`` /
+    ``bytes_out`` / ``bytes_in`` / ``lost`` / ``monitor``), so the shell attaches
+    it with ``attach_net_link`` like any online cable.
+    """
+
+    def __init__(self, machine: _SerialMachine, *, peer: tuple[str, int] = ("127.0.0.1", FLYCAST_DEFAULT_PORT),
+                 local_port: int = FLYCAST_NGPC_PORT, bind_host: str = "0.0.0.0", monitor=None):
+        self.machine = machine
+        self.peer = peer
+        self.monitor = monitor
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((bind_host, local_port))
+        self.sock.setblocking(False)
+        self.machine.serial_set_enabled(True)
+        declare_peer(self.machine, True)
+        self.bytes_out = 0
+        self.bytes_in = 0
+        self.breaks_in = 0          # the NGPC has no break line: counted, then dropped
+        self.lost: str | None = None
+        self.heard_from: tuple[str, int] | None = None
+
+    def pump(self) -> None:
+        if self.lost is not None:
+            return
+        # 1) local TX -> one datagram per byte, exactly what Flycast's NullModemPipe reads.
+        buf = bytearray()
+        while True:
+            data = self.machine.serial_read_tx(_DRAIN_CHUNK)
+            if not data:
+                break
+            buf += data
+        outgoing = self.monitor.on_tx(bytes(buf)) if self.monitor is not None else bytes(buf)
+        try:
+            for b in outgoing:
+                self.sock.sendto(bytes((0x44, b)), self.peer)       # b"D" + byte
+                self.bytes_out += 1
+        except (BlockingIOError, InterruptedError):
+            pass        # localhost UDP buffer full: practically never; the byte is lost
+        except ConnectionResetError:
+            pass        # Windows: ICMP "port unreachable" from a Flycast not started yet
+        except OSError as e:
+            self._lose(str(e))
+            return
+        # 2) datagrams -> RX bytes
+        rx = bytearray()
+        while True:
+            try:
+                pkt, addr = self.sock.recvfrom(64)
+            except (BlockingIOError, InterruptedError):
+                break
+            except ConnectionResetError:
+                continue    # same ICMP echo of an earlier send; the socket is fine
+            except OSError as e:
+                self._lose(str(e))
+                return
+            if self.heard_from is None:
+                self.heard_from = addr
+            if len(pkt) == 2 and pkt[0] == 0x44:
+                rx.append(pkt[1])
+            elif pkt == b"B":
+                self.breaks_in += 1
+        # 3) RX -> the console's receive FIFO, unconditionally (serial_tick is the gate).
+        if rx:
+            self.machine.serial_write_rx(bytes(rx))
+            self.bytes_in += len(rx)
+            if self.monitor is not None:
+                self.monitor.on_rx(bytes(rx))
+        deliver_injected(self.machine, self.monitor)
+
+    def _lose(self, why: str) -> None:
+        if self.lost is None:
+            self.lost = why or "flycast link closed"
+        declare_peer(self.machine, False)
+        try:
+            self.sock.close()
+        except OSError:
+            pass
 
     def disconnect(self) -> None:
         self.machine.serial_set_enabled(False)

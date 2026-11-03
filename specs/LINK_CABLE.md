@@ -118,6 +118,7 @@ All three present the same interface (`pump()` / `disconnect()` /
 | `core.link.InProcessLink` | two machines in one process | two players on one PC |
 | `core.link.TcpLink` | one machine + a socket | LAN / direct host-join |
 | `core.lobby.LobbyLink` | one machine + the relay server | online lobby |
+| `core.link.FlycastLink` | one machine + a Dreamcast in Flycast (UDP) | NGPC ↔ Dreamcast cable |
 | `core.link_debug.LoopbackLink` | one machine, no peer | **debug only** |
 
 The shell's local 2-player relay is inline in `PlayPage._pump_link` rather than
@@ -184,6 +185,29 @@ through `close_menu` — it stays paused on purpose and returns via `resume_play
 one shared input stream, and `MirrorSession.step()` returns `"waiting"` until the peer's
 input for THIS frame has arrived — so neither PC can run ahead whatever its speed dial
 says. Already self-limiting: nothing to propagate, nothing to refuse.
+
+### NGPC ↔ Dreamcast — `FlycastLink` (2026-11-03)
+
+The NGPC ↔ Dreamcast cable plugs serial channel 0 into the Dreamcast's SCIF. Flycast
+(2.x) carries that port over UDP with no handshake at all (`core/network/null_modem.h`):
+`b"D" + byte` per data byte, `b"B"` for a break. Flycast binds `[network] LocalPort`
+(37391) and sends to `[network] server`. Launch it with
+`-config "network:BattleCable=yes,network:server=127.0.0.1:42500"`; `FlycastLink`
+listens on 42500 and sends to 37391. Shell: 🔗 → *Dreamcast (Flycast)…*.
+
+Flycast's SCIF reports CTS always active, so no flow-control line crosses: the detect
+line is asserted when the link is attached, like the online TCP cable. Breaks are
+counted (`breaks_in`) and dropped — the NGPC has no break line.
+
+**Validated on 2026-11-03**: SNK vs. Capcom: Match of the Millennium (this core, real
+BIOS) sent its Olympic VERSUS points to *Capcom vs. SNK Millennium Fight 2000* (Japan,
+NOT the Pro edition) in Flycast 2.7 — the Dreamcast showed 「データの受信を完了しました」.
+Path: NGPC つうしん → DCつうしん, Dreamcast SECRET MODE → NEOGEO POCKET. The NGPC's
+VS menu sends `0x92` probes on its own; the transfer is three FF-delimited frames each
+way (NGPC `FF 00 31 31 00 … FF` opens, the Dreamcast echoes each data frame back).
+⚠️ Karin refuses without Olympic points (libretro cheat `1045:FF` = 0x5045), and A must
+be pressed only once the Dreamcast shows its download stand-by, or the game reports a
+cut cable — that is the game's protocol, as on hardware. Tests: `tests/test_link_flycast.py`.
 
 ### Finding the peer — the session above the transport
 
