@@ -41,6 +41,16 @@ class NgpCraftApplication(QApplication):
         if self._open_handler is not None:
             QTimer.singleShot(0, self._dispatch_open_requests)
 
+    def take_startup_requests(self) -> list[str]:
+        """Detach requests only when confirmed migration requires process exit."""
+        requests = list(self._open_requests)
+        self._open_requests.clear()
+        return requests
+
+    def prepend_startup_requests(self, requests: list[str]) -> None:
+        """A previous launch's requests precede this launch's native events."""
+        self._open_requests.extendleft(reversed(requests))
+
     def forward_startup_events(self, handler: Callable[[str], None],
                                timeout_ms: int = 1500) -> None:
         """A short-lived secondary macOS launch still has to receive Apple Events.

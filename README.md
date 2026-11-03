@@ -272,6 +272,14 @@ later. An import previews the file list and destination, requires confirmation,
 creates a hash-verified backup, then copies into a separate profile. Only after
 verification is the active selection changed atomically; restart is required.
 Nothing is merged, deleted or overwritten in the old application or another profile.
+If Finder opened a ROM during a successful import, its request is retained for the
+next launch and internal ROM paths are mapped to the verified copied files. The
+handoff is tied to the selected profile and ROM hashes; a missing/changed file or
+changed selection stops automatic opening with a visible error. The metadata at
+`pending-open.json` is retained for review (preserve/move that file aside to cancel
+the handoff). Requests are acknowledged after the normal GUI open handler returns;
+an interrupted delivery can be retried on restart. Cancelling an import does not
+create a handoff or a fresh profile.
 Close **all** emulator instances before importing. Sources changing during the copy,
 symlinks and ambiguous save bindings stop the import. References to internal files
 outside the inventory also block activation instead of silently omitting them. Unknown/unlisted files in the

@@ -7995,19 +7995,26 @@ def main() -> int:
     # migration and every managed app instance prevents competing writers.
     from contextlib import ExitStack
     storage = ExitStack()
+    deferred_open = None
     if ngpc_paths.managed():
         from ngpc_storage_ui import prepare
+        import ngpc_startup
         try:
+            previous_selection = ngpc_paths.active_bytes(ngpc_paths.base_root())
             if not prepare():
+                app.processEvents()
+                ngpc_startup.retain_after_import(
+                    previous_selection, ([rom] if rom else []) + app.take_startup_requests())
                 return 0
             storage.enter_context(ngpc_paths.runtime_writer(REPO))
+            deferred_open = ngpc_startup.resume(ngpc_paths.base_root())
         except (OSError, ValueError, RuntimeError) as exc:
             storage.close()
             from ngpc_storage_ui import show_error
             show_error(exc)
             return 1
     try:
-        shell = Shell(rom)
+        shell = Shell(None if deferred_open else rom)
     except BaseException:
         storage.close()
         raise
@@ -8016,7 +8023,24 @@ def main() -> int:
         shell._instance_server = single.InstanceServer(name, shell)
         shell._instance_server.requested.connect(app.queue_open)
     shell.show()
-    app.set_open_handler(shell.open_from_another_launch)
+    if deferred_open:
+        requests = [entry['path'] for entry in deferred_open['requests']]
+        app.prepend_startup_requests(requests + ([rom] if rom else []))
+
+        def open_and_acknowledge(path):
+            shell.open_from_another_launch(path)
+            if deferred_open['requests'] and path == deferred_open['requests'][0]['path']:
+                try:
+                    ngpc_startup.acknowledge(ngpc_paths.base_root(), deferred_open)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    # Keep the on-disk request for review/retry. Do not turn a
+                    # metadata-write error into an unhandled Qt callback failure.
+                    deferred_open['requests'] = []
+                    from ngpc_storage_ui import show_error
+                    show_error(exc)
+        app.set_open_handler(open_and_acknowledge)
+    else:
+        app.set_open_handler(shell.open_from_another_launch)
     # AFTER show(): the property store needs a real HWND, which winId only has once the
     # window exists. This is what puts our picture on the taskbar button (see above).
     stamp_taskbar_icon(shell)

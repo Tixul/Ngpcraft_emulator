@@ -48,6 +48,14 @@ send(first + '.missing.ngc')
 send(__file__ if '__file__' in globals() else '/etc/hosts')
 app.processEvents()
 assert got == [first, second, '', first], got
+app.queue_open(second)
+app.queue_open(first)
+assert app.take_startup_requests() == [second, first]
+assert app.take_startup_requests() == []
+app.queue_open(second)  # A newer launch's event waits behind the import handoff.
+app.prepend_startup_requests([first])
+app.processEvents()
+assert got[-2:] == [first, second], got
 '''
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     result = subprocess.run([sys.executable, "-c", code, str(rom), str(other)],
