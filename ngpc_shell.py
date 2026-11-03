@@ -7876,7 +7876,8 @@ def main() -> int:
     if robot:
         import ngpc_robot
         ngpc_robot.prepare(sys.argv[1:])
-    app = QApplication(sys.argv[:1])
+    from ngpc_application import NgpCraftApplication
+    app = NgpCraftApplication(sys.argv[:1])
     if APP_ICON.is_file():
         app.setWindowIcon(QIcon(str(APP_ICON)))
     _claim_windows_taskbar_identity()
@@ -7923,13 +7924,23 @@ def main() -> int:
         args.remove(single.FLAG)
     rom = args[0] if args else None
     name = single.server_name(REPO)
+    # Finder normally sends Apple Events directly to the existing macOS
+    # process. For a separately launched process, drain already queued events
+    # before handing its explicit command-line request to the socket server.
+    app.processEvents()
     if not new_instance and single.forward(name, rom):
+        if sys.platform == "darwin" and rom is None:
+            app.forward_startup_events(lambda path: single.forward(name, path))
+        else:
+            app.set_open_handler(lambda path: single.forward(name, path))
+            app.processEvents()
         return 0
     shell = Shell(rom)
     if not new_instance:
         shell._instance_server = single.InstanceServer(name, shell)
-        shell._instance_server.requested.connect(shell.open_from_another_launch)
+        shell._instance_server.requested.connect(app.queue_open)
     shell.show()
+    app.set_open_handler(shell.open_from_another_launch)
     # AFTER show(): the property store needs a real HWND, which winId only has once the
     # window exists. This is what puts our picture on the taskbar button (see above).
     stamp_taskbar_icon(shell)

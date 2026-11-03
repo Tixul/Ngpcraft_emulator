@@ -86,4 +86,18 @@ if sys.platform == "darwin":
         name='NgpCraftEmulator.app',
         icon=_ICON,
         bundle_identifier='com.ngpcraft.emulator',
+        info_plist={
+            'LSApplicationCategoryType': 'public.app-category.games',
+            'CFBundleDocumentTypes': [{
+                'CFBundleTypeName': description,
+                'CFBundleTypeExtensions': [ext],
+                'CFBundleTypeRole': 'Viewer',
+                'LSHandlerRank': 'Alternate',
+                # Like melonDS, leave document artwork to macOS: it composes
+                # the native folded page, app badge, and NGP/NGC extension.
+            } for ext, description in [
+                ('ngp', 'Neo Geo Pocket ROM'),
+                ('ngc', 'Neo Geo Pocket Color ROM'),
+            ]],
+        },
     )
