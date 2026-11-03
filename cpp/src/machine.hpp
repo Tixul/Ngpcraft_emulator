@@ -1886,6 +1886,9 @@ struct Machine {
 
     inline uint8_t read8(uint32_t a) const {
         a &= kAddrMask;
+        // RAS.H: upper eight bits of the 515-clock subtraction counter
+        // (K2GE Technical Reference, section 4-8). Reuse the live line phase.
+        if (a == 0x008008) return uint8_t((kCyclesPerScanline - cycle_residue) >> 2);
         /* A flash chip in autoselect mode stops being memory: it answers its ID.
          * The check is two comparisons on the hot path and is worth it -- without
          * it the BIOS cannot identify the cartridge and refuses to boot it. */
