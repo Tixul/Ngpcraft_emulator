@@ -218,8 +218,9 @@ asks GitHub for the latest release and tells you whether there is a newer one.
 - **Windows and Linux**: *Install and restart* downloads that release's archive, replaces
   the program and starts the new version. Saying *no* to the restart is fine: the update is
   then installed when you close the emulator.
-- **macOS**: the button opens the download page instead. The app is not signed, and macOS
-  treats an app replaced behind its back worse than one you downloaded yourself.
+- **macOS**: the button opens the download page instead of replacing the application.
+  Follow the [macOS backup precautions](#macos-application-bundle-and-upgrades) before
+  changing an existing installation.
 - **At startup** the emulator checks by itself, at most once a day, and never opens a window
   over a game you are playing (the Settings page says it instead). Untick *Check for
   updates at startup* to turn this off; *Skip this version* silences one release.
@@ -321,46 +322,6 @@ rewound by profile rollback. Backups are never automatically cleaned up.
 Developer ID signing, notarization, translocation/first-download behavior and a full
 release upgrade matrix still need separate distribution acceptance. A writable data
 root does not solve every existing runtime save-error or disk-failure scenario.
-
-### Staying up to date
-
-No need to come back to the Releases page: **Settings ▸ General ▸ Check for updates**
-asks GitHub for the latest release and tells you whether there is a newer one.
-
-- **Windows and Linux**: *Install and restart* downloads that release's archive, replaces
-  the program and starts the new version. Saying *no* to the restart is fine: the update is
-  then installed when you close the emulator.
-- **macOS**: the button opens the download page instead of replacing the application.
-  Follow the [macOS backup precautions](#macos-application-bundle-and-upgrades) before
-  changing an existing installation.
-- **At startup** the emulator checks by itself, at most once a day, and never opens a window
-  over a game you are playing (the Settings page says it instead). Untick *Check for
-  updates at startup* to turn this off; *Skip this version* silences one release.
-- **Windows/Linux in-app updates keep your data**: only the program file is replaced.
-  Saves, save states, settings, covers and the library sit in folders next to it and
-  are not touched.
-- If the emulator is installed in a folder it cannot write to (`Program Files`), it says so
-  and opens the download page instead.
-
-This works from **v3.10.0** on: older versions do not know their own number, so updating
-*to* 3.10.0 is still a manual download, the last one. A build made from source or with
-`build_exe.bat` reports itself as `dev` and never offers to replace itself; only the
-tagged builds made by the CI carry a version number (written by `build.yml` before
-packaging, into `ngpc_version.py`).
-
-To build it yourself on the platform you are on:
-
-```bat
-pip install pyinstaller
-build_exe.bat                        :: Windows
-```
-
-```bash
-pyinstaller --noconfirm --clean NgpCraftEmulator.spec    # any platform
-```
-
-The spec branches on the host OS (core library name, icon format, macOS `.app` bundle), so
-the same file produces the right thing everywhere.
 
 ### Building the core (other platforms / from source)
 

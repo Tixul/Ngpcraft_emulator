@@ -425,7 +425,8 @@ def test_import_request_is_not_forwarded_to_a_running_game(tmp_path, monkeypatch
     import ngpc_single_instance as single
     import sys
     calls = []
-    monkeypatch.setattr(shell, 'QApplication', lambda _: object())
+    monkeypatch.setattr(__import__('ngpc_application'), 'NgpCraftApplication',
+                        lambda _: SimpleNamespace(processEvents=lambda: None))
     monkeypatch.setattr(shell, 'APP_ICON', tmp_path / 'no-icon')
     monkeypatch.setattr(shell, '_claim_windows_taskbar_identity', lambda: None)
     monkeypatch.setattr(paths, 'managed', lambda: True)
@@ -452,7 +453,8 @@ def test_profile_switch_during_startup_is_checked_under_writer_lock(tmp_path, mo
     def lock(_):
         selected[0] = next_profile  # Another importer committed just before lock acquisition.
         yield
-    monkeypatch.setattr(shell, 'QApplication', lambda _: object())
+    monkeypatch.setattr(__import__('ngpc_application'), 'NgpCraftApplication',
+                        lambda _: SimpleNamespace(processEvents=lambda: None))
     monkeypatch.setattr(shell, 'APP_ICON', tmp_path / 'no-icon')
     monkeypatch.setattr(shell, '_claim_windows_taskbar_identity', lambda: None)
     monkeypatch.setattr(shell, 'REPO', previous)
@@ -491,7 +493,8 @@ def test_managed_robot_cannot_bypass_user_data_lock(tmp_path, monkeypatch):
     def forbidden(*args):
         raise AssertionError('Do not run an offscreen game against the default user profile')
     monkeypatch.setitem(sys.modules, 'ngpc_robot', SimpleNamespace(prepare=lambda _: None, run=forbidden))
-    monkeypatch.setattr(shell, 'QApplication', lambda _: object())
+    monkeypatch.setattr(__import__('ngpc_application'), 'NgpCraftApplication',
+                        lambda _: SimpleNamespace(processEvents=lambda: None))
     monkeypatch.setattr(shell, 'APP_ICON', tmp_path / 'no-icon')
     monkeypatch.setattr(shell, '_claim_windows_taskbar_identity', lambda: None)
     monkeypatch.setattr(paths, 'managed', lambda: True)
