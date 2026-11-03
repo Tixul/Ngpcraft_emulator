@@ -88,6 +88,19 @@ def decode_active(base: Path, raw: bytes) -> dict:
     return value
 
 
+def map_verified_path(value, mapping: dict):
+    """Match native/QFileDialog path spellings without rewriting external values."""
+    if not isinstance(value, str) or not value:
+        return value
+    candidate = str(Path(value))
+    if candidate in mapping:
+        return mapping[candidate]
+    for old in sorted(mapping, key=len, reverse=True):
+        if Path(old).suffix.lower() in {'.zip', '.7z'} and candidate.startswith(old + os.sep):
+            return mapping[old] + candidate[len(old):]
+    return value
+
+
 def remap_legacy_path(value: str) -> str:
     if not managed() or not value:
         return value
@@ -102,12 +115,11 @@ def remap_legacy_path(value: str) -> str:
         if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                 for k, v in mapping.items()):
             raise ValueError('invalid path map')
-        if value in mapping:
-            return mapping[value]
-        for old in sorted(mapping, key=len, reverse=True):
-            if Path(old).suffix.lower() in {'.zip', '.7z'} and value.startswith(old + os.sep):
-                return mapping[old] + value[len(old):]
-        if any(value.startswith(plan[name] + os.sep) for name in ('source', 'origin')):
+        mapped = map_verified_path(value, mapping)
+        if mapped != value:
+            return mapped
+        candidate = str(Path(value))
+        if any(candidate.startswith(plan[name] + os.sep) for name in ('source', 'origin')):
             raise DataPathError('A legacy internal path was not imported. Keep the old app and review this reference.')
         return value
     except (ValueError, KeyError, TypeError) as exc:

@@ -136,13 +136,7 @@ def preview(source: Path, base: Path, bindings: dict | None = None,
         except (ValueError, KeyError, TypeError) as exc:
             raise MigrationError('Invalid library.json; refusing silent loss of history.') from exc
     def mapped(name):
-        if name in path_map:
-            return path_map[name]
-        # Virtual members of a copied archive keep their suffix, not an external path.
-        for old in sorted(path_map, key=len, reverse=True):
-            if Path(old).suffix.lower() in {'.zip', '.7z'} and name.startswith(old + os.sep):
-                return path_map[old] + name[len(old):]
-        return name
+        return paths.map_verified_path(name, path_map)
     renames, conflicts = {}, []
     # Do not switch a legacy folder preference to a copied folder while silently
     # leaving referenced personal files behind in an unrecognized bundle location.
@@ -158,7 +152,8 @@ def preview(source: Path, base: Path, bindings: dict | None = None,
             if settings.status() != QSettings.Status.NoError:
                 raise MigrationError(f'Cannot read legacy settings: {name}')
     for value in referenced:
-        internal = any(value.startswith(str(root) + os.sep) for root in (source, origin))
+        candidate = str(Path(value))
+        internal = any(candidate.startswith(str(root) + os.sep) for root in (source, origin))
         if internal and mapped(value) == value:
             conflicts.append(f'{value}: referenced internal data is outside the import inventory; preserve and review manually')
     for rel in files:
@@ -239,14 +234,7 @@ def _copy(source: Path, target: Path, expected: dict) -> None:
 
 def _rewrite(stage: Path, plan: Plan) -> None:
     def mapped(value):
-        if not isinstance(value, str):
-            return value
-        if value in plan.path_map:
-            return plan.path_map[value]
-        for old in sorted(plan.path_map, key=len, reverse=True):
-            if Path(old).suffix.lower() in {'.zip', '.7z'} and value.startswith(old + os.sep):
-                return plan.path_map[old] + value[len(old):]
-        return value
+        return paths.map_verified_path(value, plan.path_map)
     library = stage / 'library.json'
     if library.exists():
         value = json.loads(library.read_text('utf-8'))
@@ -290,11 +278,14 @@ def _profile_files(root: Path) -> dict:
     return result
 
 
-def _sync_tree(root: Path) -> None:
+def _sync_tree(root: Path, *, files: bool = True) -> None:
     for current, _, names in os.walk(root, topdown=False):
-        for name in names:
-            with (Path(current) / name).open('rb') as stream:
-                os.fsync(stream.fileno())
+        if files:
+            for name in names:
+                # Windows _commit requires a writable descriptor. Staged payloads
+                # have already been made owner-writable; sources are never opened here.
+                with (Path(current) / name).open('r+b') as stream:
+                    os.fsync(stream.fileno())
         paths.fsync_dir(Path(current))
 
 
@@ -361,7 +352,7 @@ def execute(plan: Plan, *, confirmed: bool = False, checkpoint=None) -> dict:
                 (stage / directory).mkdir(parents=True, exist_ok=True)
             for rel, expected in plan.files.items():
                 _copy(source / rel, backup / rel, expected)
-            _sync_tree(backup)
+            _sync_tree(backup, files=False)  # _copy already flushed each writable output handle
             mark('backed-up')
             for rel, expected in plan.files.items():
                 _copy(backup / rel, stage / rel, expected)
@@ -436,7 +427,7 @@ def rollback(base: Path, transaction: str, *, confirmed: bool = False) -> dict:
         for rel, expected in entries.items():
             _copy(root / rel, snapshot / rel, expected)
         paths.atomic_json(snapshot / 'snapshot-manifest.json', {'files': entries})
-        _sync_tree(snapshot)
+        _sync_tree(snapshot, files=False)  # copied payload/manifest handles were flushed on write
         if _profile_files(root) != entries:
             raise MigrationError('Profile changed during rollback; selection was retained.')
         paths.atomic_bytes(base / paths.ACTIVE, previous.encode())

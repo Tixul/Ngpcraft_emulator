@@ -30,7 +30,7 @@ def legacy(tmp_path):
     write(root, 'screenshots/capture.gif', b'GIF')
     write(root, 'bios.bin', b'fake BIOS fixture')
     write(root, 'library.json', json.dumps({'games': {str(game): {'plays': 5}}}).encode())
-    write(root, 'config.ini', f'[paths]\nrom_folder={root / "roms"}\nbios={root / "bios.bin"}\n'.encode())
+    write(root, 'config.ini', f'[paths]\nrom_folder={(root / "roms").as_posix()}\nbios={(root / "bios.bin").as_posix()}\n'.encode())
     tag = hashlib.md5(str(game).encode()).hexdigest()[:8]
     write(root, f'covers/日本語.{tag}.png', b'art')
     return root
@@ -145,7 +145,7 @@ def test_external_rom_and_bios_are_never_read_or_changed(tmp_path):
     root, base = tmp_path / 'old', tmp_path / 'data'
     game, bios = write(tmp_path, 'external/Game.ngc', b'embedded'), write(tmp_path, 'external/bios.bin', b'BIOS')
     write(root, 'library.json', json.dumps({'games': {str(game): {}}}).encode())
-    write(root, 'config.ini', f'[paths]\nbios={bios}\n'.encode())
+    write(root, 'config.ini', f'[paths]\nbios={bios.as_posix()}\n'.encode())
     write(root, 'saves/Game.flash', b'backup')
     plan = migration.preview(root, base)
     result = migration.execute(plan, confirmed=True)
