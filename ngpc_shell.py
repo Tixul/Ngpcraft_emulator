@@ -1710,6 +1710,7 @@ class SettingsPage(QWidget):
         # and live-swaps the store for the whole session (storage_changed).
         self._portable = QCheckBox()
         self._portable.setChecked(cfg.portable_mode())
+        self._portable.setEnabled(not bool(os.environ.get(ngpc_paths.DATA_ENV)))
         self._portable.toggled.connect(self._on_portable_toggled)
         self._lbl_portable = QLabel()
         self._portable_hint = QLabel()
@@ -2454,6 +2455,9 @@ class SettingsPage(QWidget):
         self._coincell_hint.setText(t("coin_cell_hint"))
         self._lbl_cartwait.setText(t("cart_wait")); self._cartwait_hint.setText(t("cart_wait_hint"))
         self._lbl_portable.setText(t("portable")); self._portable_hint.setText(t("portable_hint"))
+        if ngpc_paths.managed():
+            key = "storage_portable_fixed" if os.environ.get(ngpc_paths.DATA_ENV) else "storage_portable_hint"
+            self._portable_hint.setText(t(key))
         self._lbl_update.setText(t("update_label").format(version=ngpc_update.display_version()))
         self._update_btn.setText(t("update_check"))
         self._lbl_autoupdate.setText(t("update_auto"))
@@ -7949,13 +7953,15 @@ def main() -> int:
     # Imports are a startup tool, never a request forwarded to a running game.
     if "--import-data" in args:
         if not ngpc_paths.managed():
-            QMessageBox.critical(None, "Import unavailable", "Select an external NGPCRAFT_DATA_DIR first.")
+            from ngpc_storage_ui import require_managed_error
+            require_managed_error()
             return 1
         from ngpc_storage_ui import prepare
         try:
             prepare(force_import=True)
         except (OSError, ValueError, RuntimeError) as exc:
-            QMessageBox.critical(None, "Import stopped", str(exc))
+            from ngpc_storage_ui import show_error
+            show_error(exc)
             return 1
         return 0
 
@@ -7993,7 +7999,8 @@ def main() -> int:
             ngpc_paths.probe_writable(REPO)
         except (OSError, ValueError, RuntimeError) as exc:
             storage.close()
-            QMessageBox.critical(None, "User data unavailable", str(exc))
+            from ngpc_storage_ui import show_error
+            show_error(exc)
             return 1
     try:
         shell = Shell(rom)

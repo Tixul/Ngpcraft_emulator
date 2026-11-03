@@ -158,7 +158,7 @@ def test_no_user_visible_string_is_hardcoded_outside_the_debugger():
     # A literal that reads like a sentence: letters and a space, four chars or more.
     literal = re.compile(r'"([A-Za-z][^"{}]*\s[^"{}]*)"')
     offenders = []
-    for name in ("ngpc_shell.py", "ngpc_lobby.py", "ngpc_link_play.py", "ngpc_bindmap.py"):
+    for name in ("ngpc_shell.py", "ngpc_lobby.py", "ngpc_link_play.py", "ngpc_bindmap.py", "ngpc_storage_ui.py"):
         for n, line in enumerate(repo.joinpath(name).read_text(encoding="utf-8").splitlines(), 1):
             m = call.search(line)
             if not m or "tr(" in m.group(1) or re.search(r"\b_?t\(", m.group(1)):

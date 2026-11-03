@@ -53,7 +53,7 @@ def test_preview_is_read_only_and_apply_preserves_original_and_backup(legacy, tm
     assert (target / f'saves/{key}.flash').read_bytes() == b'sidecar'
     assert (target / f'savestates/{key}.s0').read_bytes() == b'state'
     assert (target / f'watches/{key}.breaks.json').exists()
-    assert str(target / 'roms/日本語.ngc') in json.loads((target / 'library.json').read_text())['games']
+    assert str(target / 'roms/日本語.ngc') in json.loads((target / 'library.json').read_text(encoding='utf-8'))['games']
     from PyQt6.QtCore import QSettings
     ini = QSettings(str(target / 'config.ini'), QSettings.Format.IniFormat)
     assert ini.value('paths/bios') == str(target / 'bios.bin')
@@ -163,7 +163,7 @@ def test_moved_backup_requires_declared_origin(legacy, tmp_path):
     plan = migration.preview(moved, base, origin=legacy)
     assert not plan.conflicts
     migration.execute(plan, confirmed=True)
-    games = json.loads((base / 'profiles' / plan.profile / 'library.json').read_text())['games']
+    games = json.loads((base / 'profiles' / plan.profile / 'library.json').read_text(encoding='utf-8'))['games']
     assert list(games) == [str(base / 'profiles' / plan.profile / 'roms/日本語.ngc')]
 
 

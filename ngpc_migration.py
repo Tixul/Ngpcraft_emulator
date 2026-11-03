@@ -308,7 +308,7 @@ def execute(plan: Plan, *, confirmed: bool = False, checkpoint=None) -> dict:
                 raise MigrationError('Destination metadata must not be a symlink.')
             marker = target / '.migration-manifest.json'
             try:
-                record = json.loads(marker.read_text())
+                record = json.loads(marker.read_text(encoding='utf-8'))
                 same = record['plan']['files'] == plan.files and _profile_files(target) == record['files']
             except (OSError, ValueError, KeyError):
                 same = False
@@ -393,7 +393,7 @@ def recover(base: Path) -> list[dict]:
     for file in sorted((base / 'migrations').glob('*/journal.json')):
         if file.is_symlink() or file.parent.is_symlink():
             raise MigrationError('Unsafe transaction journal path.')
-        journal = json.loads(file.read_text())
+        journal = json.loads(file.read_text(encoding='utf-8'))
         transaction = file.parent.name
         state = 'committed' if selected and selected.get('transaction') == transaction else 'unactivated'
         results.append({'transaction': transaction, 'state': state, 'phase': journal['phase'],
@@ -409,7 +409,7 @@ def rollback(base: Path, transaction: str, *, confirmed: bool = False) -> dict:
         journal_path = base / 'migrations' / transaction / 'journal.json'
         if journal_path.is_symlink() or journal_path.parent.is_symlink():
             raise MigrationError('Unsafe transaction journal path.')
-        journal = json.loads(journal_path.read_text())
+        journal = json.loads(journal_path.read_text(encoding='utf-8'))
         selected = paths.read_active(base)
         if not selected or selected.get('transaction') != transaction:
             raise MigrationError('This transaction is not the active profile.')
@@ -460,15 +460,15 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == 'preview':
-            bindings = json.loads(args.bindings.read_text()) if args.bindings else None
+            bindings = json.loads(args.bindings.read_text(encoding='utf-8')) if args.bindings else None
             result = preview(args.source, args.data_dir, bindings, args.origin).json()
         elif args.command == 'apply':
-            result = execute(Plan(**json.loads(args.plan.read_text())), confirmed=args.confirm)
+            result = execute(Plan(**json.loads(args.plan.read_text(encoding='utf-8'))), confirmed=args.confirm)
         elif args.command == 'rollback':
             result = rollback(paths.validate_base(args.data_dir), args.transaction, confirmed=args.confirm)
         else:
             result = recover(paths.validate_base(args.data_dir))
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result, ensure_ascii=True, indent=2))
         return 0
     except (OSError, ValueError, TypeError, MigrationError, paths.DataPathError) as exc:
         print(f'Migration stopped: {exc}', file=sys.stderr)

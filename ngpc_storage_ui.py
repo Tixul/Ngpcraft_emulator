@@ -6,48 +6,55 @@ from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 import ngpc_migration as migration
 import ngpc_paths as paths
+import ngpc_settings as cfg
+
+
+def _t(key, **values):
+    try:
+        lang = cfg.language(cfg.make_settings())
+    except (OSError, ValueError, paths.DataPathError):
+        lang = cfg.FALLBACK_LANG  # Language fallback only; never a data-path fallback.
+    return cfg.tr(lang, key).format(**values)
+
+
+def show_error(error):
+    QMessageBox.critical(None, _t('storage_error_title'), _t('storage_error', error=error))
+
+
+def require_managed_error():
+    QMessageBox.critical(None, _t('storage_error_title'), _t('storage_external_required'))
 
 
 def import_dialog(base: Path) -> bool:
     source = QFileDialog.getExistingDirectory(
-        None, 'Select the old .app or its user-data folder', '',
-        QFileDialog.Option.DontUseNativeDialog)
+        None, _t('storage_select_source'), '', QFileDialog.Option.DontUseNativeDialog)
     if not source:
         return False
     origin, ok = QInputDialog.getText(
-        None, 'Original installation location',
-        'If this is a renamed/moved backup, enter its ORIGINAL .app or data path.\n'
-        'Only references to verified copied files will be remapped.', text=source)
+        None, _t('storage_origin_title'), _t('storage_origin'), text=source)
     if not ok:
         return False
     try:
         plan = migration.preview(Path(source), base, origin=Path(origin))
         if plan.conflicts:
-            QMessageBox.warning(None, 'Import needs explicit bindings',
-                                '\n'.join(plan.conflicts) + '\n\nNo files were copied. '
-                                'Use the documented preview tool to supply ROM bindings.')
+            QMessageBox.warning(None, _t('storage_conflicts_title'),
+                                _t('storage_conflicts', details='\n'.join(plan.conflicts)))
             return False
         box = QMessageBox()
-        box.setWindowTitle('Preview legacy data import')
-        box.setText(f'Back up and copy {len(plan.files)} files into:\n'
-                    f'{base / "profiles" / plan.profile}\n\n'
-                    'Close every old/new emulator instance first. No source files or '
-                    'external ROM/BIOS files will be moved, overwritten or deleted.\n'
-                    'An existing profile will be retained, not merged.')
+        box.setWindowTitle(_t('storage_preview_title'))
+        box.setText(_t('storage_preview', count=len(plan.files),
+                       destination=base / 'profiles' / plan.profile))
         box.setDetailedText(json.dumps(plan.json(), ensure_ascii=False, indent=2))
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
         box.setDefaultButton(QMessageBox.StandardButton.Cancel)
         if box.exec() != QMessageBox.StandardButton.Yes:
             return False
         result = migration.execute(plan, confirmed=True)
-        QMessageBox.information(None, 'Import verified',
-                                f'Import state: {result["state"]}. Old data and backup are retained.\n'
-                                'Restart NgpCraft to use the imported profile.')
+        QMessageBox.information(None, _t('storage_done_title'),
+                                _t('storage_done', state=result['state']))
         return True
     except (OSError, ValueError, migration.MigrationError, paths.DataPathError) as exc:
-        QMessageBox.critical(None, 'Import stopped',
-                             f'{exc}\n\nNo blank profile will be substituted. '
-                             'Keep the old application and inspect migration status/backups.')
+        show_error(exc)
         return False
 
 
@@ -62,11 +69,9 @@ def prepare(*, force_import: bool = False) -> bool:
     pending = migration.recover(base)
     if migration.legacy_present(paths.install_root()) or pending:
         box = QMessageBox()
-        box.setWindowTitle('Existing user data needs review')
-        box.setText('Legacy data or an interrupted import was found. Import from the old '
-                    'application or a preserved backup before playing. No files will '
-                    'be automatically moved, deleted or replaced.')
-        action = box.addButton('Choose legacy data and preview…', QMessageBox.ButtonRole.ActionRole)
+        box.setWindowTitle(_t('storage_existing_title'))
+        box.setText(_t('storage_existing'))
+        action = box.addButton(_t('storage_choose_legacy'), QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         if box.clickedButton() == action:
@@ -75,13 +80,10 @@ def prepare(*, force_import: bool = False) -> bool:
     # Other/renamed application bundles cannot be discovered reliably. Ask before
     # creating fresh storage, even when this installation contains no legacy files.
     box = QMessageBox()
-    box.setWindowTitle('Choose user data')
-    box.setText('If you used NgpCraft before, import data from the preserved old .app '
-                'or its backup. Replacing an old .app can discard its saves. '
-                'External ROMs/BIOS and native preferences are not moved.\n\n'
-                f'New data will live outside the application:\n{base}')
-    action = box.addButton('Import existing data…', QMessageBox.ButtonRole.ActionRole)
-    fresh = box.addButton('Create a new profile', QMessageBox.ButtonRole.ActionRole)
+    box.setWindowTitle(_t('storage_choose_title'))
+    box.setText(_t('storage_choose', base=base))
+    action = box.addButton(_t('storage_import_button'), QMessageBox.ButtonRole.ActionRole)
+    fresh = box.addButton(_t('storage_fresh_button'), QMessageBox.ButtonRole.ActionRole)
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(cancel)
     box.exec()

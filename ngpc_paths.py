@@ -110,7 +110,7 @@ def remap_legacy_path(value: str) -> str:
     if not manifest.exists():
         return value
     try:
-        plan = json.loads(manifest.read_text())['plan']
+        plan = json.loads(manifest.read_text(encoding='utf-8'))['plan']
         mapping = plan['path_map']
         if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                 for k, v in mapping.items()):
