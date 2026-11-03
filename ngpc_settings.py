@@ -99,6 +99,51 @@ def portable_mode() -> bool:
     return Path(config_path()).is_file()
 
 
+class _ManagedIniSettings(QSettings):
+    """Keep public general/* keys stable across Qt's reserved %General section.
+
+    Qt reloads that INI section as General/* on case-sensitive platforms. Use its
+    canonical spelling on disk, including when preserving an explicit save mode.
+    Native preferences and unmanaged portable settings retain their old behavior.
+    """
+    def _ini_key(self, key):
+        if not self.group() and (key == 'general' or key.startswith('general/')):
+            return 'General' + key[len('general'):]
+        return key
+
+    def value(self, key, defaultValue=None, type=None):
+        canonical = self._ini_key(key)
+        # A just-exported INI may still share Qt's same-process lowercase cache.
+        actual = canonical if super().contains(canonical) else key
+        if type is None:
+            return super().value(actual, defaultValue)
+        return super().value(actual, defaultValue, type=type)
+
+    def setValue(self, key, value):
+        canonical = self._ini_key(key)
+        if canonical != key:
+            super().remove(key)
+        super().setValue(canonical, value)
+
+    def contains(self, key):
+        return super().contains(self._ini_key(key)) or super().contains(key)
+
+    def remove(self, key):
+        super().remove(self._ini_key(key))
+        if self._ini_key(key) != key:
+            super().remove(key)
+
+    def beginGroup(self, prefix):
+        super().beginGroup(self._ini_key(prefix))
+
+    def allKeys(self):
+        keys = super().allKeys()
+        if self.group():
+            return keys
+        return sorted({('general/' + key[len('General/'):])
+                       if key.startswith('General/') else key for key in keys})
+
+
 def make_settings() -> QSettings:
     """The one way to reach stored settings: a portable INI when enabled, else the
     user scope (the registry, on Windows).
@@ -110,6 +155,9 @@ def make_settings() -> QSettings:
     build, does not; only the explicit (path, IniFormat) form honours a redirect. See
     `pytest_configure` in the root conftest."""
     if portable_mode():
+        import ngpc_paths
+        if ngpc_paths.managed():
+            return _ManagedIniSettings(config_path(), QSettings.Format.IniFormat)
         return QSettings(config_path(), QSettings.Format.IniFormat)
     return QSettings(SETTINGS_ORG, SETTINGS_APP)
 
