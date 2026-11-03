@@ -109,11 +109,12 @@ def test_modified_source_and_changed_selection_require_new_preview(legacy, tmp_p
 def test_disk_full_and_copy_error_do_not_activate(legacy, tmp_path, monkeypatch):
     base = tmp_path / 'data'
     plan = migration.preview(legacy, base)
+    original_disk_usage = migration.shutil.disk_usage
     monkeypatch.setattr(migration.shutil, 'disk_usage', lambda _: SimpleNamespace(free=0))
     with pytest.raises(migration.MigrationError, match='space'):
         migration.execute(plan, confirmed=True)
     assert paths.read_active(base) is None
-    monkeypatch.undo()
+    monkeypatch.setattr(migration.shutil, "disk_usage", original_disk_usage)
     def fail(*_):
         raise OSError('ENOSPC during copy')
     monkeypatch.setattr(migration, '_copy', fail)
@@ -416,3 +417,23 @@ def test_unmapped_native_preference_path_fails_visibly_after_import(legacy, tmp_
     monkeypatch.setenv(paths.DATA_ENV, str(base))
     with pytest.raises(paths.DataPathError, match='not imported'):
         paths.remap_legacy_path(str(legacy / 'unknown-bios.bin'))
+
+
+def test_import_request_is_not_forwarded_to_a_running_game(tmp_path, monkeypatch):
+    import ngpc_shell as shell
+    import ngpc_storage_ui as ui
+    import ngpc_single_instance as single
+    import sys
+    calls = []
+    monkeypatch.setattr(shell, 'QApplication', lambda _: object())
+    monkeypatch.setattr(shell, 'APP_ICON', tmp_path / 'no-icon')
+    monkeypatch.setattr(shell, '_claim_windows_taskbar_identity', lambda: None)
+    monkeypatch.setattr(paths, 'managed', lambda: True)
+    monkeypatch.setattr(sys, 'argv', ['ngpc_shell.py', '--import-data'])
+    monkeypatch.setattr(ui, 'prepare', lambda **kwargs: calls.append(kwargs))
+    def forbidden(*args):
+        raise AssertionError('Import must not forward or create a gameplay window')
+    monkeypatch.setattr(single, 'forward', forbidden)
+    monkeypatch.setattr(shell, 'Shell', forbidden)
+    assert shell.main() == 0
+    assert calls == [{'force_import': True}]

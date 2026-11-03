@@ -7946,22 +7946,32 @@ def main() -> int:
     if robot:
         return ngpc_robot.run(args, app)
 
+    # Imports are a startup tool, never a request forwarded to a running game.
+    if "--import-data" in args:
+        if not ngpc_paths.managed():
+            QMessageBox.critical(None, "Import unavailable", "Select an external NGPCRAFT_DATA_DIR first.")
+            return 1
+        from ngpc_storage_ui import prepare
+        try:
+            prepare(force_import=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.critical(None, "Import stopped", str(exc))
+            return 1
+        return 0
+
     # ONE EMULATOR PER INSTALL: a ROM double-clicked while we already run goes to the
     # running window instead of opening a second emulator (ngpc_single_instance).
     import ngpc_single_instance as single
     new_instance = single.FLAG in args
     if new_instance:
         args.remove(single.FLAG)
-    force_import = "--import-data" in args
-    if force_import:
-        args.remove("--import-data")
     rom = args[0] if args else None
     name = single.server_name(REPO)
     # Finder normally sends Apple Events directly to the existing macOS
     # process. For a separately launched process, drain already queued events
     # before handing its explicit command-line request to the socket server.
     app.processEvents()
-    if not force_import and not new_instance and single.forward(name, rom):
+    if not new_instance and single.forward(name, rom):
         if sys.platform == "darwin" and rom is None:
             app.forward_startup_events(lambda path: single.forward(name, path))
         else:
@@ -7975,7 +7985,7 @@ def main() -> int:
     if ngpc_paths.managed():
         from ngpc_storage_ui import prepare
         try:
-            if not prepare(force_import=force_import):
+            if not prepare():
                 return 0
             if ngpc_paths.data_root() != REPO:
                 raise ngpc_paths.DataPathError("The selected profile changed. Restart NgpCraft.")
