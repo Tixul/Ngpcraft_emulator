@@ -1868,6 +1868,14 @@ NGPC_API void ngpc_set_timing_silicon(ngpc_t* h, uint32_t word_wait, uint32_t bi
      * Valeur : 10 equilibre les DEUX tirs (v3 VWR -0,9 %, v20 V8B +1,3 %) la ou 9 collait
      * a la v3 (0,0 %) mais laissait la v20 a +3,9 %. */
     m->vram_wait          = 10;
+    /* ⚡ K2GE ET SFR AU PRIX DE LA RAM (ROM v22 + v23, tir silicium du 03/11/2026).
+     * Un acces au K2GE (registres) ou a la page SFR coute sur console exactement comme
+     * un acces RAM ; un registre de controle n'est PAS freine comme la VRAM ; une
+     * LECTURE VRAM en affichage actif l'est (+3,95 cy). Arme : v22 retombe au chiffre
+     * pres (175 / 82 changements de ligne), v23 a 9 cases sur 11, et le corpus passe de
+     * 0,18 % a 0,12 % (pire 0,77 -> 0,46). `hw_calibration/access_gate.py`. */
+    m->k2ge_access_as_ram = true;
+    m->vram_read_wait     = 4;
     /* La file d'instructions, MODELISEE EN OCTETS -- 4, la taille documentee. Elle
      * remplace le credit d'avance en cycles (`biu_slack`), qui etait UN scalaire pour
      * trois regimes et que trois mesures tiraient dans trois directions. Le modele en
@@ -2127,6 +2135,15 @@ NGPC_API void ngpc_set_block_pays_vram(ngpc_t* h, int on) {
 NGPC_API void ngpc_set_data_wait_cart_only(ngpc_t* h, int on) {
     if (!h) return;
     reinterpret_cast<Machine*>(h)->data_wait_cart_only = (on != 0);
+}
+
+/* EXPERIMENT : K2GE et SFR factures comme la RAM, registres hors etranglement VRAM, et
+ * lecture VRAM freinee en affichage actif. Voir `k2ge_access_as_ram` (machine.hpp). */
+NGPC_API void ngpc_set_k2ge_access_model(ngpc_t* h, int as_ram, uint32_t vram_read_wait) {
+    if (!h) return;
+    auto* m = reinterpret_cast<Machine*>(h);
+    m->k2ge_access_as_ram = (as_ram != 0);
+    m->vram_read_wait     = vram_read_wait;
 }
 
 NGPC_API void ngpc_set_irq_queue_keep_q16(ngpc_t* h, int32_t q16) {

@@ -260,6 +260,10 @@ static uint32_t load_sized(const Machine& m, uint32_t a, uint8_t sz) {
      * ne voit que des octets et ne peut pas distinguer un acces long de quatre acces
      * d'un octet, ce qui est precisement ce que la ROM v15 a separe. */
     m.charge_data_access(a);
+    /* Lecture VRAM en affichage actif : le K2GE freine aussi les LECTURES (console :
+     * +3,95 cy sur une lecture RAM, avec gigue). Voir `k2ge_access_as_ram`. */
+    if (m.vram_read_wait && a >= 0x009000u && a <= 0x00BFFFu && !m.in_vblank())
+        m.data_wait_cycles += m.vram_read_wait;
     switch (sz) {
         case 0:  return m.read8(a);
         case 1:  return uint32_t(m.read8(a)) | (uint32_t(m.read8(a + 1)) << 8);

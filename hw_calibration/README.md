@@ -50,6 +50,7 @@ one-cycle tolerance. See [v7](#v7--the-word-block-copy-ldirw-and-why-v6-cannot-a
 | `block_drains_queue` — the BIU cannot prefetch through a block copy | `false` | **on** (armed by `set_timing_silicon`) | ⚠️ measured on the same homebrew raster oracle (2026-08-25) — see below |
 | `vram_wait` | `0` | **10**, **par ACCÈS** (armé par `set_timing_silicon`) | ✅ **silicon (v3 + v20)** : 2,74 et 2,95 cy par écriture ; rapport mot/octet **1,00** ⇒ par accès, pas par octet |
 | `block_cart_src_per_byte` | `0` | **2** | ✅ **silicon (v21)** : lire la **source** d'un bloc en cartouche coûte +4,12 cy par itération mot ; la **destination** ne coûte rien (+0,08) |
+| `k2ge_access_as_ram` + `vram_read_wait` | `false` / `0` | **on / 4** (armés par `set_timing_silicon`) | ✅ **silicon (v22 + v23, 2026-11-03)** : un accès K2GE (registres) ou SFR coûte **comme la RAM** ; un registre de contrôle (0x8000-0x81FF) n'est **pas** freiné comme la VRAM ; une **lecture** VRAM en affichage actif l'est (+3,95 cy) |
 
 ⚠️ **The two defaults differ on purpose, and it catches people.** The field default of `0` is
 backward compatibility, not a hardware claim; the shell applies the silicon set on every ROM
@@ -58,6 +59,39 @@ a test, the MCP server — runs free-fetch until it calls the setters**, and wil
 machine ~2.9× too fast. Worse, any optimisation whose gain is *fewer instruction bytes* then
 measures as exactly zero, because fetch is the one cost not being billed. Copy the three calls
 from `core/romcheck.py`. Full write-up: README → "Timing — wait states".
+
+## 📌 MISE À JOUR (2026-11-03) — v22 + v23, le coût d'un accès par ZONE
+
+Chronomètre : **RAS.V + RAS.H** (RAS.H vivant depuis la PR 31 ; validé sur console par la
+v22 : bornes 0x80→0x00, jamais de remontée, repart à 0x80 quand RAS.V avance, 4 clocks
+par cran). Méthode v23 : la même boucle avec l'accès écrit 8 puis 16 fois, coût d'un accès
+= (T16 − T8) / 512, mesure démarrée en début de ligne 0, `di`.
+
+| v23 (clocks / accès) | silicium | avant | armé |
+|---|---|---|---|
+| lecture mot RAM / K2GE 0x8008 / K2GE 0x8020 | 20 / 20 / 20 | 20 / 16 / 16 | 20 / 20 / 20 |
+| lecture octet RAM / K2GE 0x8008 | 32 / 32 | 32 / 28 | 32 / 32 |
+| écriture mot RAM / K2GE 0x8020 | 28 / 28 | 28 / **34** | 28 / 28 |
+| écriture octet RAM | 24 | 24 | 24 |
+| lecture mot VRAM 0x9F00 (affichage actif) | 23,93-23,96 | 16 | 24 |
+| lecture mot ROM 0x200020 | 28 | 24 | 24 ⚠️ |
+| lecture mot SFR 0x0020 | 20 | 12 | 16 ⚠️ |
+
+v22 (changements de ligne en 1024 lectures, A / B) : silicium **175 / 82**, avant 167 / 74
+(5 à 10 % trop rapide), armé **175 / 82**. Corpus 26 cases : **0,18 % → 0,12 %**, pire
+**0,77 → 0,46 %**. Suite complète verte armée.
+
+⚠️ **Deux écarts restent OUVERTS, volontairement** : ROM et SFR. Leurs instructions n'ont pas
+la longueur de celle de la RAM (adresse 24 / 8 bits contre 16), donc la v23 ne sépare pas
+coût d'accès et coût de fetch. Et la v2 a mesuré des lectures **octet** cartouche == RAM
+(`CRND == RRND`) : **ne pas toucher `cart_data_wait` sur la foi de la v23.** Non mesurés
+non plus : palettes (0x8200+) et table des sprites (0x8800+) — l'étranglement en écriture
+y est conservé tel quel ; la lecture VRAM en **vblank**.
+
+Banc : `access_gate.py` (`--corpus` rejoue aussi les 26 cases). Test :
+`tests/test_access_cost_silicon.py`. Sources : `cpu_calib_v22.c`, `cpu_calib_v23.c` — projets
+autonomes (`hw_test_rash`, `hw_test_cout_acces` : `entry.asm` lié en premier, police hex
+`hexfont.h`, chaîne officielle cc900, sources en CRLF) ; les ROM font 512 Kio.
 
 ## 📌 ÉTAT COURANT (2026-08-30) — lire ceci d'abord
 
@@ -109,6 +143,7 @@ et pas 56. L'hypothèse avait tenu 24 h et coûtait 1,7 % de corpus.
 | `v19_gate.py` | le **contraste** `nop` / charges = la ristourne existe-t-elle ? |
 | `v20_gate.py` | quatre questions d'un coup : `ldirb`/`ldirw`, vidage de file par un bloc, latence de la division, VRAM par accès ou par octet |
 | `v21_gate.py` | un transfert bloc sur **quatre chemins** (RAM/ROM × RAM/VRAM) — sépare le coût de la **source** de celui de la **destination** |
+| `access_gate.py` | v22 + v23 : le coût d'**un accès** par zone (RAM, registres K2GE, VRAM, ROM, SFR), désarmé contre armé ; `--corpus` rejoue aussi les 26 cases |
 | `irq_sum_gate.py` | coût d'une IRQ par **somme directe** du chemin (ancré sur `next_pc`) |
 | `irq_reprise.py` | le flot interrompu est-il plus lent **hors** du chemin d'IRQ ? (comparaison **par PC**, sur la MÊME boucle) |
 | `irq_count_gate.py` | combien d'interruptions sont **réellement** livrées (151,88/trame contre 152 supposées) |
