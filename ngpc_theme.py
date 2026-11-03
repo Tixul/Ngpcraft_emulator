@@ -438,6 +438,20 @@ def apply_app_palette(app, p: Palette) -> None:
     nothing else about the look depends on the platform style.
     """
     from PyQt6.QtGui import QPalette
+    import gc
+
+    # Qt walks raw widget pointers while changing the global style/palette. A
+    # Python layout callback can run cyclic GC and destroy an otherwise unreachable
+    # window in that walk. Keep its wrapper alive until both native calls return.
+    # Only snapshot acquisition excludes automatic GC (including SIP's list
+    # conversion); collection is restored before any style/layout callbacks run.
+    collecting = gc.isenabled()
+    try:
+        gc.disable()
+        live_widgets = app.allWidgets()
+    finally:
+        if collecting:
+            gc.enable()
 
     app.setStyle("Fusion")
     pal = QPalette()
@@ -452,3 +466,4 @@ def apply_app_palette(app, p: Palette) -> None:
         pal.setColor(group, QPalette.ColorRole.Text, QColor(p.text_dim))
         pal.setColor(group, QPalette.ColorRole.ButtonText, QColor(p.text_dim))
     app.setPalette(pal)
+    del live_widgets

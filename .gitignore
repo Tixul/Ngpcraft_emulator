@@ -66,3 +66,5 @@ system_ram.bin
 # Internal notes: research and the workspace's own source index, like DEVLOG.md.
 /LINK_NETPLAY_STUDY.md
 /DOC_SOURCES_INDEX.md
+# Review of PRs 31-33 + console measurements of memory-access costs (to act on later).
+/CALAGE_ACCES_ET_PR_31_32_33.md
