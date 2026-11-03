@@ -11,9 +11,8 @@
 #   * the "Run workflow" button -> builds and uploads artefacts you can download
 #     from the run page (no release). Use this to try a build without tagging.
 #
-# Nothing here signs the macOS app: an unsigned .app runs, but Gatekeeper warns on
-# first launch (right-click > Open to bypass). Signing needs a paid Apple Developer
-# account and is a later step -- see the notes at the bottom.
+# PyInstaller applies ad-hoc signing on macOS. Developer ID signing and
+# notarization are not configured here.
 
 name: build
 
@@ -108,6 +107,45 @@ jobs:
 
       - name: Package with PyInstaller
         run: pyinstaller --noconfirm --clean NgpCraftEmulator.spec
+
+      - name: Inspect packaged macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app='dist/NgpCraftEmulator.app'
+          python - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          app = Path('dist/NgpCraftEmulator.app').resolve()
+          info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+          executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
+          assert executable.is_file() and os.access(executable, os.X_OK), executable
+          frameworks = app / 'Contents/Frameworks'
+          resources = app / 'Contents/Resources'
+          python_libraries = list(frameworks.glob('Python.framework/Versions/*/Python'))
+          python_libraries += list(frameworks.glob('libpython*.dylib'))
+          assert any(path.is_file() for path in python_libraries), 'Python shared library'
+          for relative in ('PyQt6/Qt6/lib/QtCore.framework', 'cpp/build/ngpc_core.dylib'):
+              assert (frameworks / relative).exists(), relative
+          assert (resources / info['CFBundleIconFile']).is_file(), 'bundle icon'
+          sources = [Path('hle_bios/bios_hle.bin'),
+                     Path('assets/icone_ngpcraft.ico'), Path('assets/ngpc_console.png')]
+          sources += [path for path in Path('lang').rglob('*') if path.is_file()]
+          for source in sources:
+              packaged = resources / source
+              assert packaged.is_file(), packaged
+              assert packaged.read_bytes() == source.read_bytes(), source
+          for path in app.rglob('*'):
+              if path.is_symlink():
+                  assert path.exists(), f'broken symlink: {path}'
+                  assert path.resolve().is_relative_to(app), f'external symlink: {path}'
+          print(f'Checked {len(sources)} resources and all bundle symlinks')
+          PY
+          file "$app/Contents/MacOS/NgpCraftEmulator" "$app/Contents/Frameworks/cpp/build/ngpc_core.dylib"
+          codesign --verify --deep --strict "$app"
+          du -sh "$app"
 
       # One clean archive per OS, so a Release carries exactly three downloads.
       # Each is made ON its own runner, which matters most for macOS: the build is

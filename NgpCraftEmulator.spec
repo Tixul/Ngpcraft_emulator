@@ -14,17 +14,20 @@ if sys.platform == "win32":
     _ICON = "assets/icone_ngpcraft.ico"
 elif sys.platform == "darwin":
     _CORE = "ngpc_core.dylib"
-    # A .icns if one is checked in, else no icon (PyInstaller ignores a missing one
-    # only if it is None -- a missing path would error, so gate on the file).
+    # Reuse the existing official icon. PyInstaller converts .ico to .icns on
+    # macOS with Pillow unless a native .icns is provided in the future.
     import os
-    _ICON = "assets/icone_ngpcraft.icns" if os.path.exists(
-        "assets/icone_ngpcraft.icns") else None
+    _ICON = next((path for path in ("assets/icone_ngpcraft.icns",
+                                    "assets/icone_ngpcraft.ico")
+                  if os.path.isfile(path)), None)
 else:
     _CORE = "ngpc_core.so"
     _ICON = None                       # Linux desktop icons come from a .desktop file
 
-# UPX shrinks the Windows build; on macOS it breaks code signing and on Linux it
-# buys little for the risk, so keep it to Windows only.
+# Keep Windows/Linux as onefile builds. A macOS .app is already a directory;
+# onefile needlessly unpacks Python and Qt on every launch.
+_MACOS = sys.platform == "darwin"
+# UPX is kept Windows-only; on macOS it interferes with code signing.
 _UPX = sys.platform == "win32"
 
 
@@ -59,10 +62,10 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    *([] if _MACOS else [a.binaries, a.datas]),
     [],
     name='NgpCraftEmulator',
+    exclude_binaries=_MACOS,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -80,9 +83,17 @@ exe = EXE(
 
 # macOS wants an application bundle, not a bare Unix executable, or Finder and the
 # Dock treat it as a terminal tool. The EXE above is what goes inside it.
-if sys.platform == "darwin":
-    app = BUNDLE(
+if _MACOS:
+    collected = COLLECT(
         exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name='NgpCraftEmulator',
+    )
+    app = BUNDLE(
+        collected,
         name='NgpCraftEmulator.app',
         icon=_ICON,
         bundle_identifier='com.ngpcraft.emulator',
