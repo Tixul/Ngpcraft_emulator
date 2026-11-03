@@ -162,7 +162,8 @@ void store(Machine& m, ngpc_record_t* rec, uint32_t addr, uint32_t value, uint8_
              * que la charge passe par `access_wait`, donc se fait absorber par le
              * recouvrement -- un ajustement A TRAVERS une couche absorbante. */
             if (m.vram_wait && i == 0 && (!m.in_block_copy || m.block_pays_vram)
-                && a >= 0x8000 && a <= 0xBFFF && !m.in_vblank())
+                && a >= (m.k2ge_access_as_ram ? 0x8200u : 0x8000u) && a <= 0xBFFF
+                && !m.in_vblank())
                 m.access_wait += m.vram_wait;
             m.note_write(a, bytes[i]);      // the write log; disarmed, this is 2 compares
             /* The RTC's registers are not plain I/O bytes: a write sets the clock --

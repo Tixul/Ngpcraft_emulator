@@ -41,9 +41,10 @@ from core import bios_fingerprint
 # 16: + ngpc_get_link_state / ngpc_set_link_state.
 # 17: + ngpc_set_serial_break.
 # 18: + ngpc_run_linked -- both cabled consoles and the relay, inside the core.
+# 20: + ngpc_set_k2ge_access_model (K2GE/SFR accesses priced like RAM).
 # Must track NGPC_ABI_VERSION in cpp/include/ngpc_core.h -- the loader compares
 # them and asks for a rebuild.
-ABI_VERSION = 19
+ABI_VERSION = 20
 
 # How the machine comes up (NGPC_RESET_* in ngpc_core.h). This was a bool, and a third
 # case was hiding inside it: "no hand-off" ALSO started at the cart's entry point, so
@@ -631,6 +632,9 @@ def _bind(path: Path) -> ctypes.CDLL:
     if hasattr(lib, "ngpc_set_data_wait_cart_only"):
         lib.ngpc_set_data_wait_cart_only.argtypes = [c_void_p, c_int]
         lib.ngpc_set_data_wait_cart_only.restype = None
+    if hasattr(lib, "ngpc_set_k2ge_access_model"):
+        lib.ngpc_set_k2ge_access_model.argtypes = [c_void_p, c_int, c_uint32]
+        lib.ngpc_set_k2ge_access_model.restype = None
     if hasattr(lib, "ngpc_set_irq_queue_keep_q16"):
         lib.ngpc_set_irq_queue_keep_q16.argtypes = [c_void_p, c_int32]
         lib.ngpc_set_irq_queue_keep_q16.restype = None
@@ -992,7 +996,8 @@ class NativeMachine:
                           ("set_block_pays_vram", False),
                           ("set_queue_bytes", 0),
                           ("set_irq_queue_keep_q16", 0),
-                          ("set_vram_wait", 0)):
+                          ("set_vram_wait", 0),
+                          ("set_k2ge_access_model", False)):
             fn = getattr(self, name, None)
             if fn is not None:
                 try:
@@ -1120,6 +1125,12 @@ class NativeMachine:
     def set_data_wait_cart_only(self, on: bool) -> None:
         """EXPERIMENT : le cout d'acces de donnee ne se paie que dans du code CARTOUCHE."""
         self._lib.ngpc_set_data_wait_cart_only(self._h, 1 if on else 0)
+
+    def set_k2ge_access_model(self, as_ram: bool, vram_read_wait: int = 0) -> None:
+        """EXPERIMENT : K2GE et SFR factures comme la RAM, registres de controle hors de
+        l'etranglement VRAM, lecture VRAM freinee en affichage actif. Mesure console du
+        03/11/2026 (hw_test_cout_acces). Desarme par defaut."""
+        self._lib.ngpc_set_k2ge_access_model(self._h, 1 if as_ram else 0, int(vram_read_wait))
 
     def set_irq_queue_keep_q16(self, q16: int) -> None:
         """DIAGNOSTIC : etat de la file au sortir d'une acceptation d'IRQ, en 1/16 d'octet."""

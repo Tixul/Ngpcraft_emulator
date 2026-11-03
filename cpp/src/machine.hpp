@@ -1543,6 +1543,23 @@ struct Machine {
 
     bool     data_wait_cart_only = false;
     uint32_t data_access_cycles = 0;
+    /* EXPERIMENT (defaut : desarme) : un acces au K2GE ou a la page SFR coute comme un
+     * acces RAM. Mesure sur console le 03/11/2026 (`hw_test_cout_acces`, 8 passes,
+     * cout = (T16 - T8) / 512, chronometre RAS.V/RAS.H) :
+     *   lecture mot  RAM 0x5F00  20,00   K2GE 0x8008 20,00   K2GE 0x8020 20,00
+     *   lecture oct  RAM         32,00   K2GE 0x8008 32,00
+     *   ecriture mot RAM         28,00   K2GE 0x8020 28,00
+     *   lecture mot  SFR 0x0020  20,00   VRAM 0x9F00 ~23,95 (gigue)
+     * Nous rendions 16 / 28 / 16 / 34 / 12 / 16 : `charge_data_access` excluait le K2GE
+     * et les SFR, et `vram_wait` freinait aussi les ecritures de REGISTRES (0x8000+).
+     * Arme : (1) le K2GE et les SFR paient `data_access_cycles` ; (2) `vram_wait` ne
+     * freine plus les registres de controle 0x8000-0x81FF -- palettes (0x8200+) et
+     * table des sprites (0x8800+) gardent l'etranglement, NON MESURES ; (3) une LECTURE
+     * VRAM 0x9000-0xBFFF en affichage actif paie `vram_read_wait` en plus.
+     * ⚠️ SFR : l'instruction `ld IZ,(0x20)` a un octet de moins que celle de la RAM ; le
+     * silicium n'en tire aucun gain, nous si -- l'arme laisse 16 contre 20. Non resolu. */
+    bool     k2ge_access_as_ram = false;
+    uint32_t vram_read_wait = 0;
     /* Accumulateur de l'instruction en cours, en cycles entiers.
      *
      * ⛔ IL EST SEPARE DE `access_wait`, ET C'EST LE POINT. `access_wait` est du temps
@@ -2110,14 +2127,17 @@ struct Machine {
     }
     /* Un acces de donnee, quelle que soit sa largeur. Les SFR (page 0x00-0xFF) et la
      * VRAM sont exclus : la premiere n'est pas de la memoire externe, la seconde a son
-     * propre etranglement (`vram_wait`) et n'a pas ete mesuree ici. */
+     * propre etranglement (`vram_wait`) et n'a pas ete mesuree ici.
+     * ⚡ Sauf avec `k2ge_access_as_ram` : la console les facture comme la RAM. */
     inline void charge_data_access(uint32_t a) const {
         if (!data_access_cycles) return;
         a &= kAddrMask;
         const bool ram  = (a >= 0x004000u && a < 0x008000u);
         const bool cart = (a >= 0x200000u && a <= 0x3FFFFFu) ||
                           (a >= 0x800000u && a <= 0x9FFFFFu);
-        if (ram || cart) data_wait_cycles += data_access_cycles;
+        const bool io   = k2ge_access_as_ram &&
+                          (a < 0x000100u || (a >= 0x008000u && a <= 0x00BFFFu));
+        if (ram || cart || io) data_wait_cycles += data_access_cycles;
     }
 
     inline uint32_t read32(uint32_t a) const {

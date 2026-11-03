@@ -39,7 +39,9 @@ extern "C" {
  *     + ngpc_link_relay_count, so "how often was the cable relayed" stays
  *       measurable now that the relaying happens in here. */
 /* 19: + ngpc_flash_peek -- the cartridge's CELLS, whatever mode the chip is in. */
-#define NGPC_ABI_VERSION 19
+/* 20: + ngpc_set_k2ge_access_model -- K2GE/SFR accesses priced like RAM, VRAM reads
+ *     throttled (console, 03/11/2026: hw_calibration v22 + v23). */
+#define NGPC_ABI_VERSION 20
 
 /* ---------------------------------------------------------------- status --
  * Execution status of one instruction. The tri-state "requires-known-*"
@@ -389,6 +391,8 @@ NGPC_API void ngpc_set_irq_transparent_queue(ngpc_t*, int on);
 /* ESSAI : un transfert bloc paie l'etranglement VRAM. */
 NGPC_API void ngpc_set_block_pays_vram(ngpc_t*, int on);
 NGPC_API void ngpc_set_data_wait_cart_only(ngpc_t*, int on);
+/* EXPERIMENT : acces K2GE/SFR au prix de la RAM + lecture VRAM freinee (console 03/11). */
+NGPC_API void ngpc_set_k2ge_access_model(ngpc_t*, int as_ram, uint32_t vram_read_wait);
 NGPC_API void ngpc_set_irq_queue_keep_q16(ngpc_t*, int32_t q16);
 /* Instrumentation du modele en OCTETS : etat de la file a l'entree de la derniere
  * instruction (1/16 d'octet), octets qu'elle a fait lire, calage paye, access_wait. */
