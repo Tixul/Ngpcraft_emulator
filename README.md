@@ -294,7 +294,9 @@ of saves. Automatic data-root relocation is not implemented.
 
 The data root has one writer lock shared by the app and importer. A second install
 using that root forwards to the running instance; `--new-instance` requires a
-separate data root. This does not change existing two-console local-link save rules.
+separate data root. Managed `--robot` automation also requires an explicitly selected,
+already initialized test-data root and holds the same writer lock; it cannot use the
+default user profile implicitly. This does not change existing two-console local-link save rules.
 Keep sufficient space for the source-sized backup plus a separate working copy.
 An interrupted import retains its journal, source, backup and staging/profile copy;
 it never selects an empty replacement. A fully verified unactivated copy can be

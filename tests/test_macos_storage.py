@@ -460,6 +460,7 @@ def test_profile_switch_during_startup_is_checked_under_writer_lock(tmp_path, mo
     monkeypatch.setattr(paths, 'data_root', lambda: selected[0])
     monkeypatch.setattr(paths, 'base_root', lambda: tmp_path / 'data')
     monkeypatch.setattr(paths, 'data_lock', lock)
+    monkeypatch.setattr(paths, 'read_active', lambda _: {'profile': 'next'})
     monkeypatch.setattr(sys, 'argv', ['ngpc_shell.py'])
     monkeypatch.setattr(ui, 'prepare', lambda: True)
     monkeypatch.setattr(ui, 'show_error', lambda error: errors.append(str(error)))
@@ -470,3 +471,31 @@ def test_profile_switch_during_startup_is_checked_under_writer_lock(tmp_path, mo
     monkeypatch.setattr(shell, 'Shell', forbidden)
     assert shell.main() == 1
     assert len(errors) == 1 and 'profile changed' in errors[0]
+
+
+def test_runtime_cannot_adopt_unselected_storage(tmp_path, monkeypatch):
+    base = tmp_path / 'data'
+    monkeypatch.setenv(paths.DATA_ENV, str(base))
+    root = base / 'profiles/default'
+    write(root, 'saves/important.flash', b'progress')
+    with pytest.raises(paths.DataPathError, match='missing'):
+        with paths.runtime_writer(root):
+            pytest.fail('Unselected storage must never be writable by the game')
+    assert paths.read_active(base) is None
+    assert (root / 'saves/important.flash').read_bytes() == b'progress'
+
+
+def test_managed_robot_cannot_bypass_user_data_lock(tmp_path, monkeypatch):
+    import sys
+    import ngpc_shell as shell
+    def forbidden(*args):
+        raise AssertionError('Do not run an offscreen game against the default user profile')
+    monkeypatch.setitem(sys.modules, 'ngpc_robot', SimpleNamespace(prepare=lambda _: None, run=forbidden))
+    monkeypatch.setattr(shell, 'QApplication', lambda _: object())
+    monkeypatch.setattr(shell, 'APP_ICON', tmp_path / 'no-icon')
+    monkeypatch.setattr(shell, '_claim_windows_taskbar_identity', lambda: None)
+    monkeypatch.setattr(paths, 'managed', lambda: True)
+    monkeypatch.delenv(paths.DATA_ENV, raising=False)
+    monkeypatch.setattr(sys, 'argv', ['ngpc_shell.py', '--robot'])
+    with pytest.raises(SystemExit, match='isolated'):
+        shell.main()

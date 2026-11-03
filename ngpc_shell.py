@@ -7948,6 +7948,13 @@ def main() -> int:
         print("[timing] modele silicium (defaut). --timing legacy pour comparer.")
 
     if robot:
+        if ngpc_paths.managed():
+            # Offscreen automation must never bypass the real profile's writer
+            # lock. Require an explicitly selected, initialized test-data root.
+            if not os.environ.get(ngpc_paths.DATA_ENV):
+                raise SystemExit('Managed --robot requires an isolated, initialized NGPCRAFT_DATA_DIR.')
+            with ngpc_paths.runtime_writer(REPO):
+                return ngpc_robot.run(args, app)
         return ngpc_robot.run(args, app)
 
     # Imports are a startup tool, never a request forwarded to a running game.
@@ -7993,12 +8000,7 @@ def main() -> int:
         try:
             if not prepare():
                 return 0
-            storage.enter_context(ngpc_paths.data_lock(ngpc_paths.base_root()))
-            # Recheck under the writer lock: an import may have activated another
-            # profile between module import/prepare and acquiring this lock.
-            if ngpc_paths.data_root() != REPO:
-                raise ngpc_paths.DataPathError("The selected profile changed. Restart NgpCraft.")
-            ngpc_paths.probe_writable(REPO)
+            storage.enter_context(ngpc_paths.runtime_writer(REPO))
         except (OSError, ValueError, RuntimeError) as exc:
             storage.close()
             from ngpc_storage_ui import show_error

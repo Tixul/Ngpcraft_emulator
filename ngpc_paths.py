@@ -205,6 +205,17 @@ def initialize_empty(base: Path) -> Path:
         return root
 
 
+@contextmanager
+def runtime_writer(expected: Path):
+    """Hold the same lock as imports and validate selection after acquiring it."""
+    base = base_root()
+    with data_lock(base):
+        if not read_active(base) or data_root() != expected:
+            raise DataPathError('The selected profile changed or is missing. Restart NgpCraft; no fallback was used.')
+        probe_writable(expected)
+        yield
+
+
 def probe_writable(root: Path) -> None:
     fd, name = tempfile.mkstemp(prefix='.write-check-', dir=root)
     path = Path(name)
