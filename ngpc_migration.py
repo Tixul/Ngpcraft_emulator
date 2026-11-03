@@ -144,6 +144,23 @@ def preview(source: Path, base: Path, bindings: dict | None = None,
                 return path_map[old] + name[len(old):]
         return name
     renames, conflicts = {}, []
+    # Do not switch a legacy folder preference to a copied folder while silently
+    # leaving referenced personal files behind in an unrecognized bundle location.
+    referenced = set(known)
+    from PyQt6.QtCore import QSettings
+    for name in ('config.ini', 'settings_backup.ini', 'settings_backup.prev.ini'):
+        if name in files:
+            settings = QSettings(str(source / name), QSettings.Format.IniFormat)
+            for key in ('paths/rom_folder', 'paths/bios', 'paths/bios_mono', 'paths/screenshots', 'paths/filters'):
+                value = settings.value(key, '', type=str)
+                if value:
+                    referenced.add(value)
+            if settings.status() != QSettings.Status.NoError:
+                raise MigrationError(f'Cannot read legacy settings: {name}')
+    for value in referenced:
+        internal = any(value.startswith(str(root) + os.sep) for root in (source, origin))
+        if internal and mapped(value) == value:
+            conflicts.append(f'{value}: referenced internal data is outside the import inventory; preserve and review manually')
     for rel in files:
         path = Path(rel)
         stem, suffix = None, None

@@ -97,7 +97,8 @@ def remap_legacy_path(value: str) -> str:
     if not manifest.exists():
         return value
     try:
-        mapping = json.loads(manifest.read_text())['plan']['path_map']
+        plan = json.loads(manifest.read_text())['plan']
+        mapping = plan['path_map']
         if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                 for k, v in mapping.items()):
             raise ValueError('invalid path map')
@@ -106,6 +107,8 @@ def remap_legacy_path(value: str) -> str:
         for old in sorted(mapping, key=len, reverse=True):
             if Path(old).suffix.lower() in {'.zip', '.7z'} and value.startswith(old + os.sep):
                 return mapping[old] + value[len(old):]
+        if any(value.startswith(plan[name] + os.sep) for name in ('source', 'origin')):
+            raise DataPathError('A legacy internal path was not imported. Keep the old app and review this reference.')
         return value
     except (ValueError, KeyError, TypeError) as exc:
         raise DataPathError('Invalid migration path map; no empty-path fallback was used.') from exc

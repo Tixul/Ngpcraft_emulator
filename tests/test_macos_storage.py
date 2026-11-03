@@ -398,3 +398,21 @@ def test_imported_save_round_trip_uses_native_persistence(tmp_path, monkeypatch)
     with ns.NativeSession(game, save_to_rom=False, sidecar=True, flash_size=len(rom)) as restarted:
         assert restarted.save_loaded
         assert restarted.machine.flash_peek(address, 1) == b'\x88'
+
+
+def test_unrecognized_but_referenced_internal_files_block_activation(legacy, tmp_path):
+    game = write(legacy, 'custom-location/Other.ngc', b'personal ROM')
+    write(legacy, 'library.json', json.dumps({'games': {str(game): {}}}).encode())
+    plan = migration.preview(legacy, tmp_path / 'data')
+    assert any('outside the import inventory' in c for c in plan.conflicts)
+    with pytest.raises(migration.MigrationError):
+        migration.execute(plan, confirmed=True)
+    assert game.read_bytes() == b'personal ROM'
+
+
+def test_unmapped_native_preference_path_fails_visibly_after_import(legacy, tmp_path, monkeypatch):
+    base = tmp_path / 'data'
+    migration.execute(migration.preview(legacy, base), confirmed=True)
+    monkeypatch.setenv(paths.DATA_ENV, str(base))
+    with pytest.raises(paths.DataPathError, match='not imported'):
+        paths.remap_legacy_path(str(legacy / 'unknown-bios.bin'))

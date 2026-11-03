@@ -233,7 +233,8 @@ creates a hash-verified backup, then copies into a separate profile. Only after
 verification is the active selection changed atomically; restart is required.
 Nothing is merged, deleted or overwritten in the old application or another profile.
 Close **all** emulator instances before importing. Sources changing during the copy,
-symlinks and ambiguous save bindings stop the import. Unknown/unlisted files in the
+symlinks and ambiguous save bindings stop the import. References to internal files
+outside the inventory also block activation instead of silently omitting them. Unknown/unlisted files in the
 old bundle are left untouched and require manual review; keep the whole old app.
 
 If the backup was renamed/moved, supply its original installation location when
