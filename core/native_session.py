@@ -63,14 +63,15 @@ CYCLES_PER_FRAME = CYCLES_PER_SCANLINE * SCANLINES_PER_FRAME
 # format either way, and copying it next to a ROM is all another emulator needs.
 # Frozen into a single .exe, this must sit BESIDE the .exe (writable, persistent) --
 # never under sys._MEIPASS, whose extraction dir is wiped when the process exits.
-if getattr(sys, "frozen", False):
-    SAVE_DIR = Path(sys.executable).resolve().parent / "saves"
-else:
-    SAVE_DIR = Path(__file__).resolve().parent.parent / "saves"
+import ngpc_paths
+SAVE_DIR = ngpc_paths.data_root() / "saves"
 
 
 def default_save_path(rom_path: Path) -> Path:
-    return SAVE_DIR / f"{rom_path.stem}.flash"
+    target = SAVE_DIR / f"{ngpc_paths.rom_key(rom_path)}.flash"
+    if ngpc_paths.managed() and not target.exists() and (SAVE_DIR / f"{rom_path.stem}.flash").exists():
+        raise RuntimeError("An unassigned legacy save exists. Import it with an explicit ROM binding first.")
+    return target
 
 
 # The CONSOLE's memory, not a cartridge's: one file for the machine, whatever is in the

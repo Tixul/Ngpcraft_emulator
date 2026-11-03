@@ -67,7 +67,10 @@ CONFIG_FILENAME = "config.ini"
 
 
 def _app_dir() -> Path:
-    """Folder the emulator lives in: next to the exe when frozen, else this module."""
+    """Writable profile for managed installs; historical app directory otherwise."""
+    import ngpc_paths
+    if ngpc_paths.managed():
+        return ngpc_paths.data_root()
     if getattr(sys, "frozen", False):            # PyInstaller / frozen build
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
@@ -91,7 +94,7 @@ def portable_mode() -> bool:
     Portable when `NGPCRAFT_SETTINGS` is set (the test redirect, and any explicit
     request), OR a `config.ini` already exists next to the app. Otherwise the native
     store (the Windows registry) is used."""
-    if os.environ.get(SETTINGS_FILE_ENV):
+    if os.environ.get(SETTINGS_FILE_ENV) or os.environ.get("NGPCRAFT_DATA_DIR"):
         return True
     return Path(config_path()).is_file()
 
@@ -115,6 +118,8 @@ def set_portable(enabled: bool) -> None:
     """Switch storage location, migrating the current values across so nothing is lost.
     Enabling writes/keeps the local `config.ini`; disabling copies its values back into
     the registry and removes the file so it stops being detected."""
+    if not enabled and os.environ.get("NGPCRAFT_DATA_DIR"):
+        return  # An explicit portable root cannot be disabled by deleting its INI.
     src = make_settings()
     if enabled == portable_mode():
         if enabled:
@@ -238,11 +243,13 @@ def protect_settings(s: QSettings) -> int:
 
 # --- typed accessors ------------------------------------------------------
 def rom_folder(s: QSettings) -> str:
-    return s.value("paths/rom_folder", "", type=str)
+    from ngpc_paths import remap_legacy_path
+    return remap_legacy_path(s.value("paths/rom_folder", "", type=str))
 
 
 def bios_path(s: QSettings) -> str:
-    return s.value("paths/bios", "", type=str)
+    from ngpc_paths import remap_legacy_path
+    return remap_legacy_path(s.value("paths/bios", "", type=str))
 
 
 def bios_mono_path(s: QSettings) -> str:
@@ -253,7 +260,8 @@ def bios_mono_path(s: QSettings) -> str:
     K2GE colour register. A cartridge reads that byte to decide which machine it is
     running on -- which is exactly why some games show a different screen on an NGP --
     so booting the mono console properly needs the mono BIOS, not the colour one."""
-    return s.value("paths/bios_mono", "", type=str)
+    from ngpc_paths import remap_legacy_path
+    return remap_legacy_path(s.value("paths/bios_mono", "", type=str))
 
 
 # WHICH of the three BIOS images boots. Three slots, one choice -- rather than a path
@@ -286,7 +294,8 @@ def filters_dir(s: QSettings) -> str:
     is created for it: the emulator already writes enough directories beside itself
     without adding an empty one for a feature most users never enable. See
     ngpc_filters.py for why these are loaded rather than shipped."""
-    return s.value("paths/filters", "", type=str)
+    from ngpc_paths import remap_legacy_path
+    return remap_legacy_path(s.value("paths/filters", "", type=str))
 
 
 def lcd_scale(s: QSettings) -> int:
@@ -465,13 +474,16 @@ def rewind_seconds(s: QSettings) -> int:
 def save_mode(s: QSettings) -> str:
     """Where a game's own save goes: 'rom' = into the .ngc (like a real cartridge's flash),
     'sidecar' = a separate saves/<rom>.flash (ROM untouched), 'both' = ROM + a backup file."""
-    m = str(s.value("general/save_mode", SAVE_ROM, type=str))
-    return m if m in SAVE_MODES else SAVE_ROM
+    from ngpc_paths import managed
+    default = SAVE_SIDECAR if managed() else SAVE_ROM
+    m = str(s.value("general/save_mode", default, type=str))
+    return m if m in SAVE_MODES else default
 
 
 def screenshot_dir(s: QSettings) -> str:
     """Folder screenshots (F12) are written to. Empty -> the shell's default."""
-    return str(s.value("paths/screenshots", "", type=str))
+    from ngpc_paths import remap_legacy_path
+    return remap_legacy_path(str(s.value("paths/screenshots", "", type=str)))
 
 
 def run_ahead(s: QSettings) -> int:

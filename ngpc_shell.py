@@ -80,16 +80,10 @@ from ngpc_debug import DebugWindow  # noqa: E402
 # The BIOS reads the flash card-type, sees nothing, and shows its own screen.
 _NO_CART = b"\xff" * 0x10000
 
-# Two roots. When frozen into a single .exe (PyInstaller), read-only resources
-# bundled inside it (the icon) live under sys._MEIPASS, while user data — ROMs,
-# saves, screenshots — must live BESIDE the .exe so it survives across launches
-# (the _MEIPASS extraction dir is wiped on exit). From source both are the repo.
-if getattr(sys, "frozen", False):
-    REPO = Path(sys.executable).resolve().parent      # writable data, next to the .exe
-    BUNDLE = Path(getattr(sys, "_MEIPASS", REPO))     # read-only, bundled in the .exe
-else:
-    REPO = Path(__file__).resolve().parent
-    BUNDLE = REPO
+# Read-only resources stay in the bundle. Managed macOS data lives outside it.
+import ngpc_paths
+REPO = ngpc_paths.data_root()
+BUNDLE = Path(getattr(sys, "_MEIPASS", ngpc_paths.install_root()))
 SCREEN_W, SCREEN_H = 160, 152
 # Real-BIOS boot: how many BIOS frames to let run before handing off to the cart, so the
 # whole NEO GEO POCKET intro plays (logo ~frame 300, intro ends ~460) instead of being
@@ -3018,15 +3012,15 @@ class PlayPage(QWidget):
 
     # ---- lifecycle
     def _watch_path(self) -> Path:
-        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        stem = ngpc_paths.rom_key(self._rom_path) if self._rom_path else "ngpc"
         return WATCH_DIR / f"{stem}.json"
 
     def _break_path(self) -> Path:
-        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        stem = ngpc_paths.rom_key(self._rom_path) if self._rom_path else "ngpc"
         return WATCH_DIR / f"{stem}.breaks.json"
 
     def _cheat_path(self) -> Path:
-        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        stem = ngpc_paths.rom_key(self._rom_path) if self._rom_path else "ngpc"
         return WATCH_DIR / f"{stem}.cheats.json"
 
     def save_cheats(self) -> None:
@@ -4000,7 +3994,7 @@ class PlayPage(QWidget):
         if self._rom_path is None:
             return None
         STATE_DIR.mkdir(exist_ok=True)
-        return STATE_DIR / f"{self._rom_path.stem}.s{slot}"
+        return STATE_DIR / f"{ngpc_paths.rom_key(self._rom_path)}.s{slot}"
 
     def _mirror_blocks(self) -> bool:
         """True (and says so) when an action would rewind THIS console only.
@@ -7958,20 +7952,45 @@ def main() -> int:
     new_instance = single.FLAG in args
     if new_instance:
         args.remove(single.FLAG)
+    force_import = "--import-data" in args
+    if force_import:
+        args.remove("--import-data")
     rom = args[0] if args else None
     name = single.server_name(REPO)
     # Finder normally sends Apple Events directly to the existing macOS
     # process. For a separately launched process, drain already queued events
     # before handing its explicit command-line request to the socket server.
     app.processEvents()
-    if not new_instance and single.forward(name, rom):
+    if not force_import and not new_instance and single.forward(name, rom):
         if sys.platform == "darwin" and rom is None:
             app.forward_startup_events(lambda path: single.forward(name, path))
         else:
             app.set_open_handler(lambda path: single.forward(name, path))
             app.processEvents()
         return 0
-    shell = Shell(rom)
+    # Profile activation is startup-only and requires restart. A lock shared by
+    # migration and every managed app instance prevents competing writers.
+    from contextlib import ExitStack
+    storage = ExitStack()
+    if ngpc_paths.managed():
+        from ngpc_storage_ui import prepare
+        try:
+            if not prepare(force_import=force_import):
+                return 0
+            if ngpc_paths.data_root() != REPO:
+                raise ngpc_paths.DataPathError("The selected profile changed. Restart NgpCraft.")
+            storage.enter_context(ngpc_paths.data_lock(ngpc_paths.base_root()))
+            ngpc_paths.probe_writable(REPO)
+        except (OSError, ValueError, RuntimeError) as exc:
+            storage.close()
+            QMessageBox.critical(None, "User data unavailable", str(exc))
+            return 1
+    try:
+        shell = Shell(rom)
+    except BaseException:
+        storage.close()
+        raise
+    app.aboutToQuit.connect(storage.close)
     if not new_instance:
         shell._instance_server = single.InstanceServer(name, shell)
         shell._instance_server.requested.connect(app.queue_open)
@@ -7981,6 +8000,7 @@ def main() -> int:
     # window exists. This is what puts our picture on the taskbar button (see above).
     stamp_taskbar_icon(shell)
     rc = app.exec()
+    storage.close()
     if shell._staged_exe is not None:
         # An update waits beside us. Swapped in only NOW, window gone: past this line
         # a first-time import would read the new executable (ngpc_update.stage).

@@ -165,7 +165,8 @@ On Windows a prebuilt core (`cpp/build/ngpc_core.dll`) is included, so it runs a
 ### Prebuilt download (no Python needed)
 
 Grab the build for your platform from the [Releases](../../releases) page and run it —
-nothing to install. ROMs, saves and screenshots live in folders next to the app.
+nothing to install. Windows/Linux keep ROMs, saves and screenshots next to the program.
+Packaged macOS builds use the external data profiles described below.
 
 **Windows, Linux and macOS are built from this same source** by GitHub Actions
 ([`.github/workflows/build.yml`](.github/workflows/build.yml)): each tagged release runs the
@@ -208,6 +209,76 @@ tracked in [PR #32](https://github.com/Tixul/Ngpcraft_emulator/pull/32).
 This integration does not implement safe data migration. Legacy data may be inside
 the `.app`, and the default save mode may write into ROM files. Preserve the old
 application and related data before replacing an existing installation.
+
+### macOS data and legacy imports
+
+Packaged macOS builds keep writable data under
+`~/Library/Application Support/NgpCraft/`, in the profile selected by
+`active-profile.json`. Python/Qt, language files, official artwork and the bundled
+clean-room HLE BIOS remain read-only application resources. Running from source and
+Windows/Linux retain their existing paths unless explicitly opted in.
+
+**Preserve your entire old `.app` before replacing it.** Older builds stored ROMs,
+flash saves, console RAM/RTC, savestates, debugger watches/breakpoints/cheats, covers,
+thumbnails, screenshots/GIFs/recordings, logs, play history and portable/settings
+backup INIs inside `.app/Contents/MacOS`. Optional BIOS files may also be there.
+The old default save mode could modify the ROM itself: back up ROMs as well as
+`saves/`. This change cannot recover files already discarded with an old bundle,
+and is not a recommendation to overwrite an existing installation.
+
+On first launch, choose an explicit new profile or import from the preserved old
+application/data directory. Launch with `--import-data` to import another backup
+later. An import previews the file list and destination, requires confirmation,
+creates a hash-verified backup, then copies into a separate profile. Only after
+verification is the active selection changed atomically; restart is required.
+Nothing is merged, deleted or overwritten in the old application or another profile.
+Close **all** emulator instances before importing. Sources changing during the copy,
+symlinks and ambiguous save bindings stop the import. Unknown/unlisted files in the
+old bundle are left untouched and require manual review; keep the whole old app.
+
+If the backup was renamed/moved, supply its original installation location when
+asked, so references to verified copied files can be mapped correctly. External ROMs,
+BIOS and folders are not copied, moved or rewritten. Native QSettings retain their
+existing organization/application identity; imported internal path references are
+mapped when read. Existing explicit save modes remain respected. The managed
+profile's default, when no mode was selected, is **Separate file**; selecting
+**In the ROM** or **Both** can still write an external ROM.
+
+For a fixed, explicitly selected portable location, set `NGPCRAFT_DATA_DIR` to an
+absolute directory **outside every `.app`** before launching. It contains profiles,
+backups and portable INI settings. `NGPCRAFT_SETTINGS` remains a settings-only
+redirect. The application can move independently of this data directory. Do not move
+or rename the data directory itself: paths/save identities are bound to its absolute
+location and startup refuses a relocated selection instead of silently losing track
+of saves. Automatic data-root relocation is not implemented.
+
+The data root has one writer lock shared by the app and importer. A second install
+using that root forwards to the running instance; `--new-instance` requires a
+separate data root. This does not change existing two-console local-link save rules.
+Keep sufficient space for the source-sized backup plus a separate working copy.
+An interrupted import retains its journal, source, backup and staging/profile copy;
+it never selects an empty replacement. A fully verified unactivated copy can be
+resumed by applying the same plan. Earlier incomplete copies remain for inspection.
+
+For explicit ambiguous-ROM bindings or recovery, run from this source tree with its
+Python dependencies installed (use a scratch data root to experiment):
+
+```bash
+python ngpc_migration.py preview /path/to/Old.app --data-dir /path/to/data > plan.json
+# Review plan.json. --origin supplies the original app path for a moved backup.
+# --bindings accepts a JSON object: {"saves/Game.flash": "/absolute/path/Game.ngc"}.
+python ngpc_migration.py apply plan.json --confirm
+python ngpc_migration.py status --data-dir /path/to/data
+python ngpc_migration.py rollback TRANSACTION_ID --data-dir /path/to/data --confirm
+```
+
+Rollback snapshots new profile progress before restoring a previous managed profile;
+both profiles are retained. With no previous managed profile it refuses to select
+blank data: use the preserved old app instead. Native preference changes are not
+rewound by profile rollback. Backups are never automatically cleaned up.
+Developer ID signing, notarization, translocation/first-download behavior and a full
+release upgrade matrix still need separate distribution acceptance. A writable data
+root does not solve every existing runtime save-error or disk-failure scenario.
 
 ### Staying up to date
 
@@ -552,8 +623,10 @@ Three different things, kept separate:
 - **In-game saves** — the game's OWN save (RPG progress, high scores, options), written by
   the cartridge's flash. Choose how it is stored in **Settings ▸ General ▸ "In-game save"**:
   - **In the ROM (.ngc)** — written back into the cartridge file itself, exactly like the
-    flash chip on a real cartridge. The save travels with the ROM. *(default)*
-  - **Separate file** — a `saves/<rom>.flash` beside it; the ROM is never modified.
+    flash chip on a real cartridge. The save travels with the ROM. *(legacy/source default)*
+  - **Separate file** — a `saves/<rom>.flash` in user data; the ROM is never modified.
+    This is the managed macOS default. Managed filenames include a path hash to
+    distinguish same-named games in different folders.
   - **Both** — into the ROM and a `.flash` backup.
 
   Commercial games reach the flash through the **BIOS** — and the built-in clean-room BIOS
