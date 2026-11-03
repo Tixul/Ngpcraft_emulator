@@ -173,8 +173,26 @@ test suite on all three and packages one archive per platform. PyInstaller canno
 cross-compile, so every build is made on its own machine — which is the whole reason that
 workflow exists.
 
-> The macOS app is **not code-signed**, so Gatekeeper warns the first time: right-click ▸
-> **Open** to run it anyway.
+### macOS application bundle and upgrades
+
+Keep the complete **`NgpCraftEmulator.app`** bundle together; do not move only its
+executable out of `Contents/MacOS`. macOS builds use PyInstaller's **onedir** layout
+inside the app, avoiding onefile's dependency extraction on every launch. The bundle
+icon reuses the existing official artwork. Windows and Linux remain onefile builds.
+
+**Before replacing an existing macOS application, preserve the old `.app` and back up
+its user data.** Saves, save states, covers, library history and portable settings may
+live inside `NgpCraftEmulator.app/Contents/MacOS`; replacing the whole bundle can discard
+them. Also back up external ROMs: the default in-game save mode writes saves into the
+ROM itself. Keep the old application and backups until games, saves and settings have
+been checked. Application Support migration and safe upgrade handling are not yet
+implemented, so do not treat a new bundle as a safe drop-in replacement.
+
+This packaging change preserves existing data paths; it does not resolve read-only
+installations, App Translocation or writing user data inside a signed bundle.
+PyInstaller applies **ad-hoc signing**, but Developer ID signing and notarization are
+not configured. Initial signature validation does not establish that these remaining
+installation and persistence issues are solved.
 
 ### Staying up to date
 
@@ -184,13 +202,15 @@ asks GitHub for the latest release and tells you whether there is a newer one.
 - **Windows and Linux**: *Install and restart* downloads that release's archive, replaces
   the program and starts the new version. Saying *no* to the restart is fine: the update is
   then installed when you close the emulator.
-- **macOS**: the button opens the download page instead. The app is not signed, and macOS
-  treats an app replaced behind its back worse than one you downloaded yourself.
+- **macOS**: the button opens the download page instead of replacing the application.
+  Follow the [macOS backup precautions](#macos-application-bundle-and-upgrades) before
+  changing an existing installation.
 - **At startup** the emulator checks by itself, at most once a day, and never opens a window
   over a game you are playing (the Settings page says it instead). Untick *Check for
   updates at startup* to turn this off; *Skip this version* silences one release.
-- **Your data is kept**: only the program file is replaced. Saves, save states, settings,
-  covers and the library sit in folders next to it and are not touched.
+- **Windows/Linux in-app updates keep your data**: only the program file is replaced.
+  Saves, save states, settings, covers and the library sit in folders next to it and
+  are not touched.
 - If the emulator is installed in a folder it cannot write to (`Program Files`), it says so
   and opens the download page instead.
 
@@ -393,9 +413,11 @@ empty.)
 
 To use your own image instead, right-click a game ▸ **Choose cover image…**. The file is
 copied into **`covers/`** — a folder the emulator only ever *reads*. Nothing regenerates
-it, no update replaces it, and overwriting the install to upgrade keeps it, because
-`covers/` is your data and ships in no archive. Right-click ▸ **Back to the auto cover**
-undoes it.
+it, and it is not included in release archives. Windows/Linux in-app updates replace
+only the program file and keep it. On macOS, `covers/` may be inside the application
+bundle: preserve it before replacing the app, as described in the
+[macOS upgrade precautions](#macos-application-bundle-and-upgrades).
+Right-click ▸ **Back to the auto cover** undoes it.
 
 You can also drop files in yourself: `covers/<ROM file name>.png` (also `.jpg`, `.bmp`,
 `.gif`, `.webp`) — e.g. `covers/Faselei! (Europe).png`. Any size works; it is scaled to
