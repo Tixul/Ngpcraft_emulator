@@ -43,13 +43,15 @@ USER_SLOT = {
 # handlers there. CROSS-WIRED versus the SDK's names -- 0x18 ("INTTX0") receives,
 # 0x19 ("INTRX0") transmits, so 0x6FE4 holds the RX handler. See machine.hpp.
 
-VBLANK_PAD_LOOPS = 64    # calibrated: VBlank vector -> game handler = retail's 882 cy
+VBLANK_PAD_LOOPS = 54    # calibrated: VBlank vector -> game handler = retail's 882 cy
+VBLANK_PAD_NOPS = 2      # even, to keep fetch-word parity below
 SYSFONT_PAD_LOOPS = 21   # calibrated with SYSFONT_TAIL_LOOPS: SYSFONTSET = retail ~1.45 M cy
 SYSFONT_TAIL_LOOPS = 4700
 FLASHWRITE_PAD_LOOPS = 7  # calibrated: FLASHWRITE = retail ~109 k cy per 256 B (<= 7: short-form ld)
 COMSTATUS_TX_PAD = 3    # calibrated: COMSENDSTATUS = retail 82 cy
 COMSTATUS_RX_PAD = 6    # calibrated: COMRECIVESTATUS = retail 122 cy
 CLOCKGEAR_PAD = 12       # calibrated: CLOCKGEARSET = retail ~165 cy
+INTLVSET_PAD = 6         # calibrated: INTLVSET = retail 424-454 cy
 
 HW_TABLE_SLOTS = 60     # 0xFFFF00 .. 0xFFFFF0, 4 bytes each
 SYSCALL_SLOTS = 32       # 0xFFFE00 .., swi 1 dispatch indices 0..0x1A used
@@ -697,7 +699,9 @@ def gen():
     # The per-byte pad moves in ~49 k-cycle steps; the remainder is paid once here.
     # ⚠️ Any byte added ABOVE a hot loop shifts it across a 16-bit fetch word and its
     # cost jumps (measured: `ld iz,8` leaving the short form cost +25 % here).
-    # Re-measure all three pads (VBlank, SYSFONTSET, FLASHWRITE) after any edit.
+    # Re-measure all three pads (VBlank, SYSFONTSET, FLASHWRITE) after any edit,
+    # and keep every insertion an EVEN number of bytes (pad with a nop): measured, an
+    # odd insertion in INTLVSET took the VBlank from 890 to 1098 cycles.
     A(f"\tldw\tbc, {SYSFONT_TAIL_LOOPS}")
     A("_sfs_tail:")
     A("\tdjnz\tbc, _sfs_tail")
@@ -1206,6 +1210,15 @@ def gen():
     A(";  source -> shadow:  0,1 -> 0x6C24,0x6C25 | 2,3 -> 0x6C27 | 4,5 -> 0x6C28")
     A(";                     6,7 -> 0x6C2A        | 8,9 -> 0x6C2B")
     A("_sc_intlvset:")
+    # Retail 424-454 cycles, ours 340-356 (measured, 5 sources): Card Fighters' Clash 2
+    # calls it through swi 1 at boot, and that ~100-cycle lead was still visible
+    # frames later. XWA is handed back untouched, as retail does.
+    A("\tpush\twa")
+    A(f"\tldb\tw, {INTLVSET_PAD}")
+    A("_ilv_pad:")
+    A("\tdjnz\tw, _ilv_pad")
+    A("\tpop\twa")
+    A("\tnop                          ; keeps everything below on its fetch-word parity")
     A("\tpush\txhl")
     A("\tpush\txde")
     A("\tpush\txix")
@@ -1275,6 +1288,36 @@ def gen():
     # steps on the pad diverged from the retail run within seconds.
     A("\tldb\t(0x006f82), (0x006c5f) ; Sys_Lever = last frame's sample (retail)")
     A("\tldb\t(0x006c5f), (0x0000b0) ; keep this frame's for the next VBlank")
+    # The battery measurement, as retail runs it from its VBlank (0xFF21BE..0xFF21D2
+    # and 0xFF2E5D): unless 0x6F83 bit 3 opts out, count frames in 0x6C18 and, once
+    # the count reaches 0x6C1A, start the ADC -- INTE0AD = (shadow & 0x0F) | 0x20
+    # (AD end at level 2), ADMOD 0x6D = 4, 0x6F89 bit 7 = 'measuring'. The INTAD
+    # handler below stores the result and re-arms the count at 600 frames. Measured
+    # under bios.bin: frame 1 after the hand-off, then every 600 -- and that is what
+    # leaves INTE0AD at 0x00 (INT0 closed) for the rest of the game, where we used to
+    # leave the hand-off's 0x02 forever. (Retail's low-battery SHUTDOWN check is not
+    # reproduced: the core's battery always reads full.)
+    A("\tpush\twa")
+    A("\tldb\ta, (0x006f83)")
+    A("\tbit\t3, a")
+    A("\tjr\tnz, _vb_nobat")
+    A("\tld\twa, (0x006c18)")
+    A("\tinc\t1, wa")
+    A("\tld\t(0x006c18), wa")
+    A("\tcp\twa, (0x006c1a)")
+    A("\tjr\tc, _vb_nobat")
+    A("\tldb\ta, (0x006c24)")
+    A("\tandb\ta, 0x0f")
+    A("\torb\ta, 0x20")
+    A("\tldb\t(0x006c24), a")
+    A("\tldb\t(0x000070), a")
+    A("\tldb\ta, 0x04")
+    A("\tldb\t(0x00006d), a           ; ADMOD: start the conversion")
+    A("\tldb\ta, (0x006f89)")
+    A("\torb\ta, 0x80")
+    A("\tldb\t(0x006f89), a")
+    A("_vb_nobat:")
+    A("\tpop\twa")
     # Retail spends 882 cycles (69 instructions, measured on the silicon timing)
     # between the VBlank vector and the game's handler: power/battery/auto-off
     # bookkeeping, the Z80 queue, the RTS guard. Ours was 98. That gap is CPU time
@@ -1284,6 +1327,8 @@ def gen():
     A(f"\tld\tbc, {VBLANK_PAD_LOOPS}")
     A("_vb_pad:")
     A("\tdjnz\tbc, _vb_pad")
+    for _ in range(VBLANK_PAD_NOPS):      # the loop moves in 12-cycle steps: fine-tune
+        A("\tnop")
     A("\tpop\tbc")
     A("\tpushw\t(0x006fce)              ; user VBlank handler, high word")
     A("\tpushw\t(0x006fcc)              ;                       low word")
@@ -1291,8 +1336,139 @@ def gen():
     A("")
     A("; --- chain trampolines: forward IRQ to the game's user handler ---")
     # emit one chain routine per user-hooked vector (except vblank, above)
-    chain_label = {}
+    # --- Z80 -> CPU interrupt (vector 12). Retail 0xFF2282, measured on 123 ROMs: ---
+    # the game's handler at 0x6FD0 runs ONLY when 0x6F83 bit 6 says the game owns the
+    # sound side -- and no game in the corpus sets it (0x6F83 = 0x10 throughout), while
+    # 93 of them install a handler there (the SDK's default table) and ~80 get a few
+    # Z80 interrupts. Chaining unconditionally ran game code a console never runs.
+    # Otherwise retail starts ITS timer 3 once (0xFF3350 with WA = 2000: TREG3 = 98,
+    # T3 flip-flop on, TRUN |= 0x88), flags it in 0x6DA2 bit 7, and RETIs.
+    A("_isr_z80:")
+    A("\tpush\twa")
+    A("\tldb\ta, (0x006f83)")
+    A("\tbit\t6, a")
+    A("\tjr\tnz, _z80_user")
+    A("\tldb\ta, (0x006da2)")
+    A("\tbit\t7, a")
+    A("\tjr\tnz, _z80_done")
+    A("\tldb\ta, (0x000020)")
+    A("\tandb\ta, 0xf7                ; timer 3 stopped while it is set up")
+    A("\tldb\t(0x000020), a")
+    A("\tldb\ta, (0x000028)")
+    A("\tandb\ta, 0x33")
+    A("\torb\ta, 0x04                 ; T23MOD")
+    A("\tldb\t(0x000028), a")
+    A("\tldb\ta, (0x000025)")
+    A("\tandb\ta, 0x0f")
+    A("\torb\ta, 0xb0                 ; TFFCR: timer 3 flip-flop")
+    A("\tldb\t(0x000025), a")
+    A("\tldb\ta, 98                   ; TREG3 = round(2000 * 1000 / 0x5000)")
+    A("\tldb\t(0x000027), a")
+    A("\tldb\ta, (0x000020)")
+    A("\torb\ta, 0x88                 ; TRUN: prescaler + timer 3")
+    A("\tldb\t(0x000020), a")
+    A("\tldb\ta, (0x006da2)")
+    A("\torb\ta, 0x80")
+    A("\tldb\t(0x006da2), a")
+    A("_z80_done:")
+    A("\tpop\twa")
+    A("\treti")
+    A("_z80_user:")
+    A("\tpop\twa")
+    A("\tpushw\t(0x006fd2)")
+    A("\tpushw\t(0x006fd0)")
+    A("\tret")
+    # --- RTC alarm (vector 10). Retail 0xFF2856: the game's handler at 0x6FC8 runs
+    # only if 0x6F83 bit 6 is set, the alarm is not a power-on one (0x6C46 != 0xFF)
+    # and 0x6C47 != 2; otherwise the BIOS keeps it (its rescheduler, 0xFF2AC5, is not
+    # reproduced -- see ALARMSET) and RETIs.
+    A("_isr_alarm:")
+    A("\tpush\twa")
+    A("\tldb\ta, (0x006c47)")
+    A("\tcp\ta, 2")
+    A("\tjr\tz, _al_bios")
+    A("\tldb\ta, (0x006f83)")
+    A("\tbit\t6, a")
+    A("\tjr\tz, _al_bios")
+    A("\tldb\ta, (0x006c46)")
+    A("\tcp\ta, 0xff")
+    A("\tjr\tz, _al_bios")
+    A("\tpop\twa")
+    A("\tpushw\t(0x006fca)")
+    A("\tpushw\t(0x006fc8)")
+    A("\tret")
+    A("_al_bios:")
+    A("\tpop\twa")
+    A("\treti")
+    # --- AD conversion end (vector 28). Retail 0xFF2DCE, instruction for instruction:
+    # INTE0AD back to the shadow's low nibble, battery = ADREG0 >> 6 into 0x6F80,
+    # count re-armed (600 frames), battery LED (0x8400/0x8402) driven, and the
+    # low / critical thresholds flagged (0x6F89 bit 6, 0x6F85 bit 5).
+    A("_isr_adc:")
+    A("\tpush\tsr")
+    A("\tldf\t3")
+    A("\tpush\twa")
+    A("\tldb\ta, (0x006c24)")
+    A("\tandb\ta, 0x0f")
+    A("\tldb\t(0x006c24), a")
+    A("\tldb\t(0x000070), a")
+    A("\tld\twa, (0x000060)")
+    A("\tsrl\t6, wa")
+    A("\tld\t(0x006f80), wa")
+    A("\tldw\t(0x006c1a), 600")
+    A("\tldw\t(0x006c18), 0")
+    A("\tcp\twa, 0x0200")
+    A("\tjr\tc, _adc_low")
+    A("\tldb\ta, (0x006f8a)")
+    A("\tbit\t7, a")
+    A("\tjr\tnz, _adc_end")
+    A("\tldb\ta, (0x0000b3)")
+    A("\tbit\t2, a")
+    A("\tjr\tz, _adc_end")
+    A("\tldb\ta, 0xff")
+    A("\tldb\t(0x008400), a           ; battery LED: steady")
+    A("\tldb\ta, 0x00")
+    A("\tldb\t(0x008402), a")
+    A("\tjr\t_adc_end")
+    A("_adc_low:")
+    A("\tldb\ta, (0x006f8a)")
+    A("\tbit\t7, a")
+    A("\tjr\tnz, _adc_thr")
+    A("\tldb\ta, (0x0000b3)")
+    A("\tbit\t2, a")
+    A("\tjr\tz, _adc_thr")
+    A("\tldb\ta, 0x17")
+    A("\tldb\t(0x008400), a           ; battery LED: blinking")
+    A("\tldb\ta, 0x30")
+    A("\tldb\t(0x008402), a")
+    A("_adc_thr:")
+    A("\tld\twa, (0x006f80)")
+    A("\tcp\twa, 0x01e2")
+    A("\tjr\tc, _adc_crit")
+    A("\tldw\t(0x006c1a), 0x003c        ; low: measure again in 60 frames")
+    A("\tldb\ta, (0x006f89)")
+    A("\torb\ta, 0x40")
+    A("\tldb\t(0x006f89), a")
+    A("\tjr\t_adc_end")
+    A("_adc_crit:")
+    A("\tldb\ta, (0x006c61)")
+    A("\tcp\ta, 0xff")
+    A("\tjr\tz, _adc_end")
+    A("\tldb\ta, (0x006f85)")
+    A("\torb\ta, 0x20")
+    A("\tldb\t(0x006f85), a")
+    A("_adc_end:")
+    A("\tldb\ta, (0x006f89)")
+    A("\tandb\ta, 0x7f")
+    A("\tldb\t(0x006f89), a")
+    A("\tpop\twa")
+    A("\tei\t7")
+    A("\tpop\tsr")
+    A("\treti")
+    chain_label = {10: "_isr_alarm", 12: "_isr_z80", 28: "_isr_adc"}
     for idx, slot in sorted(USER_SLOT.items()):
+        if idx in chain_label:
+            continue
         if idx == 11:
             chain_label[idx] = "_isr_vblank"
             continue
@@ -1331,7 +1507,9 @@ def gen():
         elif i == 1:
             tgt, note = "_swi1", "swi 1 (system call)"
         elif i in chain_label:
-            tgt, note = chain_label[i], f"-> user slot {USER_SLOT[i]:#06x}"
+            tgt = chain_label[i]
+            note = (f"-> user slot {USER_SLOT[i]:#06x}" if i in USER_SLOT
+                    else "BIOS-owned (battery ADC)")
         else:
             tgt, note = "_reti", "unused"
         A(f"\tdl\t{tgt:<12s}       ; {i:#04x} {note}")
