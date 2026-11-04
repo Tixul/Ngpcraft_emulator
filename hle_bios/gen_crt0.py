@@ -30,18 +30,18 @@ USER_SLOT = {
     17: UVT + 8 * 4,   # Timer 1
     18: UVT + 9 * 4,   # Timer 2
     19: UVT + 10 * 4,  # Timer 3
-    24: UVT + 11 * 4,  # Serial TX      (0x6FE4)
-    25: UVT + 12 * 4,  # Serial RX      (0x6FE8)
+    24: UVT + 11 * 4,  # Serial 0x18 = RX handler (0x6FE4)
+    25: UVT + 12 * 4,  # Serial 0x19 = TX handler (0x6FE8)
     29: UVT + 14 * 4,  # End micro-DMA 0 (0x6FF0)
     30: UVT + 15 * 4,  # End micro-DMA 1
     31: UVT + 16 * 4,  # End micro-DMA 2
     32: UVT + 17 * 4,  # End micro-DMA 3
 }
 
-# The two serial vectors do NOT trampoline to a user slot: the COM rings belong to
-# the BIOS, and the retail BIOS takes these over too. CROSS-WIRED versus the SDK's
-# names -- 0x18 ("INTTX0") receives, 0x19 ("INTRX0") transmits. See machine.hpp.
-SERIAL_ISR = {0x18: "_isr_ser_rx", 0x19: "_isr_ser_tx"}
+# The two serial vectors trampoline through their user slots like every other
+# vector (retail: 0x18 -> 0x6FE4, 0x19 -> 0x6FE8); COMINIT puts the BIOS's ring
+# handlers there. CROSS-WIRED versus the SDK's names -- 0x18 ("INTTX0") receives,
+# 0x19 ("INTRX0") transmits, so 0x6FE4 holds the RX handler. See machine.hpp.
 
 HW_TABLE_SLOTS = 60      # 0xFFFF00 .. 0xFFFFF0, 4 bytes each
 SYSCALL_SLOTS = 32       # 0xFFFE00 .., swi 1 dispatch indices 0..0x1A used
@@ -225,7 +225,13 @@ def gen():
     A(";  in BIOS work RAM. Only W (the vector number, already consumed) is clobbered.")
     A("SWI_SAVED_XIX\tequ\t0x006c44")
     A("SWI_STUB\tequ\t0x006c48")
+    A(";  !! IFF 7 FIRST, as the retail trap does (its first bytes are 06 07). The")
+    A(";  two cells above are global: a VBlank landing mid-call whose handler calls")
+    A(";  the BIOS itself rewrote them, and the outer call returned into nowhere")
+    A(";  (Puzzle Link 1/2, Magical Drop Pocket, during a flash erase). RETI below")
+    A(";  restores the caller's mask from the frame the trap pushed.")
     A("_swi1:")
+    A("\tei\t7")
     A("\tldf\t3                     ; W = RW3 = vector index")
     A("\tldl\t(SWI_SAVED_XIX), xix   ; the game's XIX -- restored before the stub runs")
     A("\tadd\tw, w")
@@ -633,8 +639,9 @@ def gen():
     A("\tandb\ta, c                   ; the rest take the background code")
     A("\torb\ta, d")
     A("\tldb\t(xiy+), a")
-    A("\tdecw\t1, hl")
-    A("\tjr\tnz, _sfs_loop")
+    A("\tdjnz\thl, _sfs_loop          ; NOT decw + jr nz: a 16-bit DEC sets no")
+    A("\t                             ; flag, so jr nz read the ORB above and the")
+    A("\t                             ; loop stopped at the first zero byte written")
     A("\tpop\txiy")
     A("\tpop\txix")
     A("\tpop\txbc")
@@ -807,8 +814,10 @@ def gen():
     A("\tpop\tsr")
     A("\tpop\txix")
     A("\tret")
-    A("; --- serial ISRs. These do NOT chain to a user vector slot: the COM rings are")
-    A(";  the BIOS's own, and the retail BIOS takes these two vectors over as well.")
+    A("; --- serial ISRs. Reached THROUGH the user slots, like every other vector:")
+    A(";  the retail table sends 0x18 via 0x6FE4 and 0x19 via 0x6FE8, and its COMINIT")
+    A(";  writes its own ring handlers into those two slots. A game that installs its")
+    A(";  own serial ISRs after COMINIT (the NgpCraft template's ngpc_link) must win.")
     A("_isr_ser_rx:                     ; vector 0x18 -- a byte ARRIVED")
     A("\tpush\txwa")
     A("\tpush\txix")
@@ -849,6 +858,10 @@ def gen():
     A("\tldb\t(COM_RXHEAD), a")
     A("\tldb\t(COM_RXTAIL), a")
     A("\tldb\t(COM_TXBUSY), a")
+    A("\tld\txwa, _isr_ser_rx           ; the BIOS's ring handlers into the two")
+    A("\tldl\t(0x006fe4), xwa             ; serial slots, as the retail COMINIT does")
+    A("\tld\txwa, _isr_ser_tx           ; (vector 0x18 -> 0x6FE4 = RX,")
+    A("\tldl\t(0x006fe8), xwa             ;  vector 0x19 -> 0x6FE8 = TX)")
     A("\tldb\ta, 0xee                  ; INTES0: both serial vectors, level 6")
     A("\tldb\t(INTES0), a")
     A("\tei\t6")
@@ -1106,20 +1119,19 @@ def gen():
         for off in card_block_offsets(cap):
             A(f"\tdl\t{0x200000 + off:#010x}")
     A("")
-    A(";  Register-preserving indirect jump used by every ISR trampoline:")
-    A(";  save XWA to BIOS scratch RAM, push the user-handler address, restore")
-    A(";  XWA, RET -> jumps to the handler with the interrupt frame intact and")
-    A(";  every register unchanged. No stack turd, no unsupported EX/CALL form.")
-    A("SCRATCH\tequ\t0x006c40")
+    A(";  Indirect jump used by every ISR trampoline: push the slot's 32-bit")
+    A(";  handler address straight from memory, high word first (RET pops 32 bits,")
+    A(";  low word on top), then RET. No register and no RAM cell is touched --")
+    A(";  the retail BIOS does exactly this (pushw (slot+2) / pushw (slot) / ret).")
+    A(";  It used to park XWA in one fixed scratch cell: ~76 states per IRQ (Densha")
+    A(";  de Go! 2 takes ~160 Timer 0 IRQs a frame), and a higher-priority IRQ")
+    A(";  landing between the store and the reload overwrote the cell.")
     A("")
     A("; --- VBlank ISR : latch controller into Sys_Lever, then chain ---")
     A("_isr_vblank:")
-    A("\tldl\t(SCRATCH), xwa        ; save XWA")
-    A("\tldb\ta, (0x0000b0)          ; controller port")
-    A("\tldb\t(0x006f82), a          ; -> Sys_Lever (games read this)")
-    A("\tldl\txwa, (0x00006fcc)      ; user VBlank handler")
-    A("\tpush\txwa")
-    A("\tldl\txwa, (SCRATCH)         ; restore XWA")
+    A("\tldb\t(0x006f82), (0x0000b0) ; controller port -> Sys_Lever (games read it)")
+    A("\tpushw\t(0x006fce)              ; user VBlank handler, high word")
+    A("\tpushw\t(0x006fcc)              ;                       low word")
     A("\tret                            ; -> user handler (it RETIs)")
     A("")
     A("; --- chain trampolines: forward IRQ to the game's user handler ---")
@@ -1132,10 +1144,8 @@ def gen():
         lbl = f"_chain_{idx:02d}"
         chain_label[idx] = lbl
         A(f"{lbl}:")
-        A("\tldl\t(SCRATCH), xwa")
-        A(f"\tldl\txwa, ({slot:#08x})")
-        A("\tpush\txwa")
-        A("\tldl\txwa, (SCRATCH)")
+        A(f"\tpushw\t({slot + 2:#08x})")
+        A(f"\tpushw\t({slot:#08x})")
         A("\tret")
     A("")
     A(";===============================================================")
@@ -1165,8 +1175,6 @@ def gen():
             tgt, note = "_boot", "reset / swi0"
         elif i == 1:
             tgt, note = "_swi1", "swi 1 (system call)"
-        elif i in SERIAL_ISR:
-            tgt, note = SERIAL_ISR[i], "link cable -- the BIOS owns this one"
         elif i in chain_label:
             tgt, note = chain_label[i], f"-> user slot {USER_SLOT[i]:#06x}"
         else:
