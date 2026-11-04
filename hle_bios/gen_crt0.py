@@ -43,7 +43,12 @@ USER_SLOT = {
 # handlers there. CROSS-WIRED versus the SDK's names -- 0x18 ("INTTX0") receives,
 # 0x19 ("INTRX0") transmits, so 0x6FE4 holds the RX handler. See machine.hpp.
 
-HW_TABLE_SLOTS = 60      # 0xFFFF00 .. 0xFFFFF0, 4 bytes each
+VBLANK_PAD_LOOPS = 64    # calibrated: VBlank vector -> game handler = retail's 882 cy
+SYSFONT_PAD_LOOPS = 21   # calibrated with SYSFONT_TAIL_LOOPS: SYSFONTSET = retail ~1.45 M cy
+SYSFONT_TAIL_LOOPS = 4700
+FLASHWRITE_PAD_LOOPS = 7  # calibrated: FLASHWRITE = retail ~109 k cy per 256 B (<= 7: short-form ld)
+
+HW_TABLE_SLOTS = 60     # 0xFFFF00 .. 0xFFFFF0, 4 bytes each
 SYSCALL_SLOTS = 32       # 0xFFFE00 .., swi 1 dispatch indices 0..0x1A used
 
 FONT_FG = 3              # 2bpp pixel index for a lit pixel (default palette)
@@ -551,6 +556,13 @@ def gen():
     A("\tldb\ta, 0xff")
     A("\tret")
     A("_fw_landed:")
+    # Retail pays ~87 cycles more per byte than this loop (measured over 152 calls,
+    # 17 games: 109 150 vs 86 378 cycles per 256-byte unit, a flat 0.79). The chip's
+    # own program time is the same on both sides; this is the routine's overhead.
+    # XIZ is free here: the next byte reloads it before polling.
+    A(f"\tldw\tiz, {FLASHWRITE_PAD_LOOPS}")
+    A("_fw_pad:")
+    A("\tdjnz\tiz, _fw_pad")
     A("\tincl\t1, xde")
     A("\tdjnz\tw, _fw_byte")
     A("\tdjnz\tbc, _fw_unit")
@@ -606,6 +618,7 @@ def gen():
     A(";  recolour into four byte ops with no table:")
     A(";      out = (src AND fg*0x55) OR (NOT src AND bg*0x55)")
     A("_sc_sysfontset:")
+    A("\tpush\txwa                    ; retail returns the caller's XWA untouched")
     A("\tpush\txhl")
     A("\tpush\txde")
     A("\tpush\txbc")
@@ -639,15 +652,29 @@ def gen():
     A("\tandb\ta, c                   ; the rest take the background code")
     A("\torb\ta, d")
     A("\tldb\t(xiy+), a")
+    # Retail expands the 1bpp font bit by bit (2048 source bytes x 8, sllw x2 + or
+    # each): 1.45 M cycles, ~11 frames, every call. Ours did it in 0.38 M, so the
+    # 17 games that call it at boot ran ~8 frames ahead of a console from then on.
+    # B is free in this loop (C holds the background code, not B).
+    A(f"\tldb\tb, {SYSFONT_PAD_LOOPS}")
+    A("_sfs_pad:")
+    A("\tdjnz\tb, _sfs_pad")
     A("\tdjnz\thl, _sfs_loop          ; NOT decw + jr nz: a 16-bit DEC sets no")
     A("\t                             ; flag, so jr nz read the ORB above and the")
     A("\t                             ; loop stopped at the first zero byte written")
+    # The per-byte pad moves in ~49 k-cycle steps; the remainder is paid once here.
+    # ⚠️ Any byte added ABOVE a hot loop shifts it across a 16-bit fetch word and its
+    # cost jumps (measured: `ld iz,8` leaving the short form cost +25 % here).
+    # Re-measure all three pads (VBlank, SYSFONTSET, FLASHWRITE) after any edit.
+    A(f"\tldw\tbc, {SYSFONT_TAIL_LOOPS}")
+    A("_sfs_tail:")
+    A("\tdjnz\tbc, _sfs_tail")
     A("\tpop\txiy")
     A("\tpop\txix")
     A("\tpop\txbc")
     A("\tpop\txde")
     A("\tpop\txhl")
-    A("\tldb\ta, 0")
+    A("\tpop\txwa")
     A("\tret")
     A(";  ALARMSET (0x09) / ALARMDOWNSET (0x0B): the RTC alarm. QC3 = day, RB3 = hour,")
     A(";  RC3 = minute, 0xFF meaning 'any'. Same registers either way -- the SDK's two")
@@ -1143,7 +1170,24 @@ def gen():
     A("")
     A("; --- VBlank ISR : latch controller into Sys_Lever, then chain ---")
     A("_isr_vblank:")
-    A("\tldb\t(0x006f82), (0x0000b0) ; controller port -> Sys_Lever (games read it)")
+    # Sys_Lever is the PREVIOUS VBlank's sample, not this one. Retail (0xFF26FC):
+    # ld A,(0xB0); ex (0x6C5F),A; ...debounce...; ld (0x6F82),A -- and the debounce
+    # algebra (new&old | old&~new) reduces to `old`. Measured: a press written to
+    # 0xB0 shows in 0x6F82 one frame later under bios.bin. Copying 0xB0 straight
+    # through put every game one frame AHEAD on input, and any game that seeds or
+    # steps on the pad diverged from the retail run within seconds.
+    A("\tldb\t(0x006f82), (0x006c5f) ; Sys_Lever = last frame's sample (retail)")
+    A("\tldb\t(0x006c5f), (0x0000b0) ; keep this frame's for the next VBlank")
+    # Retail spends 882 cycles (69 instructions, measured on the silicon timing)
+    # between the VBlank vector and the game's handler: power/battery/auto-off
+    # bookkeeping, the Z80 queue, the RTS guard. Ours was 98. That gap is CPU time
+    # the game gets back every frame, so a game running close to its frame budget
+    # drops (or doesn't drop) different frames than on a console. Pay it back.
+    A("\tpush\tbc")
+    A(f"\tld\tbc, {VBLANK_PAD_LOOPS}")
+    A("_vb_pad:")
+    A("\tdjnz\tbc, _vb_pad")
+    A("\tpop\tbc")
     A("\tpushw\t(0x006fce)              ; user VBlank handler, high word")
     A("\tpushw\t(0x006fcc)              ;                       low word")
     A("\tret                            ; -> user handler (it RETIs)")

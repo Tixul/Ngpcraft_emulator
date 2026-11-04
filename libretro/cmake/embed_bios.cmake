@@ -4,7 +4,7 @@ endif()
 
 file(READ "${INPUT}" BIOS_HEX HEX)
 file(SHA256 "${INPUT}" BIOS_SHA256)
-if(NOT BIOS_SHA256 STREQUAL "33c322cd3fd03948e6681b0b8a1110a9dc0d9e21feafe542ce618643b413aa4c")
+if(NOT BIOS_SHA256 STREQUAL "beaa44362455ccd028375efaed559f977e707cfdb3874a58b606b782056b7088")
     message(FATAL_ERROR "The built-in HLE BIOS checksum is not the reviewed image")
 endif()
 string(LENGTH "${BIOS_HEX}" BIOS_HEX_LENGTH)
