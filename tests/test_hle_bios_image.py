@@ -147,5 +147,19 @@ class SyscallVectorNumbers(unittest.TestCase):
     def test_clockgearset_is_left_alone_on_purpose(self):
         """49 games call it -- the most of any vector -- and it must stay a no-op:
         this core runs at a fixed 6.144 MHz and models no clock gear at all. Answering
-        it with anything else would be inventing a machine we do not emulate."""
-        self.assertNotIn(0x01, self._gen().SC_STUB)
+        it with anything else would be inventing a machine we do not emulate.
+
+        Its stub only pays retail's TIME (158-174 cycles against 18, measured; some
+        games call it every frame): it must still write nothing -- no 0x80, no 0x6F88,
+        no memory at all -- and hand every register back."""
+        gen = self._gen()
+        self.assertEqual(gen.SC_STUB.get(0x01), "_sc_clockgear")
+        asm = gen.gen().replace("\r\n", "\n")
+        body = asm[asm.index("_sc_clockgear:"):]
+        body = body[:body.index("\tret")]
+        ops = [ln.split(";")[0].strip() for ln in body.splitlines()[1:]]
+        ops = [o for o in ops if o and not o.endswith(":")]
+        for op in ops:
+            self.assertNotIn("(", op, f"CLOCKGEARSET must not touch memory or I/O: {op}")
+        self.assertEqual(ops[0], "push\twa")
+        self.assertEqual(ops[-1], "pop\twa")

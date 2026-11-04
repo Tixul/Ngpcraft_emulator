@@ -171,12 +171,34 @@ class HleBiosSave(unittest.TestCase):
     def test_setting_an_alarm_reaches_the_clock(self):
         for vector in (self.VECT_ALARMSET, self.VECT_ALARMDOWNSET):
             with self.subTest(vector=vector):
+                inte0 = self.m.read(0x000070, 1)[0]
                 self.assertEqual(self._alarmset(vector, 0x15, 0x07, 0x30), SYS_SUCCESS)
                 self.assertEqual(self.m.read(0x000098, 3), bytes([0x15, 0x07, 0x30]))
                 self.assertTrue(self.m.read(0x000090, 1)[0] & 0x02, "the alarm is not armed")
-                # ...and the pin it fires on must be unmasked, or nothing happens.
-                self.assertEqual(self.m.read(0x000070, 1)[0] & 0x0F, 0x0C,
-                                 "INT0 left masked: the alarm would fire into nothing")
+                # Retail keeps the request in RAM too (0xFF151B): day, hour, minute, 0xFF.
+                self.assertEqual(self.m.read(0x006C42, 4), bytes([0x15, 0x07, 0x30, 0xFF]))
+                self.assertEqual(self.m.read(0x006C48, 1)[0], 2)
+                self.assertEqual(self.m.read(0x006C46, 1)[0],
+                                 0xFF if vector == self.VECT_ALARMDOWNSET else 0x00)
+                # The pin it fires on must be open -- and retail does NOT touch INTE0AD to
+                # get there: the hand-off already leaves INT0 at level 2. Forcing level 4
+                # here was ours alone. Levels 0 and 7 are the two that prohibit.
+                self.assertEqual(self.m.read(0x000070, 1)[0], inte0, "INTE0AD rewritten")
+                self.assertIn(inte0 & 0x07, range(1, 7),
+                              "INT0 masked: the alarm would fire into nothing")
+
+    def test_an_alarm_is_validated_before_anything_is_written(self):
+        """Retail validates every field first, in binary after its loose BCD
+        conversion. Ours wrote the day to the chip, then refused the hour."""
+        before = self.m.read(0x000098, 3)
+        for day, hour, minute in ((0x15, 0x24, 0x30),   # hour 24
+                                  (0x15, 0x07, 0x5F),   # minute 0x5F = 65 (BCD-loose)
+                                  (0x00, 0x07, 0x30),   # day 0 is refused
+                                  (0x2F, 0x07, 0x30)):  # day 0x2F = 35
+            with self.subTest(day=day, hour=hour, minute=minute):
+                self.assertNotEqual(self._alarmset(self.VECT_ALARMSET, day, hour, minute),
+                                    SYS_SUCCESS)
+                self.assertEqual(self.m.read(0x000098, 3), before, "half-armed alarm")
 
     def test_the_any_day_wildcard_becomes_the_chips_own(self):
         """The SDK spells 'every day' 0xFF; the chip spells it 0. The retail BIOS
