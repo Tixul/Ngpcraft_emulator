@@ -80,16 +80,10 @@ from ngpc_debug import DebugWindow  # noqa: E402
 # The BIOS reads the flash card-type, sees nothing, and shows its own screen.
 _NO_CART = b"\xff" * 0x10000
 
-# Two roots. When frozen into a single .exe (PyInstaller), read-only resources
-# bundled inside it (the icon) live under sys._MEIPASS, while user data — ROMs,
-# saves, screenshots — must live BESIDE the .exe so it survives across launches
-# (the _MEIPASS extraction dir is wiped on exit). From source both are the repo.
-if getattr(sys, "frozen", False):
-    REPO = Path(sys.executable).resolve().parent      # writable data, next to the .exe
-    BUNDLE = Path(getattr(sys, "_MEIPASS", REPO))     # read-only, bundled in the .exe
-else:
-    REPO = Path(__file__).resolve().parent
-    BUNDLE = REPO
+# Read-only resources stay in the bundle. Managed macOS data lives outside it.
+import ngpc_paths
+REPO = ngpc_paths.data_root()
+BUNDLE = Path(getattr(sys, "_MEIPASS", ngpc_paths.install_root()))
 SCREEN_W, SCREEN_H = 160, 152
 # Real-BIOS boot: how many BIOS frames to let run before handing off to the cart, so the
 # whole NEO GEO POCKET intro plays (logo ~frame 300, intro ends ~460) instead of being
@@ -1716,6 +1710,7 @@ class SettingsPage(QWidget):
         # and live-swaps the store for the whole session (storage_changed).
         self._portable = QCheckBox()
         self._portable.setChecked(cfg.portable_mode())
+        self._portable.setEnabled(not bool(os.environ.get(ngpc_paths.DATA_ENV)))
         self._portable.toggled.connect(self._on_portable_toggled)
         self._lbl_portable = QLabel()
         self._portable_hint = QLabel()
@@ -2460,6 +2455,9 @@ class SettingsPage(QWidget):
         self._coincell_hint.setText(t("coin_cell_hint"))
         self._lbl_cartwait.setText(t("cart_wait")); self._cartwait_hint.setText(t("cart_wait_hint"))
         self._lbl_portable.setText(t("portable")); self._portable_hint.setText(t("portable_hint"))
+        if ngpc_paths.managed():
+            key = "storage_portable_fixed" if os.environ.get(ngpc_paths.DATA_ENV) else "storage_portable_hint"
+            self._portable_hint.setText(t(key))
         self._lbl_update.setText(t("update_label").format(version=ngpc_update.display_version()))
         self._update_btn.setText(t("update_check"))
         self._lbl_autoupdate.setText(t("update_auto"))
@@ -3018,15 +3016,15 @@ class PlayPage(QWidget):
 
     # ---- lifecycle
     def _watch_path(self) -> Path:
-        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        stem = ngpc_paths.rom_key(self._rom_path) if self._rom_path else "ngpc"
         return WATCH_DIR / f"{stem}.json"
 
     def _break_path(self) -> Path:
-        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        stem = ngpc_paths.rom_key(self._rom_path) if self._rom_path else "ngpc"
         return WATCH_DIR / f"{stem}.breaks.json"
 
     def _cheat_path(self) -> Path:
-        stem = self._rom_path.stem if self._rom_path else "ngpc"
+        stem = ngpc_paths.rom_key(self._rom_path) if self._rom_path else "ngpc"
         return WATCH_DIR / f"{stem}.cheats.json"
 
     def save_cheats(self) -> None:
@@ -4000,7 +3998,7 @@ class PlayPage(QWidget):
         if self._rom_path is None:
             return None
         STATE_DIR.mkdir(exist_ok=True)
-        return STATE_DIR / f"{self._rom_path.stem}.s{slot}"
+        return STATE_DIR / f"{ngpc_paths.rom_key(self._rom_path)}.s{slot}"
 
     def _mirror_blocks(self) -> bool:
         """True (and says so) when an action would rewind THIS console only.
@@ -7950,7 +7948,29 @@ def main() -> int:
         print("[timing] modele silicium (defaut). --timing legacy pour comparer.")
 
     if robot:
+        if ngpc_paths.managed():
+            # Offscreen automation must never bypass the real profile's writer
+            # lock. Require an explicitly selected, initialized test-data root.
+            if not os.environ.get(ngpc_paths.DATA_ENV):
+                raise SystemExit('Managed --robot requires an isolated, initialized NGPCRAFT_DATA_DIR.')
+            with ngpc_paths.runtime_writer(REPO):
+                return ngpc_robot.run(args, app)
         return ngpc_robot.run(args, app)
+
+    # Imports are a startup tool, never a request forwarded to a running game.
+    if "--import-data" in args:
+        if not ngpc_paths.managed():
+            from ngpc_storage_ui import require_managed_error
+            require_managed_error()
+            return 1
+        from ngpc_storage_ui import prepare
+        try:
+            prepare(force_import=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            from ngpc_storage_ui import show_error
+            show_error(exc)
+            return 1
+        return 0
 
     # ONE EMULATOR PER INSTALL: a ROM double-clicked while we already run goes to the
     # running window instead of opening a second emulator (ngpc_single_instance).
@@ -7971,16 +7991,61 @@ def main() -> int:
             app.set_open_handler(lambda path: single.forward(name, path))
             app.processEvents()
         return 0
-    shell = Shell(rom)
+    # Profile activation is startup-only and requires restart. A lock shared by
+    # migration and every managed app instance prevents competing writers.
+    from contextlib import ExitStack
+    storage = ExitStack()
+    deferred_open = None
+    if ngpc_paths.managed():
+        from ngpc_storage_ui import prepare
+        import ngpc_startup
+        try:
+            previous_selection = ngpc_paths.active_bytes(ngpc_paths.base_root())
+            if not prepare():
+                app.processEvents()
+                ngpc_startup.retain_after_import(
+                    previous_selection, ([rom] if rom else []) + app.take_startup_requests())
+                return 0
+            storage.enter_context(ngpc_paths.runtime_writer(REPO))
+            deferred_open = ngpc_startup.resume(ngpc_paths.base_root())
+        except (OSError, ValueError, RuntimeError) as exc:
+            storage.close()
+            from ngpc_storage_ui import show_error
+            show_error(exc)
+            return 1
+    try:
+        shell = Shell(None if deferred_open else rom)
+    except BaseException:
+        storage.close()
+        raise
+    app.aboutToQuit.connect(storage.close)
     if not new_instance:
         shell._instance_server = single.InstanceServer(name, shell)
         shell._instance_server.requested.connect(app.queue_open)
     shell.show()
-    app.set_open_handler(shell.open_from_another_launch)
+    if deferred_open:
+        requests = [entry['path'] for entry in deferred_open['requests']]
+        app.prepend_startup_requests(requests + ([rom] if rom else []))
+
+        def open_and_acknowledge(path):
+            shell.open_from_another_launch(path)
+            if deferred_open['requests'] and path == deferred_open['requests'][0]['path']:
+                try:
+                    ngpc_startup.acknowledge(ngpc_paths.base_root(), deferred_open)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    # Keep the on-disk request for review/retry. Do not turn a
+                    # metadata-write error into an unhandled Qt callback failure.
+                    deferred_open['requests'] = []
+                    from ngpc_storage_ui import show_error
+                    show_error(exc)
+        app.set_open_handler(open_and_acknowledge)
+    else:
+        app.set_open_handler(shell.open_from_another_launch)
     # AFTER show(): the property store needs a real HWND, which winId only has once the
     # window exists. This is what puts our picture on the taskbar button (see above).
     stamp_taskbar_icon(shell)
     rc = app.exec()
+    storage.close()
     if shell._staged_exe is not None:
         # An update waits beside us. Swapped in only NOW, window gone: past this line
         # a first-time import would read the new executable (ngpc_update.stage).

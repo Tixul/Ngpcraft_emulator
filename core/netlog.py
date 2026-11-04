@@ -24,11 +24,9 @@ def path() -> Path:
     env = os.environ.get(ENV)
     if env:
         return Path(env)
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).resolve().parent      # beside the .exe, like crashes/
-    else:
-        base = Path(__file__).resolve().parent.parent
-    return base / "logs" / "netplay.log"
+    from ngpc_paths import data_root
+    return data_root() / "logs" / "netplay.log"
+
 
 
 def log(event: str, **fields) -> None:
