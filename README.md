@@ -22,7 +22,7 @@ is a feature you can run yourself — see [ROM analysis](#rom-analysis).
 | Version | Installation and details |
 | --- | --- |
 | Desktop | Python/Qt application described below; standalone builds in [Releases](https://github.com/Tixul/Ngpcraft_emulator/releases). |
-| Libretro 0.4 | [RetroArch core](libretro/README.md), with sources and a [Windows x64 prebuilt](libretro/prebuilt/windows-x86_64/). Compiles the same `cpp/` sources and `hle_bios/` firmware as the desktop. |
+| Libretro 0.4 | [RetroArch core](libretro/README.md), with sources and a [Windows x64 prebuilt](libretro/prebuilt/windows-x86_64/). Compiles the same `cpp/` sources and `hle_bios/` firmware as the desktop. Supports **RetroAchievements** (existing Neo Geo Pocket sets) and cheats. |
 | Android 1.3 | [Native Android application](android/README.md), Android 7.0+, universal signed APK. Can be launched from frontends such as ES-DE and Daijishō. Prepared for manual publication in Releases. |
 
 Android sources are maintained separately; this repository contains its installation notes, while APKs are distributed as release assets. Android and Libretro use the same emulation core and clean-room HLE BIOS as the desktop.
@@ -96,13 +96,18 @@ Android sources are maintained separately; this repository contains its installa
   consoles **on one PC** (a second window), over your **LAN**, or **online** (a built-in
   lobby, or share a direct address). Each player has their own controls. And when the ping
   is what hurts, **🪞 mirror mode** keeps the match at full speed by sending only the
-  controller bytes. See [Two players & link](#two-players--link-cable).
+  controller bytes. The cable also reaches a **Dreamcast running in Flycast**, for the
+  games that talk to a Dreamcast game. See [Two players & link](#two-players--link-cable).
 - **Fully remappable** — console buttons *and* every in-game hotkey, with a warning when
   a binding would collide. The console buttons are bound **on a picture of the console**:
   each field sits next to the button it drives, so you pick the D-pad's *left* rather than
   a row labelled "Left".
 - **Themes** — follows your desktop's light/dark setting by default, or pick Light or Dark
   explicitly. Switches live, no restart.
+- **C source debugging** — build your game with the
+  [NgpCraft toolchain](https://github.com/Tixul/NgpCraft_Toolchain) and `-g`, and the
+  debugger shows your **C code** with the line being run: step into, over and out of
+  functions, and set breakpoints on lines. See [Source](#source--step-through-your-c-code).
 - **Debug tools** (`F1`) — a real debugger: symbols, instruction stepping, call stack,
   raster event timeline, read *and* write watchpoints, an editable hex view with access
   highlighting, RAM search, **show/hide any video layer** on the live picture, a tile
@@ -851,8 +856,22 @@ player toolbar's **🔗** button:
   Every step of an online attempt is also written to **`logs/netplay.log`** next to the
   emulator (what each side announced, the refusal, the raw system error); attach it when
   reporting a link problem.
+- **Dreamcast (Flycast emulator)…** — the NGPC ↔ Dreamcast cable, with the Dreamcast
+  running in [Flycast](https://github.com/flyinghead/flycast) on the same PC or another one.
+  Start Flycast with its *BattleCable* option pointed at the emulator:
 
-Both players must run a **compatible game** (same title), exactly like real hardware.
+  ```
+  flycast -config "network:BattleCable=yes,network:server=127.0.0.1:42500"
+  ```
+
+  then pick *Dreamcast (Flycast emulator)…* in the 🔗 menu and give Flycast's address
+  (`127.0.0.1:37391` on the same PC). There is no connection step: the cable is live at
+  once, and the bytes flow when both games open their link menus. Tested with
+  *SNK vs. Capcom: Match of the Millennium* sending its VERSUS points to *Capcom vs. SNK
+  Millennium Fight 2000* (the Japanese Dreamcast release, not the *Pro* edition).
+
+Both players must run a **compatible game** (same title), exactly like real hardware. A
+Dreamcast link needs the matching Dreamcast game.
 
 ### How fast an online game runs
 
@@ -1003,7 +1022,7 @@ your map of a game survives across sessions. The contracts behind these panels �
 claims they are deliberately *not* allowed to make — are in
 [`specs/DEBUG_TOOLS.md`](specs/DEBUG_TOOLS.md).
 
-The 27 panels sit on **two rows** — a category on top (CPU · Memory · Video · Audio ·
+The 28 panels sit on **two rows** — a category on top (CPU · Memory · Video · Audio ·
 Analysis · ROM · Link), its panels underneath. One row stopped working somewhere around
 twenty: Qt then either shrinks every label past reading or hides half of them behind scroll
 arrows, and a tool whose tabs you cannot see is a tool you stop opening. The grouping is by
@@ -1019,6 +1038,38 @@ caught, named in the status line (`⚠ Movie: AttributeError: …`), and the res
 keeps working. It is reported rather than swallowed: the failure is also recorded, so a test
 asserting "every panel refreshed" cannot pass on a window full of broken ones.
 
+### Source — step through your C code
+
+For games built with the [NgpCraft toolchain](https://github.com/Tixul/NgpCraft_Toolchain):
+
+```
+ngpcraft build my_game -g
+```
+
+`-g` writes `<rom>.ngdbg` next to the ROM: the C file and line of every address, and the name
+of every function. The ROM itself is identical with or without it, so you debug exactly what
+you ship. The emulator loads the file on its own when the game starts (or from the symbols
+button), and the **Source** tab (CPU row) shows your C file with the line being run.
+
+| Key / button | Action |
+|---|---|
+| `F11` · *Into* | Next C line, entering a called function if it has source. |
+| `F10` · *Over* | Next C line; calls run to their return. |
+| `Shift+F11` · *Out* | Run until the current function returns. |
+| *Run to line* | Run until the line under the cursor is reached. |
+| double-click a line | Set or clear a breakpoint on it. A line with no code of its own uses the next one that has some. |
+
+- Calls into code with no source (the BIOS, hand-written assembly, a library) and interrupts
+  run through in one go, so stepping stays in your code.
+- The view **follows** the line being run; untick *follow PC* to stay on the file you are reading.
+- The sources are looked up from the ROM's folder (the ROM normally sits in the project's
+  `bin/`). If they are elsewhere, point at the project with **Source folder…**.
+- The disassembly, symbols, call stack, watchpoints and every other panel work as usual
+  alongside.
+
+A ROM built without `-g`, or a commercial cartridge, has no source information: the tab says
+so, and the instruction-level tools below still work.
+
 ### Symbols
 
 Drop your linker map beside the ROM (`game.map` next to `game.ngc`) and it is loaded
@@ -1026,7 +1077,9 @@ automatically — the disassembly, the breakpoints, the CPU panel and the analys
 all show `player_update+2E` instead of `20A31C`, and you can **type a symbol name
 anywhere an address is asked for**. Both map formats are read: the clean-room `t900ld`
 form and the **Toshiba `tulink`** map the official cc900 chain emits (bare hex addresses,
-long names wrapped onto the next line).
+long names wrapped onto the next line). A `.ngdbg` from `ngpcraft build -g` is preferred
+when there is one: it has everything the map has, plus the `static` functions the map
+does not list.
 
 ### Stepping and the disassembly
 
