@@ -5,9 +5,9 @@ Purpose:
 - keep the current scope honest while preparing later execution work
 
 Current source references:
-- `../../NgpCraft_toolchain/T900_DENSE_REF.md`
-- `../../NgpCraft_toolchain/DISASM_CROSSCHECK.md`
-- `../../NgpCraft_Disasm/ngpc_disasm.py`
+- `T900_DENSE_REF.md`
+- `DISASM_CROSSCHECK.md`
+- `ngpc_disasm.py` (NgpCraft disassembler)
 - `FETCH.md`
 
 Current behavior:

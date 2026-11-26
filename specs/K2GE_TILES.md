@@ -11,7 +11,7 @@ Purpose:
   think it is?" before the full framebuffer pipeline lands
 
 Current source references:
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md` § "Character RAM (0xA000, tiles 8×8, 2bpp)"
+- `NGPC_HW_QUICKREF.md` § "Character RAM (0xA000, tiles 8×8, 2bpp)"
 - `K2GE_PALETTE.md` (sibling — palette colorisation pipe)
 - `K2GE_TILEMAP.md` (sibling — consumer of tile numbers)
 - `K2GE_OAM.md` (sibling — same C.C 9-bit tile field)

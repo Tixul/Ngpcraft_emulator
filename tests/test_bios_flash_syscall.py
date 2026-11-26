@@ -15,7 +15,7 @@ A Neo Geo Pocket game does not drive the flash chip. It calls the BIOS:
     swi 1
 
 (SNK SysCall.txt; the vector numbers are SNK's own SYSTEM.INC, and this is verbatim
-what 02_CODE_PATTERNS/.../rom/flash.c does. Note the SDK's ngpc.h in this RAG has
+what the C template's rom/flash.c does. Note the SDK's ngpc.h has
 `#define VECT_FLASHWRITE` with NO VALUE -- trusting it would have called vector 0,
 which is SHUTDOWN.)
 
@@ -38,17 +38,10 @@ from pathlib import Path
 
 from core import native
 
-# ⚠️ THE REPO HAS TWO CHECKOUTS AND THIS PATH ONLY EXISTED IN ONE OF THEM. Under
-# `Documents/GitHub` every test in this file skipped -- silently, and a skip reads as a
-# pass in the summary line. The repo's own `bios.bin` is byte-identical to the RAG copy,
-# so look there FIRST and let the old location be the fallback.
-_REPO = Path(__file__).resolve().parents[1]
-BIOS_PATH = next(
-    (p for p in (_REPO / "bios.bin",
-                 Path(__file__).resolve().parents[3] / "jeux officiel" / "bios_v10.bin")
-     if p.exists()),
-    _REPO / "bios.bin",
-)
+# ⚠️ A BIOS looked up outside the checkout made every test in this file skip -- silently,
+# and a skip reads as a pass in the summary line. Read the repository's own `bios.bin`.
+from rom_paths import BIOS as _BIOS
+BIOS_PATH = _BIOS
 
 XWA, XBC, XDE, XHL = 0, 1, 2, 3
 CART = 0x200000

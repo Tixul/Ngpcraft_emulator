@@ -68,7 +68,7 @@
 >    (SR bits 12-14, IFF2:0) dit : `110` = *« enables interrupts with **level 6 or
 >    higher** »*. Donc une IRQ de niveau `L` est acceptée quand **`L >= IFF`**, pas
 >    `L > IFF`.
-> 2. **Le niveau VBlank est 4.** Le SDK officiel SNK (`01_SDK/docs/SysPro.txt`)
+> 2. **Le niveau VBlank est 4.** Le SDK officiel SNK (`SysPro.txt`)
 >    l'écrit noir sur blanc : *« It is forbidden to prohibit Vertical Blanking
 >    Interrupt (**Interrupt level 4**) »*.
 >
@@ -88,9 +88,9 @@
 >
 > | Document | Chemin | Couvre |
 > |---|---|---|
-> | **Manuel CPU Toshiba TLCS-900/L1** | `NgpCraft_toolchain/doc t_900/catalog_en_20010831_ALT00146.txt` | SR/IFF, règles de masque, base des vecteurs (0xFFFF00), reset |
+> | **Manuel CPU Toshiba TLCS-900/L1** | `catalog_en_20010831_ALT00146.txt` (Toshiba) | SR/IFF, règles de masque, base des vecteurs (0xFFFF00), reset |
 > | **Datasheet Toshiba TMP95C061** | (PDF constructeur) | **Table 3.3(1) = table complète des vecteurs d'interruption**, ADC (ADMOD/ADREG), timers, prescaler |
-> | **SDK officiel SNK** | `01_SDK/docs/` | `SysPro`/`SysWork` (vecteurs RAM, batterie), `8Bit` (timers), `K2GETechRef`, `SerialCom`, `MicroDMA` |
+> | **SDK officiel SNK** | documentation du SDK | `SysPro`/`SysWork` (vecteurs RAM, batterie), `8Bit` (timers), `K2GETechRef`, `SerialCom`, `MicroDMA` |
 >
 > ⚠️ **Les TABLES du PDF datasheet sont des IMAGES** → invisibles en conversion
 > texte. Méthode : rendre la page en PNG avec `pymupdf` (`fitz`) puis la **lire**.

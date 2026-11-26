@@ -53,7 +53,7 @@ Consequences that matter:
   the SDK's names.
 - ⚡ **0xB1 bit2 is the PEER'S RTS, not "a cable is plugged in"** — MEASURED on two
   real consoles, 2026-08-19, in six physical states
-  (`04_MY_PROJECTS/hw_test_link_suite/result/RELEVE_2026-08-19.md`):
+  (`hw_test_link_suite` probe ROM, 2026-08-19 run):
 
   | peer at the other end | bit2 |
   |---|---|
@@ -485,7 +485,7 @@ period was already ours, from `K2GETechRef.txt`.)
    could be an order of magnitude out without moving this result.
 2. **Measure it on real silicon with our own probe** — the only route that yields an
    *independent hardware* fact, and the only one that can validate `kSerialByteCycles`, which
-   nothing ever has. `04_MY_PROJECTS/hw_test_link_2p/` already exists but measures port bits
+   nothing ever has. The `hw_test_link_2p` probe ROM already exists but measures port bits
    and byte counts, **not time**; it needs a hardware timer (T0/T1, known prescaler) started
    on the SC0BUF write and stopped on INTTX0, printing µs/byte on screen. No logic analyser
    required — the console reports its own answer.
@@ -541,7 +541,7 @@ This also independently confirms two things the core already modelled: **CTSE is
 SC0MOD and exists only on channel 0**, and **UART framing is 8 bits with 16x oversampling**.
 
 ✅ **CLOSED ON SILICON, 2026-08-19.** The probe ran on two real consoles
-(`04_MY_PROJECTS/hw_test_link_suite`). Saturated one-way transfer carried **3875 bytes in
+(the `hw_test_link_suite` probe ROM). Saturated one-way transfer carried **3875 bytes in
 128 frames** = 2133 ms, i.e. **551 µs per byte** against the 520.83 µs derived here — the 6 %
 sitting on the slow side, where the software feeding the ring can only put it. And
 reprogramming `BR0CR` to `0x15` gave **983 bytes against 3963**, a ratio of **4.03** where the
@@ -655,7 +655,7 @@ its DLL. **There is a second tree**, and it is the one Android and RetroArch bui
 | tree | path | consumers |
 |---|---|---|
 | desktop | `cpp/src/` | the Python shell (ctypes DLL) |
-| libretro | `NGPC_RAG/04_MY_PROJECTS/Ngpcraft_emulator_lirbreto/core/src/` | **Android** (`ngpcraft.coreDir`) and RetroArch |
+| libretro | `core/src/` of the libretro core tree (separate checkout) | **Android** (`ngpcraft.coreDir`) and RetroArch |
 
 They had drifted **in both directions**, silently. Both were wrong about something:
 

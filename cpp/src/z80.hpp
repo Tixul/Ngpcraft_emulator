@@ -15,7 +15,7 @@
  * has uploaded 2 691 bytes there, beginning `F3 31 C0 00 C3 E6 01` -- DI, LD SP,
  * JP. That is Z80 code, and there is no Z80 in this emulator.
  *
- * THE PROTOCOL (observed, then confirmed in 01_SDK/docs/K1SoundSim):
+ * THE PROTOCOL (observed, then confirmed in K1SoundSim):
  *
  *     0x00B8  <- 0x55     release the Z80 from reset     (doc: BASE+18B8h)
  *     0x00BC  <- cmd      the dual-port comm register    (doc: BASE+18BCh)

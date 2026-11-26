@@ -7,8 +7,8 @@ Purpose:
 Current source references:
 - `DECODE.md`
 - `FETCH.md`
-- `../../NgpCraft_toolchain/T900_DENSE_REF.md`
-- `../../NgpCraft_Disasm/ngpc_disasm.py`
+- `T900_DENSE_REF.md`
+- `ngpc_disasm.py` (NgpCraft disassembler)
 
 Current behavior:
 - trace preview starts from one explicit address, or from the current bootstrap `PC`

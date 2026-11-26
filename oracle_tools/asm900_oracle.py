@@ -24,7 +24,7 @@ NOT automatically a bug -- but it must be BACKED BY THIS ORACLE, never by our ow
 reasoning. That is what makes "the C++ core is more complete than the reference"
 an honest statement rather than an excuse.
 
-Wraps `NgpCraft_toolchain/NgpCraft_Toolchain_v2/scripts/rel_probe.py`, which
+Wraps `NgpCraft_Toolchain_v2/scripts/rel_probe.py`, which
 brackets the instruction between two known anchors in a real `.asm`, assembles it
 with asm900, and recovers the bytes from the `.rel` (the disassembler cannot be
 used for this: it does not decode the extended forms, so a round-trip would be

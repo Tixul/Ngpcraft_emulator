@@ -33,12 +33,9 @@ import pytest
 from core import native
 from core.emulator_session import EmulatorSession
 
-BIOS_PATH = Path(__file__).resolve().parents[3] / "jeux officiel" / "bios_v10.bin"
-ROM_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "jeux officiel"
-    / "Fatal Fury - First Contact (USA).ngc"
-)
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+BIOS_PATH = _BIOS
+ROM_PATH = _ROMS / "Fatal Fury - First Contact (USA).ngc"
 
 USER_VECTOR_TABLE_BASE = 0x006FB8
 USER_VECTOR_TABLE_SLOTS = 18

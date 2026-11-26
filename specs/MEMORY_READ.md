@@ -7,11 +7,11 @@ Purpose:
   cold-start image, and the runtime writable overlay
 
 Current source references:
-- `../../01_SDK/docs/ngpcspec.txt`
-- `../../01_SDK/docs/NGPC_SDK_MASTER_ENTRY.md`
+- `ngpcspec.txt`
+- `NGPC_SDK_MASTER_ENTRY.md`
 - `ADDRESS_SPACE.md`
-- `../NgpCraft_toolchain/StarGunner_save_lib_test/README.md`
-- `../NgpCraft_toolchain/StarGunner_save_lib_test/src/core/ngpc_flash.c`
+- `StarGunner_save_lib_test/README.md`
+- `StarGunner_save_lib_test/src/core/ngpc_flash.c`
 
 ## 1. Read path
 

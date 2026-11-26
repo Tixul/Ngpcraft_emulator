@@ -7,11 +7,11 @@ Purpose:
   begins executing)
 
 Current source references:
-- `../../01_SDK/docs/ngpcspec.txt`
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md`
-- `../../01_SDK/docs/NGPC_SDK_MASTER_ENTRY.md`
-- `../../01_SDK/docs/SysWork.txt`
-- `../NgpCraft_toolchain/NGPC_REVERSE_REFERENCE.md`
+- `ngpcspec.txt`
+- `NGPC_HW_QUICKREF.md`
+- `NGPC_SDK_MASTER_ENTRY.md`
+- `SysWork.txt`
+- `NGPC_REVERSE_REFERENCE.md`
 
 ---
 
@@ -73,8 +73,8 @@ Empirical measurement (pass 48, smoke on the local ROM corpus) :
 | ROM                       | Before pass 48 | After pass 48 |
 |---------------------------|----------------|---------------|
 | `minimal_template/main.ngc` | 0 instr (`requires-known-stack-pointer`) | 40 instr ; new blocker at `unsupported-decoded-instruction` |
-| `HORATIO.ngp`             | 0 instr (`requires-known-address-register`) | 1 instr ; new blocker at `requires-known-full-register` |
-| `POCKETRACE.ngp`          | 0 instr | 1 instr ; new blocker at `requires-known-full-register` |
+| `homebrew A`              | 0 instr (`requires-known-address-register`) | 1 instr ; new blocker at `requires-known-full-register` |
+| `homebrew B`              | 0 instr | 1 instr ; new blocker at `requires-known-full-register` |
 | `MRROBOT.ngp`             | 0 instr | 1 instr ; new blocker at `requires-known-full-register` |
 
 The hand-off doesn't unlock every ROM (most need additional

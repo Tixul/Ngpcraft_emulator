@@ -15,8 +15,8 @@ counted as "misses"), but the TOP entries are real signal.
 | ROM                       | Walk budget | Decoded instr | Coverage |
 |---------------------------|-------------|---------------|----------|
 | minimal_template/main.ngc | 2048 bytes  | 753           | 93.0%    |
-| HORATIO.ngp               | 2048 bytes  | 780           | ~88%     |
-| POCKETRACE.ngp            | 2048 bytes  | 715           | ~90%     |
+| homebrew A                | 2048 bytes  | 780           | ~88%     |
+| homebrew B                | 2048 bytes  | 715           | ~90%     |
 | MRROBOT.ngp               | 2048 bytes  | 775           | ~90%     |
 
 Coverage % is "bytes decoded / bytes walked". The remaining 7-12%

@@ -3,7 +3,7 @@
 `core/timers.py` · tests `tests/test_timers.py` · landed 2026-07-10 (DEVLOG pass 186)
 
 Sources: Toshiba TMP95C061 datasheet + the official SNK SDK
-(`01_SDK/docs/8Bit.txt`). Nothing here is guessed.
+(`8Bit.txt`). Nothing here is guessed.
 
 ## 1. Registers
 

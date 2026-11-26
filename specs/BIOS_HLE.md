@@ -5,7 +5,7 @@ l'émulateur, sans jamais distribuer ni dépendre du dump propriétaire
 SNK.
 
 Document écrit 2026-05-20. Référence master :
-`../../Doc de dev/Final/BIOS_FLASH_SAVES_STRATEGY.md` (point d'entrée
+`BIOS_FLASH_SAVES_STRATEGY.md` (point d'entrée
 unique cross-projets).
 
 ---
@@ -180,7 +180,7 @@ Destination = CHAR RAM `0x00A000`..`0x00AFFF` (0x800 → 0x1000 o).
 ## 5. Flash HLE — détail
 
 Voir aussi `SAVE_POLICY.md` pour la politique haut niveau et
-`Doc de dev/Final/BIOS_FLASH_SAVES_STRATEGY.md` §5 pour le protocole
+`BIOS_FLASH_SAVES_STRATEGY.md` §5 pour le protocole
 HW.
 
 ### 5.0 Statut (pass 181, 2026-07-10) — chemin DIRECT modélisé

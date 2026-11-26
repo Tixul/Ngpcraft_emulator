@@ -32,8 +32,9 @@ import pytest
 
 from core import native
 
-ROM_DIR = Path(__file__).resolve().parents[3] / "jeux officiel"
-BIOS_PATH = ROM_DIR / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+ROM_DIR = _ROMS
+BIOS_PATH = _BIOS
 FASELEI = ROM_DIR / "Faselei! (Europe).ngc"
 
 # A 32-bit DEC must leave Z exactly as it found it.

@@ -1,7 +1,7 @@
 """TMP95C061 8-bit timers 0..3.
 
 Transcribed from the Toshiba TMP95C061 datasheet and the official SNK SDK
-(`01_SDK/docs/8Bit.txt`). Nothing here is guessed.
+(`8Bit.txt`). Nothing here is guessed.
 
 Registers (SDK 8Bit.txt + datasheet):
     TRUN   (0x0020)  bit n = run timer n; bit 7 = PRRUN (prescaler run)

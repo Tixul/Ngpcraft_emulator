@@ -135,12 +135,12 @@ class EmulatorSession:
     # in `RESET_STATE.md`.
     #
     # Sources :
-    # - `01_SDK/docs/NGPC_HW_QUICKREF.md §2 (MEMORY MAP)` documents
+    # - `NGPC_HW_QUICKREF.md §2 (MEMORY MAP)` documents
     #   `0x004000–0x006BFF` as 12 KB user RAM and
     #   `0x006C00–0x006FFF` as system-reserved. The BIOS places the
     #   user stack at the top of the user RAM, growing downward —
     #   so `XSP = 0x00006C00` is the canonical hand-off value.
-    # - `01_SDK/docs/ngpcspec.txt §INTERRUPT STATE` : *"The software
+    # - `ngpcspec.txt §INTERRUPT STATE` : *"The software
     #   starts up with interrupts prohibited (DI)"* → `iff_level = 7`
     #   (the TLCS-900/H "all maskable IRQs blocked" mask).
     # - Default register bank is 0 (`rfp = 0`) — the BIOS uses bank 3

@@ -7,7 +7,7 @@ Purpose:
 Current source references:
 - `DECODE.md`
 - `TRACE.md`
-- `../../NgpCraft_toolchain/T900_DENSE_REF.md`
+- `T900_DENSE_REF.md`
 
 Current behavior:
 - step preview starts from one explicit address, or from the current bootstrap `PC`

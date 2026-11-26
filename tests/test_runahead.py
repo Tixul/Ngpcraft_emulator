@@ -2,8 +2,8 @@
 console must never feel it, and it must step aside while the game saves.
 
 Real games are needed to say anything about prediction: a frozen test ROM predicts
-itself trivially. They come from the corpus beside the repository, or from
-NGPC_CORPUS; without them those tests skip and the save-area ones still run.
+itself trivially. They come from the folder named by
+NGPC_ROMS; without them those tests skip and the save-area ones still run.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ from core import native
 pytestmark = pytest.mark.skipif(not native.available(), reason="native core not built")
 
 REPO = Path(__file__).resolve().parents[1]
-CORPUS = Path(os.environ.get("NGPC_CORPUS", REPO.parents[2] / "jeux officiel"))
-BIOS = REPO / "bios.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+CORPUS = _ROMS
+BIOS = _BIOS
 SONIC = CORPUS / "Sonic the Hedgehog Pocket Adventure (USA).ngc"
 
 
@@ -70,7 +71,7 @@ def _play(page, ahead, frames, pad=_pad):
 
 
 needs_sonic = pytest.mark.skipif(not (SONIC.is_file() and BIOS.is_file()),
-                                 reason="needs the game corpus (NGPC_CORPUS) and bios.bin")
+                                 reason="needs the game corpus (NGPC_ROMS) and bios.bin")
 
 
 @needs_sonic

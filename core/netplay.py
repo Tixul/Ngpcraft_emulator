@@ -282,7 +282,7 @@ class ListPipe:
 #
 # 🔑 Every datagram carries the sender's LAST 16 scheduled inputs, each tagged with its
 # frame number. A lost one is simply covered by the next -- no ack, no retransmit, no
-# waiting. The homebrew that plays online over a Wi-Fi link adapter (Schneeball) does
+# waiting. The homebrew that plays online over a Wi-Fi link adapter does
 # the same thing with its state packet, repeated whole every four frames.
 #
 # Why it cannot hurt:

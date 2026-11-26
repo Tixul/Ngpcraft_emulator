@@ -56,7 +56,7 @@ class TraceDiffTest(unittest.TestCase):
         self.assertIsNone(res["first"])
 
     def test_flag_divergence_detected(self) -> None:
-        # the real COLUMNS finding shape: same regs, F differs (Z flag)
+        # the real finding shape (a homebrew puzzle game): same regs, F differs (Z flag)
         ref = [self._rec(0x204FD0, {}, f=0x42)]
         ours = [self._rec(0x204FD0, {}, f=0x02)]
         res = trace_diff.diff(ref, ours)

@@ -10,7 +10,7 @@ Purpose:
   like?"), different lenses
 
 Current source references:
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md` § "Palettes K2GE"
+- `NGPC_HW_QUICKREF.md` § "Palettes K2GE"
 - `MEMORY_READ.md` § 2 (K2GE registers cold-start image)
 - `ADDRESS_SPACE.md` (region `K2GE_REGS` `0x008000..0x008FFF`)
 

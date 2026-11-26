@@ -1062,7 +1062,7 @@ class NativeMachine:
 
         ⚠️ The defaults are DOCUMENTED, NOT MEASURED, and our documentation contradicts
         itself about the erase by a factor of a hundred. hw_test_flash_timing
-        (04_MY_PROJECTS) measures all three on the cartridge; its answer belongs here.
+        (a hardware probe ROM) measures all three on the cartridge; its answer belongs here.
         """
         self._lib.ngpc_set_flash_timing(self._h, int(program), int(erase_per_8k), int(fail))
 
@@ -1380,7 +1380,7 @@ class NativeMachine:
         so one number cannot price both: an LDIRW iteration moves TWO bytes, and charging
         it the byte figure sells a word copy at half price. Cool Boarders pinned the byte
         form at 14 and never constrained this one. The shell ships 18 (cfg.CART_LDIRW_COST),
-        measured on Bomberman's open-loop HiColor copier, where a block must cost exactly
+        measured on the reference open-loop HiColor copier, where a block must cost exactly
         8 scanlines and the tolerance is one cycle. See Machine::ldirw_cost.
         """
         fn = getattr(self._lib, "ngpc_set_ldirw_cost", None)

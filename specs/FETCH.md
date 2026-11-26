@@ -7,8 +7,8 @@ Purpose:
 Current source references:
 - `CPU_STATE.md`
 - `MEMORY_READ.md`
-- `../../01_SDK/docs/ngpcspec.txt`
-- `../../01_SDK/docs/NGPC_SDK_MASTER_ENTRY.md`
+- `ngpcspec.txt`
+- `NGPC_SDK_MASTER_ENTRY.md`
 
 Current behavior:
 - fetch starts from the current bootstrap `PC`

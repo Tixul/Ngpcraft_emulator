@@ -13,7 +13,7 @@ Purpose:
 Current source references:
 - `K2GE_TILES.md` — single-tile rasterizer kernel
 - `RENDERER.md` — companion PPM writer (`pixels_to_ppm_bytes`)
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md` § "Character RAM"
+- `NGPC_HW_QUICKREF.md` § "Character RAM"
 
 ## 1. Scope
 

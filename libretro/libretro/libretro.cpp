@@ -54,7 +54,7 @@ constexpr uint32_t kStateVersion = 3;   /* link state v2: the two buffer stages 
 //               replacement: a curve-fit 5 was shipped once and refuted. See machine.hpp.
 //   ldir  = 14  per ITERATION of the byte form
 //   ldirw = 18  per iteration of the WORD form, which moves TWO bytes -- a different
-//               number, measured on Bomberman's HiColor copier, not a scaling of 14.
+//               number, measured on the reference HiColor copier, not a scaling of 14.
 // `vram_wait` is deliberately absent: the K2GE throttle is real (cpu_calib_v3, VWR < MEM)
 // but its cost per byte is unmeasured, and the core defaults it off rather than guess.
 /* ⚠️ The two CALIBRATED numbers of the silicon timing model (2026-08-21). Everything

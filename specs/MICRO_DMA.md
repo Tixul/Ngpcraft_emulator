@@ -34,7 +34,7 @@ par seconde**. Aucun jeu ne fait ça avec une ISR logicielle. Et la doc SNK dit
 exactement pourquoi :
 
 > **« Use of timer 0 and micro DMA allows raster scroll effect. »**
-> — `01_SDK/docs/MANSysPro.txt`, ligne 155
+> — `MANSysPro.txt`, ligne 155
 
 Et sa table de vecteurs utilisateur a une colonne que j'avais lue sans la voir :
 
@@ -95,7 +95,7 @@ cherchais *pourquoi l'interruption n'arrivait pas*, alors que le vrai problème
 
 ---
 
-# 7. ⭐ LA DOC EXISTE : `01_SDK/docs/MicroDMA.txt`
+# 7. ⭐ LA DOC EXISTE : `MicroDMA.txt`
 
 Un document SDK entier, que personne n'avait ouvert. **Son exemple est, mot pour
 mot, ce que fait Fatal Fury** :

@@ -8,7 +8,7 @@
 ⛔ RASV DOIT VALOIR 198.
 
 LA QUESTION. La v20 mesure `ldirw` **RAM -> RAM** a **14,16** cy/iteration -- l'annexe B
-au centieme. Mais le copieur HiColor de Bomberman, qui copie **ROM -> VRAM**, exige ~18 :
+au centieme. Mais le copieur HiColor de reference, qui copie **ROM -> VRAM**, exige ~18 :
 a 14 il tourne 21 % trop vite et l'image se dechire. Deux differences separent les deux
 montages, la region SOURCE et la region DESTINATION, et personne ne les a jamais separees.
 ⛔ L'explication evidente est deja refutee : « 18 = 14 + l'etranglement VRAM » ne tient
@@ -21,7 +21,7 @@ le chargement des registres se simplifie) :
     RR   RAM -> RAM     le TEMOIN
     RV   RAM -> VRAM    ce que coute la DESTINATION, seule
     OR   ROM -> RAM     ce que coute la SOURCE, seule
-    OV   ROM -> VRAM    le chemin de Bomberman
+    OV   ROM -> VRAM    le chemin du copieur HiColor
 
 ⚡ ET LA QUESTION QUI DECIDE DU MODELE : **(OV - RR) vaut-il (RV - RR) + (OR - RR) ?**
 Si oui les deux effets sont independants et il suffit de les additionner. Sinon il existe
@@ -115,14 +115,14 @@ def report(label, v):
 
 def verdict(d):
     print("\n=== VERDICT ===")
-    print(f"  Bomberman (ROM>VRAM) exige ~17,9 cy/iteration ; la v21 mesure"
+    print(f"  Le copieur HiColor (ROM>VRAM) exige ~17,9 cy/iteration ; la v21 mesure"
           f" {d['OV']:.2f}.")
     if abs(d["OV"] - 17.9) < 1.0:
         print("       => LE CHEMIN EXPLIQUE TOUT. `ldirw_cost` doit dependre des REGIONS,")
         print("          pas etre un scalaire : 14 en RAM->RAM, ~18 en ROM->VRAM. Le 18")
         print("          d'aujourd'hui n'etait pas faux, il etait mal ATTRIBUE.")
     else:
-        print("       => LE CHEMIN N'EXPLIQUE PAS TOUT. Ce que Bomberman demande ne se")
+        print("       => LE CHEMIN N'EXPLIQUE PAS TOUT. Ce que le copieur HiColor demande ne se")
         print("          retrouve pas dans un `ldirw` ROM->VRAM nu : chercher ce que son")
         print("          copieur fait d'autre (longueur, phase raster, source exacte).")
     somme = (d["RV"] - d["RR"]) + (d["OR"] - d["RR"])

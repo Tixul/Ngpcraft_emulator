@@ -27,7 +27,8 @@ from core.memory import load_read_bus
 from core.rom import load_rom_header
 
 REPO = Path(__file__).resolve().parent.parent
-ROM = REPO.parent.parent / "jeux officiel" / "Crush Roller (USA).ngc"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+ROM = _ROMS / "Crush Roller (USA).ngc"
 
 
 @unittest.skipUnless(native.available(), "native core not built (cmake --build cpp/build)")

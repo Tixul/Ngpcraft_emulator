@@ -139,7 +139,7 @@ Valeurs **mesurees** (ROMs dans `hw_calibration/`, jamais reglees a l'oreille) :
 | `cart_wait` — cycles par octet de **fetch** | **3** | `cpu_calib_v1` : classes fetch-bound ~3,4x trop rapides, MUL/DIV ~2,5x, raster juste |
 | `cart_data_wait` — cycles par octet **lu en donnee** | **0** | `cpu_calib_v2` : lecture cartouche == lecture RAM (252 == 252). Une valeur de 5, calee sur un framerate, a ete **refutee** par cette ROM |
 | `ldir_cost` — cycles par **iteration** du `LDIR`/`LDDR` **octet** | **14** | fait tomber Cool Boarders a ses 30 fps sans toucher Fatal Fury. Fortement etaye, ROM de mesure (`v6`) encore ouverte |
-| `ldirw_cost` — cycles par **iteration** du `LDIRW`/`LDDRW` **mot** | **18** | le copieur raster en boucle ouverte du BOMBERMAN de Thor : chaque bloc doit couter exactement 8 lignes (8 × 515 = 4120 cycles) ou l'image cisaille. A 14 le bloc tombe a 0,793× et l'ecran est illisible ; a 18 la trame est **pixel-identique** au chemin auto-synchronise de la meme ROM ; a 17 → 83 % des pixels, a 19 → 4 %. Fenetre d'**un cycle**, ce qui en fait un meilleur instrument qu'une moyenne de framerate |
+| `ldirw_cost` — cycles par **iteration** du `LDIRW`/`LDDRW` **mot** | **18** | le copieur raster en boucle ouverte HiColor de reference (un homebrew de 2004) : chaque bloc doit couter exactement 8 lignes (8 × 515 = 4120 cycles) ou l'image cisaille. A 14 le bloc tombe a 0,793× et l'ecran est illisible ; a 18 la trame est **pixel-identique** au chemin auto-synchronise de la meme ROM ; a 17 → 83 % des pixels, a 19 → 4 %. Fenetre d'**un cycle**, ce qui en fait un meilleur instrument qu'une moyenne de framerate |
 | `vram_wait` — ecriture VRAM | **0 (off)** | l'effet est reel (`cpu_calib_v3` : VWR 452 < MEM 471) mais le cout/octet n'est pas fixe : on ne livre pas un entier devine |
 
 ⚖️ **`ldir` et `ldirw` sont deux instructions, pas un reglage a deux noms.** Le cout est
@@ -213,7 +213,7 @@ qui donne une machine que personne n'a. **Appeler ce que le shell appelle.**
 | le **BIOS paie le meme bus** | il est sur le meme bus 16 bits |
 | **transmetteur a deux etages** | fiche 3.11 : `SC0BUF` et le registre a decalage sont distincts |
 | retrait du **double comptage** a la reception | defaut reel, condition de sortie remplie |
-| **la file ne precharge PAS a travers une copie de bloc** | une copie repetee tient le bus (une lecture + une ecriture par iteration) : aucun creneau pour precharger derriere elle. ⚖️ **MESURE** sur le copieur raster en boucle ouverte de BOMBERMAN, qui doit depenser exactement 8 lignes par bloc : 4086 cy/bloc sans (0,9917x, image cassee), **4134 avec (1,0034x, image propre)**. Les 11 ROM de calibration : framebuffer IDENTIQUE AU BIT avec et sans. Voir DEVLOG 2026-08-25. |
+| **la file ne precharge PAS a travers une copie de bloc** | une copie repetee tient le bus (une lecture + une ecriture par iteration) : aucun creneau pour precharger derriere elle. ⚖️ **MESURE** sur le copieur raster en boucle ouverte HiColor de reference, qui doit depenser exactement 8 lignes par bloc : 4086 cy/bloc sans (0,9917x, image cassee), **4134 avec (1,0034x, image propre)**. Les 11 ROM de calibration : framebuffer IDENTIQUE AU BIT avec et sans. Voir DEVLOG 2026-08-25. |
 | `word = 8,25` (`fetch_wait_q4 = 33`), `bios = 8` | ⚠️ **les deux seuls chiffres CALIBRES**, et le premier a ete RECALE sur silicium le 23/08 (ROM v8) : il valait 10, l'entier ne peut pas encadrer la console. Voir plus bas. |
 
 ### Contre le silicium (tir du 21/08, recoupe en interne)
@@ -368,7 +368,7 @@ variable, un peu plus lente que la table ».
 deux chemins passent par la alors que leur prix est **deja** mesure ou tabule :
 
 - le **transfert bloc** : `ldir_cost` (14) et `ldirw_cost` (18) ne viennent pas d'une table,
-  ils ont ete mesures par iteration contre la tranche de 8 lignes du copieur de Bomberman
+  ils ont ete mesures par iteration contre la tranche de 8 lignes du copieur HiColor de reference
   (8 x 515 = 4120 cycles). Les facturer en plus coutait **1792 cycles sur 4120** (+43 %) ;
 - l'**entree en interruption** : les quatre valeurs de Toshiba (28/24/22/18 etats) sont
   indexees sur **la largeur de bus de la ZONE DE PILE** -- elles contiennent donc deja les
@@ -430,7 +430,7 @@ Ne pas le bouger seul.
 3. ⚖️ **`ldirw_cost = 18` n'etait pas faux, il etait MAL ATTRIBUE** (v21). Le meme `ldirw`
    coute **14,04** cy/iteration en RAM->RAM (l'annexe B au centieme) et **18,16** en
    ROM->RAM : c'est la **SOURCE** en cartouche qui coute +4,12, pas la destination VRAM
-   (+0,08). Cale sur le copieur ROM->VRAM de Bomberman, notre 18 portait 14 + 4 et etait
+   (+0,08). Cale sur le copieur ROM->VRAM HiColor de reference, notre 18 portait 14 + 4 et etait
    applique a TOUS les transferts ⇒ **29 % trop cher** sur toute copie RAM->RAM ou
    RAM->VRAM, la plupart de celles que font les jeux.
    ⇒ `ldirw_cost` **18 -> 14** + `block_cart_src_per_byte = 2`.
@@ -543,12 +543,12 @@ chemin des 110 de l'annexe B.
 | suite | 2115 verts | **2115 verts** |
 
 ✅ **Verifie manette en main** par l'utilisateur sur plusieurs jeux (2026-08-29) : rien de
-casse. Les temoins a surveiller restent le copieur raster du titre de Bomberman et le HUD
+casse. Les temoins a surveiller restent le copieur raster du titre HiColor de reference et le HUD
 en split raster de Cool Boarders.
 
 ⚠️ **Ce que le corpus ne voit pas** : il ne regarde que des ecrans d'intro. Les deux
 temoins historiques d'un timing d'interruption faux sont **le copieur raster de l'ecran
-titre de Bomberman** (marge : UNE ligne) et **le HUD en split raster de Cool Boarders**.
+titre HiColor de reference** (marge : UNE ligne) et **le HUD en split raster de Cool Boarders**.
 ⇒ a verifier **manette en main** avant de considerer le chantier clos.
 
 ---
@@ -621,7 +621,7 @@ ou le credit en cycles rend 16,0 -- une erreur de 40 % sur une mesure directe. I
 aussi les quatre grandeurs de la v14 a +-0,7 % et la v15.
 
 ⛔ **Il reste desarme** : arme, il laisse le corpus a -1 % uniforme et casse l'ancrage
-Bomberman (dont la marge est d'UNE ligne). Ce qui manque n'est pas une constante -- les trois
+HiColor (dont la marge est d'UNE ligne). Ce qui manque n'est pas une constante -- les trois
 qu'on soupconnait ont ete mesurees (v17) et ne suffisent pas. `ngpc_set_queue_bytes(4)` et
 `ngpc_set_muldiv_word(15, 47)` l'arment pour la mesure ; ils vont **ensemble**.
 
@@ -676,7 +676,7 @@ le facteur d'ajustement que le §8 interdit.
 ### 📄 La table pour le faire proprement est dans le depot
 
 Annexe B, « 900/L1 Instruction Lists (1/10) » a (10/10) —
-`NgpCraft_toolchain/misc/Toshiba-TLCS-900-L-Resources-master/BMSKTOPAS91FY42 CD/Data sheets/900L1 Core (e_900l1_chap3_cpu) Datasheet.pdf`, pages 159-168. Texte extractible.
+`900L1 Core (e_900l1_chap3_cpu) Datasheet.pdf` (Toshiba), pages 159-168. Texte extractible.
 
 ⚠️ **Le PDF, pas le `.txt`** : l'extraction texte du catalogue perd les colonnes d'etats de
 la Table 5.2 **sans le signaler** — c'est ce qui a fait croire que la table manquait.

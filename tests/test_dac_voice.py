@@ -26,8 +26,9 @@ from pathlib import Path
 from core import native
 from core.native_session import NativeSession
 
-ROMS = Path(__file__).resolve().parents[3] / "jeux officiel"
-BIOS = ROMS / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+ROMS = _ROMS
+BIOS = _BIOS
 SONIC = ROMS / "Sonic the Hedgehog Pocket Adventure (USA).ngc"
 
 DAC_LEFT, DAC_RIGHT = 0x0000A2, 0x0000A3

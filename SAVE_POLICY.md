@@ -211,7 +211,7 @@ Cette politique est **abstraite**. L'implementation concrete vit
 ailleurs et est deja en grande partie ecrite cote toolchain :
 
 - **Master strategy index (point d'entree unique cross-projets)** :
-  `../Doc de dev/Final/BIOS_FLASH_SAVES_STRATEGY.md`
+  `BIOS_FLASH_SAVES_STRATEGY.md`
   — couvre BIOS HLE, flash, saves pour les 3 projets de l'ecosysteme
   NgpCraft (toolchain + emulateur + live editor).
 
@@ -220,7 +220,7 @@ ailleurs et est deja en grande partie ecrite cote toolchain :
   workflow gap-filling, plan de tests.
 
 - **Lib de reference (propre au projet, HW-validated)** :
-  `../Doc de dev/NgpCraft_base_template/NgpCraft_base_template/src/core/ngpc_flash.{h,c}` + `ngpc_flash_asm.asm` — lib developpee
+  NgpCraft base template `ngpc_flash.{h,c}` + `ngpc_flash_asm.asm` — lib developpee
   pour le projet NgpCraft, utilisee par les ROMs cc900 du toolchain
   pour bypass les bugs BIOS flash. **Source de verite** pour le
   protocole AMD flash et le pattern append-only (32 slots × 256
@@ -228,12 +228,12 @@ ailleurs et est deja en grande partie ecrite cote toolchain :
   aucune contrainte de licence externe (c'est notre code).
 
 - **ROM de smoke HW-validated** :
-  `../NgpCraft_toolchain/StarGunner_save_lib_test/bin/main.ngc` —
+  `StarGunner_save_lib_test/bin/main.ngc` —
   exerce toute la stack save. A utiliser pour les tests end-to-end
   d'implementation HLE flash.
 
 - **Documentation fonctionnelle BIOS** :
-  `../Doc de dev/Final/BIOS_REF.md` — table SWI, conventions
+  `BIOS_REF.md` — table SWI, conventions
   d'appel, parametres bank-3. Suffisante pour 95% des HLE.
 
 - **Format savestate** :

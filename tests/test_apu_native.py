@@ -33,8 +33,9 @@ import pytest
 from core import apu as oracle
 from core import native
 
-ROM_DIR = Path(__file__).resolve().parents[3] / "jeux officiel"
-BIOS_PATH = ROM_DIR / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+ROM_DIR = _ROMS
+BIOS_PATH = _BIOS
 
 APU_WRITE_MEM = 1
 

@@ -26,8 +26,9 @@ from pathlib import Path
 from core import native
 from core.renderer import NGPC_SCREEN_HEIGHT as H, NGPC_SCREEN_WIDTH as W, render_frame
 
-ROMS = Path(__file__).resolve().parents[3] / "jeux officiel"
-BIOS = ROMS / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+ROMS = _ROMS
+BIOS = _BIOS
 
 SCR1_MAP, SCR2_MAP, CHAR_RAM = 0x9000, 0x9800, 0xA000
 SCR1_PAL, SCR2_PAL, SPR_PAL = 0x8280, 0x8300, 0x8200

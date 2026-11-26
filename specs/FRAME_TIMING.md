@@ -11,7 +11,7 @@ Purpose:
   vector, HBlank, raster-position-triggered IRQ)
 
 Hardware source:
-- `01_SDK/docs/K2GETechRef.txt` § 4-7 "FRAME RATE REGISTER" + § 4-8
+- `K2GETechRef.txt` § 4-7 "FRAME RATE REGISTER" + § 4-8
   "Raster Position Register"
 - Direct quote: *"signal generation for the 0th line occurs at the
   beginning of line 198"* → scanlines cycle `0..197`, total **198**
@@ -209,7 +209,7 @@ grow without churning the timing core.
 > That inference rested on our mask gate — which was itself **off by one**.
 >
 > Two authoritative sources say 4:
-> - **SNK SDK** (`01_SDK/docs/SysPro.txt`, USER PROGRAM INTERRUPT OPERATION
+> - **SNK SDK** (`SysPro.txt`, USER PROGRAM INTERRUPT OPERATION
 >   VECTOR): *"It is forbidden to prohibit Vertical Blanking Interrupt
 >   (**Interrupt level 4**) because the operation has system involvement."*
 > - The reference emulator gates VBlank on `statusIFF() <= 4`, which under the

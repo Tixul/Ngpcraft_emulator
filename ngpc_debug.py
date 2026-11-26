@@ -25,13 +25,14 @@ from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap, QFont, QBrush, QColor, QKeySequence, QShortcut
+from PyQt6.QtGui import (QImage, QPixmap, QFont, QBrush, QColor, QKeySequence, QShortcut,
+                         QTextCursor, QTextFormat)
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QPlainTextEdit, QComboBox, QLineEdit, QSpinBox, QCheckBox,
     QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QToolTip, QApplication, QMessageBox, QTabBar,
-    QStackedWidget,
+    QStackedWidget, QTextEdit,
 )
 
 from core import native
@@ -39,7 +40,8 @@ from core.decode import decode_instruction_at
 from core.watches import Watch
 from core.exec_breaks import ExecBreak
 from core.ramsearch import RamSearch
-from core.symbols import SymbolTable, load_map
+from core.symbols import SymbolTable, load_map, load_symbols, symbol_files_for_rom
+from core.source_step import step_line as _src_step_line, step_out as _src_step_out
 from core import link_debug
 from core.vgm_export import VgmRecorder
 from core.ngps_export import NgpsRecorder
@@ -526,6 +528,24 @@ def _pixmap(arr: np.ndarray, scale: int) -> QPixmap:
                       Qt.TransformationMode.FastTransformation)
 
 
+class _SourceView(QPlainTextEdit):
+    """Read-only C source listing; a double-click names the line (1-based)."""
+
+    lineActivated = pyqtSignal(int)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setFont(QFont(_MONO, 10))
+
+    def mouseDoubleClickEvent(self, e) -> None:  # type: ignore[override]
+        self.lineActivated.emit(self.cursorForPosition(e.pos()).blockNumber() + 1)
+
+    def current_line(self) -> int:
+        return self.textCursor().blockNumber() + 1
+
+
 class DebugWindow(QMainWindow):
     def restyle(self, palette) -> None:
         """Repaint for a new theme.
@@ -631,6 +651,7 @@ class DebugWindow(QMainWindow):
         self._tab_refresh: list = []
         for category, title, build, refresh in (
             ("CPU", "CPU", self._cpu_tab, self._refresh_cpu),
+            ("CPU", "Source", self._source_tab, self._refresh_source),
             ("CPU", "HW Regs", self._hwregs_tab, self._refresh_hwregs),
             ("CPU", "Disassembly", self._disasm_tab, self._refresh_disasm),
             ("CPU", "Call Stack", self._callstack_tab, self._refresh_callstack),
@@ -686,6 +707,10 @@ class DebugWindow(QMainWindow):
         for keys, slot in (("F7", self._step_instr), ("F8", self._step_over),
                            ("Shift+F8", self._step_out), ("F4", self._run_to_cursor),
                            ("F9", self._toggle_breakpoint_at_cursor),
+                           # C source level (Source tab), the Visual Studio keys
+                           ("F10", lambda: self._src_step("over")),
+                           ("F11", lambda: self._src_step("into")),
+                           ("Shift+F11", lambda: self._src_step("out")),
                            ("Ctrl+G", self._focus_goto)):
             QShortcut(QKeySequence(keys), self, activated=slot)
 
@@ -1144,14 +1169,16 @@ class DebugWindow(QMainWindow):
         if rom is None:
             self._update_symbol_label()
             return
-        for cand in (rom.with_suffix(".map"), Path(str(rom) + ".map")):
-            if cand.is_file():
-                try:
-                    self._symbols = load_map(str(cand))
-                    self._symbols_name = cand.name
-                except (OSError, ValueError):
-                    self._symbols = None
+        # `.ngdbg` first (`ngpcraft build -g`): everything the map has, plus static
+        # functions and the C lines the Source tab runs on. A broken one falls back
+        # to the map rather than leaving the debugger blind.
+        for cand in symbol_files_for_rom(rom):
+            try:
+                self._symbols = load_symbols(str(cand))
+                self._symbols_name = cand.name
                 break
+            except (OSError, ValueError):
+                self._symbols = None
         self._push_symbols()
         self._update_symbol_label()
 
@@ -1167,12 +1194,13 @@ class DebugWindow(QMainWindow):
         rom = getattr(play, "_rom_path", None) if play is not None else None
         if rom is not None:
             start = str(rom.parent)
-        path, _ = QFileDialog.getOpenFileName(self, "Load symbol map", start,
-                                              "Linker map (*.map);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load symbols", start,
+            "Debug info or linker map (*.ngdbg *.map);;All files (*)")
         if not path:
             return
         try:
-            self._symbols = load_map(path)
+            self._symbols = load_symbols(path)
             self._symbols_name = Path(path).name
         except (OSError, ValueError) as exc:
             self._symbols = None; self._symbols_name = ""
@@ -1215,6 +1243,258 @@ class DebugWindow(QMainWindow):
             return None
 
     # ---- Disassembly tab
+    # ---- Source tab: C source-level debugging ---------------------------------
+    # Runs on the `.ngdbg` the NgpCraft toolchain writes with `ngpcraft build -g`
+    # (address <-> C line). Without it the tab says so and how to get one: the
+    # disassembly is still there for everything else.
+    def _src_lines(self):
+        return getattr(self._symbols, "lines", None) if self._symbols is not None else None
+
+    def _src_text(self, addr: int) -> str:
+        """'main.c:123' for an address in C code, '' otherwise."""
+        lines = self._src_lines()
+        pos = lines.at(addr) if lines is not None else None
+        return f"{Path(pos.file).name}:{pos.line}" if pos is not None else ""
+
+    def _source_tab(self) -> QWidget:
+        w = QWidget(); lay = QVBoxLayout(w)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("File"))
+        self._src_file = QComboBox(); self._src_file.setMinimumWidth(220)
+        self._src_file.currentTextChanged.connect(self._src_on_file)
+        top.addWidget(self._src_file, 1)
+        self._src_follow = QCheckBox("follow PC"); self._src_follow.setChecked(True)
+        self._src_follow.setToolTip("Show the file and line the program counter is in.\n"
+                                    "Unticked, the view stays on the file you chose.")
+        top.addWidget(self._src_follow)
+        b = QPushButton("Source folder…"); b.setObjectName("ghost")
+        b.setToolTip("Where the project's sources are, if they are not found by\n"
+                     "walking up from the ROM (the usual layout: ROM in <project>/bin).")
+        b.clicked.connect(self._src_choose_root)
+        top.addWidget(b)
+        lay.addLayout(top)
+
+        step = QHBoxLayout()
+        for lab, mode, tip in (
+                ("⤵ Into", "into", "Next C line, entering a called function that has\n"
+                                   "source (F11)"),
+                ("⤼ Over", "over", "Next C line; calls run to their return (F10)"),
+                ("⤴ Out", "out", "Run until this function returns (Shift+F11)"),
+                ("⇥ Run to line", "cursor", "Run until the line under the cursor is reached")):
+            pb = QPushButton(lab); pb.setObjectName("ghost"); pb.setToolTip(tip)
+            pb.clicked.connect(lambda _c, md=mode: self._src_step(md))
+            step.addWidget(pb)
+        step.addStretch()
+        self._src_where = QLabel(""); self._src_where.setObjectName("hint")
+        step.addWidget(self._src_where)
+        lay.addLayout(step)
+
+        self._src_view = _SourceView()
+        self._src_view.setToolTip("Double-click a line to set or clear a breakpoint on it.\n"
+                                  "● armed  ○ disabled  ▶ current line")
+        self._src_view.lineActivated.connect(self._src_toggle_line)
+        lay.addWidget(self._src_view, 1)
+        self._src_note = QLabel(""); self._src_note.setObjectName("hint")
+        self._src_note.setWordWrap(True)
+        lay.addWidget(self._src_note)
+        self._src_root: Path | None = None      # chosen source folder, if any
+        self._src_shown_key = None              # (path, breakpoints, current line) drawn
+        self._src_text_cache: dict = {}         # path -> list of source lines
+        self._src_files_for = None              # table the combo was filled from
+        return w
+
+    def _src_choose_root(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Project source folder")
+        if d:
+            self._src_root = Path(d)
+            self._src_shown_key = None
+            self._refresh_source()
+
+    def _src_on_file(self, _name: str) -> None:
+        self._src_shown_key = None
+        if getattr(self, "_src_view", None) is not None and not self._src_filling:
+            self._src_follow.setChecked(False)      # the user picked a file: stay on it
+            self._refresh_source()
+
+    _src_filling = False
+
+    def _src_resolve(self, file: str) -> Path | None:
+        lines = self._src_lines()
+        if lines is None:
+            return None
+        if self._src_root is not None:
+            hit = lines.resolve_file(file, self._src_root)
+            if hit is not None:
+                return hit
+        rom = getattr(self._play, "_rom_path", None) if self._play is not None else None
+        return lines.resolve_file(file, Path(rom).parent if rom else None)
+
+    def _src_read(self, path: Path) -> list[str]:
+        key = str(path)
+        if key not in self._src_text_cache:
+            try:
+                txt = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                txt = path.read_text(encoding="latin-1")
+            self._src_text_cache[key] = txt.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        return self._src_text_cache[key]
+
+    def _src_line_breaks(self, file: str) -> dict[int, bool]:
+        """C line -> armed? for the breakpoints that sit on a line's addresses."""
+        lines = self._src_lines()
+        bps = self._breakpoint_pcs()
+        if lines is None or not bps:
+            return {}
+        out: dict[int, bool] = {}
+        for ln, addrs in lines.lines_in(file).items():
+            hits = [bps[a] for a in addrs if a in bps]
+            if hits:
+                out[ln] = any(hits)
+        return out
+
+    def _refresh_source(self) -> None:
+        lines = self._src_lines()
+        m = self._m
+        self._auto_load_symbols()
+        lines = self._src_lines()
+        if lines is None or not len(lines):
+            self._src_view.setPlainText(
+                "No C source information for this ROM.\n\n"
+                "Build it with the NgpCraft toolchain and -g:\n\n"
+                "    ngpcraft build <project> -g\n\n"
+                "That writes <rom>.ngdbg next to the ROM; it is loaded automatically\n"
+                "(or with 'Load symbols…' in the Disassembly tab). The ROM itself is the\n"
+                "same with or without -g.")
+            self._src_shown_key = None
+            self._src_where.setText("")
+            self._src_note.setText("")
+            return
+        if self._src_files_for is not lines:
+            self._src_filling = True
+            self._src_file.clear()
+            self._src_file.addItems(lines.files)
+            self._src_filling = False
+            self._src_files_for = lines
+        pos = lines.at(m.cpu().pc) if m is not None else None
+        if pos is not None and self._src_follow.isChecked() \
+                and self._src_file.currentText() != pos.file:
+            self._src_filling = True
+            self._src_file.setCurrentText(pos.file)
+            self._src_filling = False
+        file = self._src_file.currentText()
+        if m is None:
+            self._src_where.setText("(no game running)")
+        elif pos is None:
+            self._src_where.setText(f"PC {m.cpu().pc:06X} {self._sym_text(m.cpu().pc)} "
+                                    "— not in C code")
+        else:
+            self._src_where.setText(f"{pos.file}:{pos.line}  {self._sym_text(m.cpu().pc)}")
+        path = self._src_resolve(file) if file else None
+        if path is None:
+            self._src_view.setPlainText(
+                f"{file}: source not found near the ROM.\n\n"
+                "Use 'Source folder…' to point at the project folder.")
+            self._src_shown_key = None
+            return
+        cur = pos.line if (pos is not None and pos.file == file) else 0
+        brk = self._src_line_breaks(file)
+        key = (str(path), tuple(sorted(brk.items())), cur)
+        if key == self._src_shown_key:
+            return
+        first_time = self._src_shown_key is None or self._src_shown_key[0] != str(path)
+        self._src_shown_key = key
+        src = self._src_read(path)
+        code = lines.lines_in(file)
+        view = self._src_view
+        scroll = view.verticalScrollBar().value()
+        out = []
+        for n, text in enumerate(src, 1):
+            b = ("●" if brk[n] else "○") if n in brk else " "
+            p = "▶" if n == cur else (" " if n not in code else "·")
+            out.append(f"{b}{p}{n:5d}  {text}")
+        view.setPlainText("\n".join(out))
+        self._src_note.setText(f"{len(code)} lines with code in {Path(file).name} · "
+                               "double-click a line for a breakpoint · F10 over · "
+                               "F11 into · Shift+F11 out")
+        if cur:
+            block = view.document().findBlockByNumber(cur - 1)
+            cursor = QTextCursor(block)
+            view.setTextCursor(cursor)
+            sel = QTextEdit.ExtraSelection()
+            sel.format.setBackground(_PC_ROW_BG)
+            sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            sel.cursor = cursor
+            view.setExtraSelections([sel])
+            view.centerCursor()
+        else:
+            view.setExtraSelections([])
+            if not first_time:
+                view.verticalScrollBar().setValue(scroll)
+
+    def _src_toggle_line(self, line: int) -> None:
+        play = self._play
+        lines = self._src_lines()
+        file = self._src_file.currentText() if lines is not None else ""
+        if play is None or not file:
+            return
+        used, addrs = lines.addresses_for(file, line)
+        if not addrs:
+            self._status.setText(f"{Path(file).name}:{line}: no code on or after this line")
+            return
+        items = play.breaks.items
+        have = [bp for bp in items if bp.pc in addrs]
+        if have:
+            play.breaks.items = [bp for bp in items if bp.pc not in addrs]
+            note = f"breakpoint removed: {Path(file).name}:{used}"
+        else:
+            items.extend(ExecBreak(a, "", True) for a in addrs)
+            note = f"breakpoint: {Path(file).name}:{used}" + (
+                f" (moved from line {line})" if used != line else "")
+        play._save_breaks()          # noqa: SLF001  (persists + re-arms the core)
+        self._breaks_rom = None      # the Breakpoints tab repopulates
+        self._src_shown_key = None
+        self._refresh_source()
+        self._status.setText(note)
+
+    def _src_step(self, mode: str) -> None:
+        play, m = self._play, self._m
+        lines = self._src_lines()
+        if play is None or m is None:
+            return
+        if lines is None:
+            self._status.setText("no C source info — build with `ngpcraft build -g`")
+            return
+        play.paused = True
+        play._bp_step_off = False    # noqa: SLF001  (same as step_instruction)
+        bps = play.breaks.enabled_pcs()
+        if mode == "cursor":
+            file = self._src_file.currentText()
+            used, addrs = lines.addresses_for(file, self._src_view.current_line())
+            if not addrs:
+                self._status.setText("run to line: no code on or after that line")
+                return
+            reached, ran = play.run_until_pc(addrs)
+            pos = lines.at(m.cpu().pc)
+            what = f"run to {Path(file).name}:{used}" + ("" if reached else " — stopped early")
+        else:
+            if mode == "out":
+                r = _src_step_out(m, lines, user_breakpoints=bps)
+            else:
+                r = _src_step_line(m, lines, over=(mode == "over"), user_breakpoints=bps)
+            blit = getattr(play, "_blit", None)
+            if callable(blit):
+                blit()
+            ran, pos = r.ran, r.pos
+            what = {"into": "into", "over": "over", "out": "out"}[mode]
+            if r.reason not in ("line", "entered", "returned"):
+                what += f" ({r.reason})"
+        where = f"{pos.file}:{pos.line}" if pos is not None else \
+            f"PC {m.cpu().pc:06X} {self._sym_text(m.cpu().pc)} (no C line)"
+        self._src_follow.setChecked(True)
+        self._src_shown_key = None
+        self._after_step(f"{what} — {ran} instr — {where}")
+        self._refresh_source()
+
     _DIS_COLS = ["", "Address", "Symbol", "Bytes", "Instruction"]
 
     def _disasm_tab(self) -> QWidget:
@@ -1248,8 +1528,10 @@ class DebugWindow(QMainWindow):
         nav.addStretch()
         self._sym_label = QLabel("no symbols"); self._sym_label.setObjectName("hint")
         nav.addWidget(self._sym_label)
-        sb = QPushButton("Load .map…"); sb.setObjectName("ghost")
-        sb.setToolTip("Load the linker map so addresses show function names.")
+        sb = QPushButton("Load symbols…"); sb.setObjectName("ghost")
+        sb.setToolTip("Load the debug file (.ngdbg, from `ngpcraft build -g`) or the linker\n"
+                      "map (.map) so addresses show function names. Both are picked up\n"
+                      "automatically when they sit next to the ROM.")
         sb.clicked.connect(self._load_symbols_dialog)
         nav.addWidget(sb)
         lay.addLayout(nav)
@@ -1402,9 +1684,18 @@ class DebugWindow(QMainWindow):
                 continue
             raw = (d.raw_bytes or b"").hex(" ")
             asm = d.assembly or (d.mnemonic or "??")
-            out.append((pc, self._sym_text(pc), raw, asm))
+            out.append((pc, self._dis_label(pc), raw, asm))
             pc = d.next_sequential_pc
         return out
+
+    def _dis_label(self, pc: int) -> str:
+        """Symbol column: the routine, plus `main.c:12` where a C line starts."""
+        sym = self._sym_text(pc)
+        lines = self._src_lines()
+        if lines is not None and lines.is_line_start(pc):
+            src = self._src_text(pc)
+            return f"{sym}  [{src}]" if sym else f"[{src}]"
+        return sym
 
     def _dis_dump(self) -> str:
         return "\n".join(f"{a:06X}  {s:<24} {r:<14} {i}" for a, s, r, i in self._dis_lines())
@@ -1623,10 +1914,14 @@ class DebugWindow(QMainWindow):
         t.setRowCount(len(rows))
         for i, (addr, ret, caller) in enumerate(rows):
             cells = ["▶" if i == 0 else str(i),
-                     self._sym_text(addr) or "(no symbol)",
+                     " ".join(x for x in (self._sym_text(addr) or "(no symbol)",
+                                          f"[{self._src_text(addr)}]"
+                                          if self._src_text(addr) else "") if x),
                      f"{addr:06X}",
                      f"{ret:06X}" if ret is not None else "",
-                     f"{caller:06X}" if caller is not None else ""]
+                     " ".join(x for x in (f"{caller:06X}" if caller is not None else "",
+                                          self._src_text(caller) if caller is not None
+                                          else "") if x)]
             for c, text in enumerate(cells):
                 it = t.item(i, c)
                 if it is None:

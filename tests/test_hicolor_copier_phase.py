@@ -1,10 +1,11 @@
-"""BOMBERMAN's HiColor title screen: the 19 raster blocks must stay IN PHASE.
+"""An open-loop HiColor copier: its 19 raster blocks must stay IN PHASE.
 
-Thor's BOMBERMAN (2004) shows a 146-colour picture on a 16-colour machine by rewriting
-20 characters and both scroll palettes every 8 scanlines, double-buffered: while a band
-displays bank A, the copier fills bank B for the band after it. `hc_showHW` syncs ONCE
-on line 0 and then runs 19 blocks of 224 `ldirw` words WITHOUT polling again, so every
-block must cost exactly one 8-line slice (8 x 515 = 4120 cycles).
+The reference cartridge (a homebrew title screen) shows a 146-colour picture on a
+16-colour machine by rewriting 20 characters and both scroll palettes every 8 scanlines,
+double-buffered: while a band displays bank A, the copier fills bank B for the band after
+it. The copy routine syncs ONCE on line 0 and then runs 19 blocks of 224 `ldirw` words
+WITHOUT polling again, so every block must cost exactly one 8-line slice
+(8 x 515 = 4120 cycles).
 
 ⚖️ WHY THIS IS A BETTER INSTRUMENT THAN A FRAME-RATE AVERAGE. A per-block error does not
 average out, it ACCUMULATES against a starting margin of 73 cycles: 34 cycles too fast
@@ -17,6 +18,8 @@ corrupted line per band -- with no tolerance to argue about.
 recalibration, which let the bus interface unit prefetch through a block copy and handed
 back 48 cycles a block. Hence this test: the ROM is not in the repository, so the check
 skips where it is absent -- but where it is present nothing can move that phase silently.
+Point `NGPC_HICOLOR_ROM` at the cartridge; its savestate is `savestates/<rom name>.s0`,
+taken on the title screen.
 
 ⚠️ THE ASSERTION IS THE PHASE, NOT A PIXEL HASH. It says what the hardware requires --
 every copy starts in the FIRST line of a band -- so a failure names the fault instead of
@@ -26,32 +29,29 @@ reporting that some picture changed.
 from __future__ import annotations
 
 import unittest
+import os
 from pathlib import Path
 
 from core import native
 import ngpc_native as N
 
-REPO = Path(__file__).resolve().parents[1]
-STATE = REPO / "savestates" / "BOMBERMAN.s0"
-CANDIDATES = (
-    REPO / "roms" / "BOMBERMAN.ngp",
-    Path.home() / "Desktop" / "NGPC_RAG" / "03_HOMEBREW" / "BOMBERMAN.ngp",
-    REPO.parents[2] / "Desktop" / "NGPC_RAG" / "03_HOMEBREW" / "BOMBERMAN.ngp",
-)
-ROM = next((p for p in CANDIDATES if p.exists()), None)
-BIOS = REPO / "bios.bin"
+from rom_paths import BIOS, REPO
+
+_ROM = Path(os.environ.get("NGPC_HICOLOR_ROM", ""))
+ROM = _ROM if os.environ.get("NGPC_HICOLOR_ROM") and _ROM.is_file() else None
+STATE = REPO / "savestates" / f"{ROM.stem if ROM else '-'}.s0"
 
 # Character RAM. Bank A = the 20 characters SCR2 shows on lines 0-7, 16-23, ...;
-# bank B = the 20 it shows on lines 8-15, 24-31, ... (`hc_load` builds the map that way).
+# bank B = the 20 it shows on lines 8-15, 24-31, ... (the game builds the map that way).
 BANK_A_FIRST_WORD = 0xA000
 BAND = 8
 VISIBLE_LINES = 152      # the picture; a refill past it lands in V-blank and shows nobody
 
 
 @unittest.skipUnless(native.available(), "native core not built (cmake --build cpp/build)")
-@unittest.skipUnless(ROM is not None, "BOMBERMAN.ngp not found next to this checkout")
-@unittest.skipUnless(STATE.exists(), "savestates/BOMBERMAN.s0 missing")
-class BombermanHiColorPhaseTests(unittest.TestCase):
+@unittest.skipUnless(ROM is not None, "NGPC_HICOLOR_ROM not set")
+@unittest.skipUnless(STATE.exists(), "no title-screen savestate for NGPC_HICOLOR_ROM")
+class HiColorCopierPhaseTests(unittest.TestCase):
 
     def _copy_starts(self) -> list[tuple[int, int]]:
         """(scanline, cycle) of every bank-A refill during one title-screen frame."""

@@ -1360,7 +1360,7 @@ struct Machine {
      * instruction after one pays its own fetch in full. Set, the BIU's run-ahead is
      * zeroed after LDIR/LDIRW/CPIR/... instead of being left at its one-queue credit.
      *
-     * ⚖️ ARMED BY THE SILICON MODEL, AND MEASURED: BOMBERMAN's open-loop raster copier
+     * ⚖️ ARMED BY THE SILICON MODEL, AND MEASURED: the reference open-loop raster copier
      * must spend exactly 4120 cycles a block. Without this, 4086 (0.9917x) and the
      * title screen loses one line per band; with it, 4134 (1.0034x) and the picture is
      * pixel-clean. The eleven calibration ROMs are bit-identical either way. Full
@@ -1408,8 +1408,8 @@ struct Machine {
      * doc est fausse ou incomplete pour eux --
      *   MUL / DIV : `cpu_calib_v2` lit DIV mot a 265 la ou la datasheet donne un
      *               plancher ; la vraie division est a latence variable et plus lente ;
-     *   LDIR/LDIRW : 14 et 18, cales sur Cool Boarders et le copieur raster de
-     *               Bomberman (fenetre d'UN cycle).
+     *   LDIR/LDIRW : 14 et 18, cales sur Cool Boarders et le copieur raster HiColor
+     *               de reference (fenetre d'UN cycle).
      *
      * Les avoir doubles avec le reste facturait ces instructions au DOUBLE, et ce sont
      * exactement celles dont vivent un HUD en split raster et un scroll de fond : le HUD
@@ -1626,11 +1626,11 @@ struct Machine {
      * cost, update hw_calibration/README.md, the shell and the README table together. */
     /* ⛔ ET IL NE SE PAIE PAS PENDANT UN TRANSFERT BLOC. `ldir_cost`/`ldirw_cost` ne
      * sortent pas d'une table : ils ont ete MESURES contre du materiel -- 18 contre le
-     * copieur HiColor de Bomberman, qui ecrit justement en VRAM, avec une fenetre d'UN
+     * copieur HiColor de reference, qui ecrit justement en VRAM, avec une fenetre d'UN
      * cycle. Ce cout contient donc DEJA l'etranglement du K2GE ; l'ajouter par-dessus le
      * facture deux fois. C'est la meme garde que `data_wait_cycles` (voir
      * `data_wait_before` dans mem_family.cpp), et c'est le test
-     * `test_bomberman_hicolor_phase` qui l'a exigee : arme sans elle, le copieur derive
+     * `test_hicolor_copier_phase` qui l'a exigee : arme sans elle, le copieur derive
      * de sa tranche de 4120 cycles et corrompt une ligne par bande. */
     mutable bool in_block_copy = false;
     /* ESSAI : un transfert bloc paie l'etranglement VRAM comme n'importe quelle
@@ -1650,7 +1650,7 @@ struct Machine {
      * **2 cycles par octet lu**, soit +4 sur une iteration mot.
      *
      * ⚖️ ET C'EST CE QUI EXPLIQUE `ldirw_cost = 18`. Ce nombre n'etait pas faux, il etait
-     * **mal attribue** : cale sur le copieur HiColor de Bomberman, qui copie ROM -> VRAM,
+     * **mal attribue** : cale sur le copieur HiColor de reference, qui copie ROM -> VRAM,
      * il portait 14 (l'instruction) + 4 (sa source en cartouche) -- et nous l'appliquions
      * a TOUS les transferts, donc 29 % trop cher sur toute copie RAM -> RAM ou
      * RAM -> VRAM, c'est-a-dire la plupart de celles que font les jeux.
@@ -1688,12 +1688,12 @@ struct Machine {
      * which pinned 14, uses the BYTE form; nothing in that measurement ever constrained
      * the word form, and one field could not hold both answers anyway.
      *
-     * ⚖️ MEASURED, on Thor's BOMBERMAN (2004) HiColor title screen. Its `hc_showHW` is an
+     * ⚖️ MEASURED, on the reference HiColor title screen (a 2004 homebrew). Its copy routine is an
      * OPEN-LOOP raster copier: 19 blocks of 224 `ldirw` words, no polling, each of which
      * must cost exactly one 8-scanline slice (8 * 515 = 4120 cycles) or the picture shears.
      * At 14 a block came to 3268 cycles -- 0.793x -- and the screen was garbage. 18 puts it
      * at 8328 per pair against a target of 8240 and the frame comes out PIXEL-IDENTICAL to
-     * the same ROM's self-synchronising path (`hc_showEmu`, which polls RAS.V and is right
+     * the same ROM's self-synchronising path (the one which polls RAS.V and is right
      * whatever the costs are). 17 -> 83% of pixels, 19 -> 4%: the window is one cycle wide,
      * which is what makes this ROM a better instrument than any frame-rate average.
      *
@@ -1774,7 +1774,7 @@ struct Machine {
      * Committing the byte inside the bus cycle that carries the command, as this model
      * did until 2026-09-10, deletes that window entirely: the driver's status poll exits
      * on its FIRST turn, and nothing that depends on the elapsed time can happen. The
-     * measurement is hw_test_flash_timing (04_MY_PROJECTS), which reports the poll turns
+     * measurement is hw_test_flash_timing (a hardware probe ROM), which reports the poll turns
      * the shipped AMD stubs actually spend: ZERO here, against 108 116 turns per second
      * of the same loop on the same machine.
      *

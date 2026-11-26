@@ -11,12 +11,12 @@ datasheet and the SNK SDK documents are the only sources used here.
 
 The NGPC uses its A/D converter for exactly one thing — measuring the battery:
 
-- SNK SDK (`01_SDK/docs/SysPro.txt`): *"A/D converter — **1 channel (Power
+- SNK SDK (`SysPro.txt`): *"A/D converter — **1 channel (Power
   management.)**"*
-- SNK SDK (`01_SDK/docs/SysWork.txt`): *"**Battery_voltage (0x6f80)** : Main power
+- SNK SDK (`SysWork.txt`): *"**Battery_voltage (0x6f80)** : Main power
   voltage … the voltage of the main battery **measured periodically by the
   system**. The value range is **0H~3FFH**."*
-- SNK SDK (`01_SDK/docs/SysWork.txt`): *"**Shutdown request from low voltage of
+- SNK SDK (`SysWork.txt`): *"**Shutdown request from low voltage of
   main power supply (battery)**"*
 
 And it is load-bearing, because the BIOS's power-on check reads that cached value

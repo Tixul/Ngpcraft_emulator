@@ -7,7 +7,7 @@ image when no overlay write hit the region) and decode it into a
 human-friendly view. The renderer side (BG / sprite raster, scroll,
 priorities) is M2 Phase 1+ and is not modeled by this module.
 
-Source: `01_SDK/docs/NGPC_HW_QUICKREF.md` § "Palettes K2GE".
+Source: `NGPC_HW_QUICKREF.md` § "Palettes K2GE".
 
 Memory map (K2GE color mode):
 
@@ -57,7 +57,7 @@ CHAR_RAM_TILE_WIDTH = 8
 CHAR_RAM_TILE_HEIGHT = 8
 
 # K2GE control register addresses (M2 Phase 1).
-# Reference: 01_SDK/docs/NGPC_HW_QUICKREF.md § 5 "REGISTRES VIDÉO K2GE".
+# Reference: NGPC_HW_QUICKREF.md § 5 "REGISTRES VIDÉO K2GE".
 K2GE_REG_WBA_H = 0x008002          # Window origin X
 K2GE_REG_WBA_V = 0x008003          # Window origin Y
 K2GE_REG_WSI_H = 0x008004          # Window width  (default 0xFF)
@@ -509,7 +509,7 @@ class K2geControlRegisters:
     """Decoded snapshot of the K2GE video control registers.
 
     Read from a merged cold-start + savestate memory view. See
-    `01_SDK/docs/NGPC_HW_QUICKREF.md` § 5 "REGISTRES VIDÉO K2GE" for the
+    `NGPC_HW_QUICKREF.md` § 5 "REGISTRES VIDÉO K2GE" for the
     raw layout. Pass 1.0 of the renderer consumes `bgc_*` to fill the
     backdrop; later passes consume the scroll, window, sprite-offset
     and 2D-control fields.

@@ -585,7 +585,7 @@ CART_BIOS_WAIT = 8          # the same for the BIOS -- it is on the same bus
 CART_DATA_WAIT = 0
 # ⚠️ CES DEUX-LA SONT EN CYCLES, PAS EN ETATS, et c'est ce qui les distingue de tout le
 # reste du modele de temps. Ils ont ete mesures contre du materiel : 14 ramene Cool
-# Boarders a ses 30 fps reels, 18 vient du copieur raster de Bomberman (a 17 comme a 19
+# Boarders a ses 30 fps reels, 18 vient du copieur raster HiColor de reference (a 17 comme a 19
 # l'image se dechire -- une fenetre d'UN cycle). Les avoir doubles, comme les couts en
 # etats, a fait dechirer les HUD en split raster.
 # ⛔ Ne jamais les mettre a l'echelle. `ngpc_set_timing_silicon` les applique tels quels.
@@ -597,7 +597,7 @@ CART_LDIR_COST = 14
 # ...and the WORD form, LDIRW/LDDRW, which is a different instruction. The cost above is
 # charged PER ITERATION, and a word iteration moves two bytes, so reusing 14 for it sold a
 # word copy at half price per byte. Cool Boarders uses the byte form and never measured
-# this one. 18 comes from Bomberman's HiColor title screen, whose open-loop copier must
+# this one. 18 comes from the reference HiColor title screen, whose open-loop copier must
 # spend exactly 8 scanlines per block: at 14 it ran 0.793x and sheared, at 18 the frame is
 # pixel-identical to the same ROM's self-synchronising path, and 19 breaks it again.
 CART_LDIRW_COST = 18

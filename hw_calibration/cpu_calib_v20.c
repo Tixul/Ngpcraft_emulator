@@ -25,7 +25,7 @@
  * ⚡ LA DATASHEET ET NOTRE MESURE SE CONTREDISENT. L'annexe B (3) donne le MEME `7n + 1`
  * pour la forme octet et pour la forme mot -- donc 14 cy par iteration dans les deux cas.
  * Nous livrons `ldir_cost = 14` (d'accord) mais `ldirw_cost = 18`, cale sur le copieur
- * HiColor de Bomberman, un oracle MAISON, jamais sur silicium. 18 contre 14, c'est 29 %.
+ * HiColor de reference, un oracle MAISON, jamais sur silicium. 18 contre 14, c'est 29 %.
  *
  * Le montage : le meme lot, a deux longueurs, dans chaque forme.
  *      B1 / B2   16 x `ldirb` de 64 / 128 iterations

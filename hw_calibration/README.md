@@ -32,7 +32,7 @@ block = 48 cycles a block given away: **4086 cycles/block against the hardware's
 With the queue drained: **4134 (1.0034×)**, the closest this project has measured, and the
 picture is pixel-clean. ⚖️ **All eleven ROMs here render a bit-identical framebuffer with
 and without it** — no silicon figure moves. See `DEVLOG.md` 2026-08-25 and
-`tests/test_bomberman_hicolor_phase.py`.
+`tests/test_hicolor_copier_phase.py`.
 
 **Since (2026-08-06):** that block cost turned out to be **two** numbers, not one — the byte
 form and the word form are different instructions and the loop is billed per iteration. The
@@ -167,7 +167,7 @@ chaque colonne.
 - `a_cpu_calib_v1.ngc` — the original (instruction classes only).
 - `cpu_calib_v{1,2,3,4}.c` — sources.
 - Built with the **official** Toshiba cc900 toolchain, so they owe nothing to our
-  assembler. Rebuild in the C template (`02_CODE_PATTERNS/minimal_template/`): drop
+  assembler. Rebuild in the C template (`minimal_template`): drop
   the `.c` in as `main.c`, `export THOME=$(pwd)/install/ngpcbins/T900`,
   `export PATH=$THOME/BIN:$PATH`, `cp makefile_win makefile`, `make` -> `main.ngp`
   (rename to `.ngc`; ~11 KB, no 2 MB padding needed — the flashcart takes it raw).
@@ -265,18 +265,18 @@ pinned 14 — uses the **byte** form, and LDRR/LDVR in v4/v5/v6 are byte copies 
 we have ever measured constrains the word form**, and one field could not have held both
 answers anyway.
 
-**What settled it in the meantime — a homebrew ROM, not a calib ROM.** Thor's *BOMBERMAN*
-(2004) draws its title screen with a HiColor raster trick that ships **two** implementations
+**What settled it in the meantime — a homebrew ROM, not a calib ROM.** A 2004
+homebrew draws its title screen with a HiColor raster trick that ships **two** implementations
 and picks between them at boot by timing a delay loop against RAS.V:
 
-- `hc_showEmu` — polls `RAS.V & 7` between blocks, so it **self-synchronises** and comes out
+- the **emulator path** — polls `RAS.V & 7` between blocks, so it **self-synchronises** and comes out
   right whatever the cycle costs are. This is the reference picture.
-- `hc_showHW` — **open loop**: 19 blocks of 224 `ldirw` words, no polling at all, each of
+- the **hardware path** — **open loop**: 19 blocks of 224 `ldirw` words, no polling at all, each of
   which must cost exactly one 8-scanline slice (8 × 515 = **4120 cycles**) or the image
   shears. This is the path a real console takes.
 
 This core is accurate enough that the ROM's own detector answers "real hardware"
-(`in_emu = 0` at RAM `0x476E`) and takes the open-loop path — so the open-loop path has to
+(its flag at RAM `0x476E` reads 0) and takes the open-loop path — so the open-loop path has to
 be right. Measured with the event log armed on `0x8280` (one write per block pair, target
 pitch **8240** cycles):
 
@@ -1121,7 +1121,7 @@ par octet, un `nop` coûte **exactement** 4,0 cy de bus pour 4,0 cy d'exécution
 pile à l'équilibre, la file ne prend jamais d'avance derrière lui, et vider un crédit
 inexistant ne coûte rien. Les deux mesures tombaient sur le même nombre.
 ⇒ Sonde passée à `ld XWA,#imm32` (20 cy de bus contre 10 d'exécution). **L'assertion n'a
-pas bougé** — et l'ancrage silicium réel (`test_bomberman_hicolor_phase`, 4120 cy/bande)
+pas bougé** — et l'ancrage silicium réel (`test_hicolor_copier_phase`, 4120 cy/bande)
 est resté vert tout du long. Même leçon que la ROM v13 : une sonde faite d'instructions à
 l'équilibre ne mesure rien.
 
@@ -1311,7 +1311,7 @@ file ne contient jamais que 4 octets, soit les 4/5 d'une seule charge.
 
 ⛔ **Mais il n'est PAS armé**, et pas par doute sur le modèle : armé, le corpus passe à
 −1 % **uniforme** (bon) sauf trois cases — **MUL −9,0 %, DIV −6,0 %, WORK1 −12,4 %** — et
-l'ancrage Bomberman casse. Or ces trois-là sont exactement les constantes jamais
+l'ancrage HiColor casse. Or ces trois-là sont exactement les constantes jamais
 remesurées : les classes MUL/DIV de la v2 sont `v = v * w` sur des `u16`, donc la forme
 **MOT** (19 états / 56 cycles), héritée du fetch à 10 cy/mot ; et `WORK1` est le coût
 d'une IRQ, qui devra de toute façon être repris **après** que la file soit fixée.
@@ -1382,11 +1382,11 @@ Avec `queue_bytes = 4` + `div` mot 47 + `mul` mot 15 :
 | toutes les autres cases | **−0,9 à −2,3 %**, uniformément |
 | `WORK1` (coût d'IRQ) | **−12,4 %** |
 | corpus | 1,52 % (extra=3) à 1,89 % (extra=4) |
-| `test_bomberman_hicolor_phase` | **ROUGE**, et le HUD de Cool Boarders part |
+| `test_hicolor_copier_phase` | **ROUGE**, et le HUD de Cool Boarders part |
 
 ⚡ **Le biais uniforme de −1,5 % est le vrai sujet.** Il ne se compense pas par
 `branch_taken_extra` (essayé à 1, 2, 3, 4), et 1,5 % suffit à décaler la phase du copieur
-de Bomberman, dont la marge est d'**une ligne**. Il manque donc au modèle en octets une
+HiColor de référence, dont la marge est d'**une ligne**. Il manque donc au modèle en octets une
 pièce qu'il ne facture pas — pas une constante à retoucher.
 
 ### 📌 État : tout désarmé, et les trois nombres forment un TRIPLET
@@ -2301,7 +2301,7 @@ silicium dit l'inverse.
 
 ### 🚨 La garde qui a coûté un test rouge
 
-Armé tel quel, **`test_bomberman_hicolor_phase` tombe** : le copieur HiColor dérive de sa
+Armé tel quel, **`test_hicolor_copier_phase` tombe** : le copieur HiColor dérive de sa
 tranche de 4120 cycles et corrompt une ligne par bande. Deux ancrages silicium en conflit
 — et le dépôt avait déjà la règle :
 
@@ -2432,7 +2432,7 @@ la mesurer proprement.
 
 Un `ldirw` **RAM→RAM** coûte **14,16 cy/itération** sur console, exactement comme un
 `ldirb` (14,12) et exactement l'annexe B. Notre `ldirw_cost = 18` est donc faux **de 29 %**
-pour ce cas. Mais le copieur HiColor de Bomberman — qui écrit en **VRAM** — exige 18 : à 14
+pour ce cas. Mais le copieur HiColor de référence — qui écrit en **VRAM** — exige 18 : à 14
 il tourne **21 % trop vite** (6476 cycles pour deux blocs contre 8240 mesurés).
 
 ⛔ **Hypothèse testée et RÉFUTÉE : « 18 = 14 + l'étranglement VRAM ».** Armé
@@ -2454,7 +2454,7 @@ source `cpu_calib_v21.c` · dépouillement `v21_gate.py`. **Huit nombres.**
 ### La question, et pourquoi elle est ouverte
 
 La v20 mesure `ldirw` **RAM → RAM** à **14,16** cy/itération — l'annexe B au centième. Mais
-le copieur HiColor de Bomberman, qui copie **ROM → VRAM**, exige **~17,9** : à 14 il tourne
+le copieur HiColor de référence, qui copie **ROM → VRAM**, exige **~17,9** : à 14 il tourne
 21 % trop vite et l'image se déchire.
 
 ⚡ **Ces deux montages diffèrent par DEUX choses à la fois** — la région **source** et la
@@ -2474,7 +2474,7 @@ absorber, le coût de base d'un bloc étant énorme).
 | `RR1`/`RR2` | RAM → RAM | le **témoin** (la v20 dit 14,16) |
 | `RV1`/`RV2` | RAM → VRAM | la **destination**, seule |
 | `OR1`/`OR2` | ROM → RAM | la **source**, seule |
-| `OV1`/`OV2` | ROM → VRAM | le chemin de **Bomberman** |
+| `OV1`/`OV2` | ROM → VRAM | le chemin du **copieur HiColor** |
 
 Chaque paire est 64 puis 128 itérations : la différence donne le coût par itération sans
 aucune hypothèse sur le reste.
@@ -2516,7 +2516,7 @@ python hw_calibration/v21_gate.py --p0 RR1 RR2 RV1 RV2 --p1 OR1 OR2 OV1 OV2 --ra
 ### Ce que ça règle
 
 ⚖️ **`ldirw_cost = 18` n'était pas faux — il était MAL ATTRIBUÉ.** Calé sur le copieur
-HiColor de Bomberman, qui copie **ROM → VRAM**, il portait **14** (l'instruction, exactement
+HiColor de référence, qui copie **ROM → VRAM**, il portait **14** (l'instruction, exactement
 l'annexe B) **+ 4** (le prix de lire sa source sur le bus **8 bits** de la cartouche : un
 mot y coûte deux accès d'octet). Nous l'appliquions à **tous** les transferts ⇒ **29 % trop
 cher** sur toute copie RAM → RAM ou RAM → VRAM, c'est-à-dire la plupart de celles que font
@@ -2532,7 +2532,7 @@ une écriture isolée (2,95 cy/accès), ne mord pas ici.
 |---|---|---|
 | v20 p0 `ldirb` / `ldirw` RAM→RAM | 14,09 / **18,28** | **14,09 / 14,05** (silicium 14,12 / 14,16) |
 | v21 les quatre chemins | 18,2 partout | **14,23 / 14,05 / 18,22 / 18,05** |
-| Bomberman HiColor | ✅ | ✅ |
+| Copieur HiColor de référence | ✅ | ✅ |
 | corpus | 0,18 % / 0,77 % | **0,18 % / 0,77 %** |
 | suite | 2115 verts | **2115 verts** |
 

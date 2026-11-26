@@ -608,7 +608,7 @@ class SessionJoypadTests(unittest.TestCase):
 
 class SessionBiosHandoffTests(unittest.TestCase):
     """UI 0.7 — verify the BIOS-equivalent CPU seed on session
-    construction. Values sourced from `01_SDK/docs/NGPC_HW_QUICKREF.md
+    construction. Values sourced from `NGPC_HW_QUICKREF.md
     §2` (XSP = 0x6C00 = top of user RAM) + `ngpcspec.txt
     §INTERRUPT STATE` (DI at boot → iff_level = 7).
     """

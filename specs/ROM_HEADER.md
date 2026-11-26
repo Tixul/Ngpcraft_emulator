@@ -3,8 +3,8 @@
 Minimal ROM header spec used by the first headless prototype.
 
 Source references:
-- `../../01_SDK/docs/ngpcspec.txt`
-- `../../01_SDK/docs/NGPC_SDK_MASTER_ENTRY.md`
+- `ngpcspec.txt`
+- `NGPC_SDK_MASTER_ENTRY.md`
 
 Raw file layout:
 - the ROM file starts at cartridge CPU address `0x200000`

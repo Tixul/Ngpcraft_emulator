@@ -5,10 +5,10 @@ Purpose:
 - support ROM loading, reset bootstrap views and address probing
 
 Current source references:
-- `../../01_SDK/docs/ngpcspec.txt`
-- `../../01_SDK/docs/NGPC_SDK_MASTER_ENTRY.md`
-- `../NgpCraft_toolchain/StarGunner_save_lib_test/README.md`
-- `../NgpCraft_toolchain/StarGunner_save_lib_test/src/core/ngpc_flash.c`
+- `ngpcspec.txt`
+- `NGPC_SDK_MASTER_ENTRY.md`
+- `StarGunner_save_lib_test/README.md`
+- `StarGunner_save_lib_test/src/core/ngpc_flash.c`
 
 Current mapped regions:
 - `0x000000..0x0000FF` : internal CPU I/O page — **does not power on at `0x00`**;

@@ -114,7 +114,7 @@ Measured on content known to run — 16 ROMs (commercial, homebrew, project
 builds) × hand-off and real-BIOS boot × 300 frames: **zero findings of either
 kind**. A diagnostic that fires on everything teaches you to ignore it.
 
-The GB2NGP Tetris build (`04_MY_PROJECTS/NgpCraft_gb2ngp/build/tetris.ngc`) is
+A Game Boy port built with GB2NGP is
 the differential: clean over 600 frames in both boot modes, while the same ROM
 with the old `XSP=0x6EFF` forced back reports the stack crossing at its first
 cartridge instruction.

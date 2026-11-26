@@ -10,7 +10,7 @@ Purpose:
   different lens on the same captured savestate
 
 Current source references:
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md` § "Sprite VRAM (0x8800)"
+- `NGPC_HW_QUICKREF.md` § "Sprite VRAM (0x8800)"
 - `MEMORY_READ.md` § 2 (K2GE registers cold-start image)
 - `K2GE_PALETTE.md` (sibling format and shared conventions)
 

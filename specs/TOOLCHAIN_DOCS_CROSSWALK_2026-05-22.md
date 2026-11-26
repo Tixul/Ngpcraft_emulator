@@ -3,8 +3,8 @@
 Date: 2026-05-22
 
 Purpose: identify which documents and disassembly assets under
-`../NgpCraft_toolchain` and
-`../NgpCraft_toolchain/NgpCraft_Toolchain_v2/docs`
+the NgpCraft toolchain repository and
+`NgpCraft_Toolchain_v2/docs`
 are immediately useful for emulator work, and which ones are mostly
 toolchain-only.
 
@@ -122,7 +122,7 @@ They are not primary sources for instruction semantics.
 
 ## Disassembly assets: actual usefulness
 
-Available under `../NgpCraft_toolchain`:
+Available in the NgpCraft toolchain repository:
 - `thc1.exe_disasm.html`
 - `thc2.exe_disasm.html`
 - `asm900.exe_disasm.html`

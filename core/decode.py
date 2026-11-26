@@ -49,7 +49,7 @@ CPU_IO_NAMES = {
 }
 
 # TLCS-900/H control-register numbers cross-checked from the local ngdis-derived
-# toolchain table (`NgpCraft_toolchain/tools/t900as.py`).
+# toolchain table (`tools/t900as.py`).
 CONTROL_REGISTER_NAMES = {
     0x00: "DMAS0", 0x04: "DMAS1", 0x08: "DMAS2", 0x0C: "DMAS3",
     0x10: "DMAD0", 0x14: "DMAD1", 0x18: "DMAD2", 0x1C: "DMAD3",

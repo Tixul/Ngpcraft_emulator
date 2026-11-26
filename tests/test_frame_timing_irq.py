@@ -45,7 +45,7 @@ def _write_demo_rom(path: Path, entry_point: int = 0x00200040) -> None:
 
 class IrqConstantsLockTests(unittest.TestCase):
     def test_vblank_level_is_4(self) -> None:
-        # Official SNK SDK (`01_SDK/docs/SysPro.txt`, USER PROGRAM INTERRUPT
+        # Official SNK SDK (`SysPro.txt`, USER PROGRAM INTERRUPT
         # OPERATION VECTOR): "It is forbidden to prohibit Vertical Blanking
         # Interrupt (Interrupt level 4)". The reference emulator agrees (it gates
         # VBlank on `statusIFF() <= 4`, which under the Toshiba rule "level L is

@@ -50,7 +50,8 @@ import pytest
 
 from core import native
 
-BIOS_PATH = Path(__file__).resolve().parents[3] / "jeux officiel" / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+BIOS_PATH = _BIOS
 
 pytestmark = pytest.mark.skipif(
     not BIOS_PATH.exists(), reason="needs the real BIOS image (user-hook routing)"

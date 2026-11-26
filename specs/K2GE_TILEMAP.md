@@ -10,7 +10,7 @@ Purpose:
   same `--seed-from` workflow
 
 Current source references:
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md` § "Scroll Plane VRAM"
+- `NGPC_HW_QUICKREF.md` § "Scroll Plane VRAM"
 - `K2GE_PALETTE.md`, `K2GE_OAM.md` (sibling specs)
 - `MEMORY_READ.md` § 2 (K2GE registers cold-start image)
 

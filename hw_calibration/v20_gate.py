@@ -15,7 +15,7 @@ une difference (Q4-Q0) a un NIVEAU (R4) et rendait un ecart negatif : une charge
 
   p0  `ldirb` contre `ldirw`. L'annexe B (3) donne le MEME `7n+1` aux deux formes, soit
       14 cy/iteration ; nous livrons 14 et **18**, ce dernier cale sur un oracle MAISON
-      (le copieur de Bomberman), jamais sur silicium.
+      (le copieur HiColor de reference), jamais sur silicium.
   p1  un transfert bloc vide-t-il la file ? (`block_drains_queue`, ARME dans le livre,
       mesure sur le meme oracle maison)
       ⚠️ PAGE DE REFUTATION, PAS DE CONFIRMATION. Notre modele predit **+0,01 cy** : le
@@ -144,7 +144,7 @@ def verdicts(d):
     if abs(d["ldirw"] - d["ldirb"]) < 1.0:
         print("       => LES DEUX FORMES COUTENT PAREIL : l'annexe B a raison et notre")
         print("          `ldirw_cost = 18` est faux.")
-        print("       ! NE PAS L'ARMER SANS VERIFIER BOMBERMAN. 18 vient de son copieur")
+        print("       ! NE PAS L'ARMER SANS VERIFIER LE COPIEUR HICOLOR. 18 vient de son copieur")
         print("         HiColor, ancre a UN cycle et couvert par un test. Deux ancrages")
         print("         en conflit se traitent comme MEM/IRQ : chercher ce qui les")
         print("         separe, pas choisir le plus recent.")
@@ -164,7 +164,7 @@ def verdicts(d):
         print("       => NOUS SOMMES REFUTES : le silicium voit un effet la ou notre")
         print(f"          modele n'en voit aucun ({ec:+.1f} cy par charge). Le prix")
         print("          d'une instruction apres un transfert bloc est faux chez nous,")
-        print("          et l'ancrage Bomberman ne suffisait pas a le dire.")
+        print("          et l'ancrage HiColor ne suffisait pas a le dire.")
 
     a, b, c = d["div"]
     span = max(a, b, c) - min(a, b, c)

@@ -42,7 +42,7 @@ qu'il réponde. **Il n'y a aucun Z80 dans cet émulateur.** C'est tout.
 
 En instrumentant les écritures de Pac-Man dans la page I/O :
 
-| Adresse | Écrit | Doc SNK (`01_SDK/docs/K1SoundSim`) | Rôle |
+| Adresse | Écrit | Doc SNK (`K1SoundSim`) | Rôle |
 |---|---|---|---|
 | `0x00B8` | `0x55` | `BASE+18B8h` | **Reset du Z80 / du générateur son.** `0x55` le libère. |
 | `0x00BA` | 1 accès | `BASE+18BAh` | **Déclenche UNE NMI vers le Z80** (la donnée est sans objet). |

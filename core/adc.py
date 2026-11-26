@@ -3,7 +3,7 @@
 Everything here is transcribed from the Toshiba TMP95C061 datasheet -- nothing
 is inferred. The NGPC uses the A/D converter for exactly one thing: measuring
 the main battery voltage. The official SNK SDK says so outright
-(`01_SDK/docs/SysPro.txt`: "A/D converter -- 1 channel (Power management.)"),
+(`SysPro.txt`: "A/D converter -- 1 channel (Power management.)"),
 and `SysWork.txt` names the result: "Battery_voltage (0x6f80) : Main power
 voltage ... measured periodically by the system. The value range is 0H~3FFH."
 

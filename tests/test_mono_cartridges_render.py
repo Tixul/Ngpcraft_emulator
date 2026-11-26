@@ -34,8 +34,9 @@ from core import native
 from core.native_session import NativeSession
 from core.renderer import k1ge_compat_enabled
 
-ROMS = Path(__file__).resolve().parents[3] / "jeux officiel"
-BIOS = ROMS / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+ROMS = _ROMS
+BIOS = _BIOS
 
 # The eight levels the BIOS computes, in order.
 GREY_RAMP = (0x0FFF, 0x0DDD, 0x0BBB, 0x0999, 0x0777, 0x0444, 0x0333, 0x0000)

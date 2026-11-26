@@ -418,7 +418,7 @@ NGPC_API void ngpc_set_ldir_cost(ngpc_t*, uint32_t cycles_per_byte);
 /* The WORD block copies (LDIRW/LDDRW), charged per ITERATION -- and an iteration
  * of the word form moves TWO bytes, so it is NOT the same number as ldir_cost.
  * 0 = follow ldir_cost, which is what every pre-existing caller gets. See
- * Machine::ldirw_cost for the Bomberman measurement that pins it at 18. */
+ * Machine::ldirw_cost for the HiColor-copier measurement that pins it at 18. */
 NGPC_API void ngpc_set_ldirw_cost(ngpc_t*, uint32_t cycles_per_iteration);
 
 /* The CONSOLE TYPE: 1 = the original monochrome NGP, 0 = the colour NGPC.

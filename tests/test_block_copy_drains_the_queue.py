@@ -6,8 +6,8 @@ queue). A REPEATING block copy is the exception: LDIR/LDIRW own the bus for thei
 run -- a read and a write every iteration -- so nothing can be prefetched behind them,
 and the instruction after one pays its fetch in full.
 
-⛔ WITHOUT THIS, THE MODEL HANDED OUT A FREE QUEUE PER BLOCK COPY, and BOMBERMAN (Thor,
-2004) convicted it. Its HiColor title screen syncs ONCE on line 0 and then runs 19 blocks
+⛔ WITHOUT THIS, THE MODEL HANDED OUT A FREE QUEUE PER BLOCK COPY, and the reference HiColor copier
+(a 2004 homebrew title screen) convicted it. It syncs ONCE on line 0 and then runs 19 blocks
 of 224 `ldirw` words open-loop, so each block must cost exactly one 8-scanline slice
 (8 x 515 = 4120 cycles) or the picture shears. Measured on the player's own save state:
 
@@ -17,7 +17,7 @@ of 224 `ldirw` words open-loop, so each block must cost exactly one 8-scanline s
 The 34 cycles ACCUMULATE: the copy starts 34 cycles earlier each block against a starting
 margin of 73, so from the fourth block on it writes into the LAST line of the band still
 displaying the bank it is overwriting. One corrupted line per band, 15 bands -- which is
-what the player reported, and what `test_bomberman_hicolor_bands_stay_in_phase` pins.
+what the player reported, and what `test_hicolor_copier_phase` pins.
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ def _rom() -> bytes:
     un `nop` coute exactement 4,0 cycles de bus pour 4,0 cycles d'execution : il est PILE
     a l'equilibre, la file ne prend jamais d'avance derriere lui, et vider un credit qui
     n'existe pas ne coute rien. Les deux mesures tombaient sur le meme nombre et ce test
-    echouait alors que le mecanisme, lui, marchait toujours -- `test_bomberman_hicolor_
-    phase`, l'ancrage silicium REEL (4120 cycles par bande), est reste vert tout du long.
+    echouait alors que le mecanisme, lui, marchait toujours -- `test_hicolor_
+    copier_phase`, l'ancrage silicium REEL (4120 cycles par bande), est reste vert tout du long.
 
     ⇒ `ld XWA,#imm32` : 5 octets pour 5 etats, soit 20 cycles de bus contre 10
     d'execution. Franchement fetch-bound, donc il DEPENSE le credit d'avance -- et c'est
@@ -130,5 +130,5 @@ class BlockCopyDrainsTheQueueTests(unittest.TestCase):
         self.assertGreater(
             armed, cleared,
             "set_timing_silicon must leave the drain ON -- it is part of the model that "
-            "was measured against BOMBERMAN's 4120-cycle slice, not an optional extra.",
+            "was measured against the reference copier's 4120-cycle slice, not an optional extra.",
         )

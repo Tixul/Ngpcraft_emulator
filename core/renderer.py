@@ -10,7 +10,7 @@ memory view that the M2 Phase 0 inspectors consume (`palette-info`,
 <state.json>` workflow drives both inspection and visual export.
 
 Source references:
-- `01_SDK/docs/NGPC_HW_QUICKREF.md` § 5 "REGISTRES VIDÉO K2GE"
+- `NGPC_HW_QUICKREF.md` § 5 "REGISTRES VIDÉO K2GE"
 - `core/k2ge.py` — `K2geControlRegisters`, palette decoders, tile decoder
 
 NGPC screen: 160 × 152 pixels, 60 fps. The renderer does not model

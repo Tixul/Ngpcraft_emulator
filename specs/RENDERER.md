@@ -10,8 +10,8 @@ Purpose:
   4 sub-passes
 
 Current source references:
-- `../../01_SDK/docs/NGPC_HW_QUICKREF.md` § 5 "REGISTRES VIDÉO K2GE"
-- `../../01_SDK/docs/K2GETechRef.txt`
+- `NGPC_HW_QUICKREF.md` § 5 "REGISTRES VIDÉO K2GE"
+- `K2GETechRef.txt`
 - `K2GE_PALETTE.md` (sibling — backdrop palette block, 0BGR encoding)
 - `K2GE_TILES.md` (sibling — single-tile rasterizer kernel reused by
   passes 1.1 and 1.2)

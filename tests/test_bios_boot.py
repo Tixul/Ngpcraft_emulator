@@ -30,7 +30,8 @@ from pathlib import Path
 
 from core import native
 
-BIOS_PATH = Path(__file__).resolve().parents[3] / "jeux officiel" / "bios_v10.bin"
+from rom_paths import BIOS as _BIOS, ROMS as _ROMS
+BIOS_PATH = _BIOS
 
 RESET_VECTOR_TARGET = 0xFF204A     # what the retail BIOS's table at 0xFFFF00 points to
 SHUTDOWN_VECTOR_TARGET = 0xFF27A2  # ... and its VECT_SHUTDOWN at 0xFFFE00

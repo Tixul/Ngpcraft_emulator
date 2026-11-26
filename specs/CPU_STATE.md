@@ -6,9 +6,9 @@ Purpose:
 - carry the full SR shape so SR-touching opcodes round-trip honestly
 
 Current source references:
-- `../NgpCraft_toolchain/T900_DENSE_REF.md` section 31 (SR bit layout)
-- `../NgpCraft_toolchain/NGPC_REVERSE_REFERENCE.md`
-- `../../01_SDK/docs/ngpcspec.txt`
+- `T900_DENSE_REF.md` section 31 (SR bit layout)
+- `NGPC_REVERSE_REFERENCE.md`
+- `ngpcspec.txt`
 
 ## 1. Architectural state
 

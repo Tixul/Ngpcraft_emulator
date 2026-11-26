@@ -8,7 +8,7 @@
  * MEME valeur pour les deux formes. Notre `ldirw_cost = 18` est donc faux de 29 % pour ce
  * chemin-la.
  *
- * ⛔ MAIS ON NE PEUT PAS LE CORRIGER : le copieur HiColor de l'ecran-titre de Bomberman
+ * ⛔ MAIS ON NE PEUT PAS LE CORRIGER : le copieur HiColor de reference
  * exige bien ~18. A 14 il tourne **21 % trop vite** (6476 cycles pour deux blocs contre
  * 8240 mesures sur console) et l'image se dechire -- une fenetre d'UN cycle, verifiee
  * manette en main.
@@ -31,7 +31,7 @@
  *      RR1 / RR2   RAM -> RAM     (le TEMOIN : la v20 dit 14,16)
  *      RV1 / RV2   RAM -> VRAM    (la destination change, seule)
  *      OR1 / OR2   ROM -> RAM     (la source change, seule)
- *      OV1 / OV2   ROM -> VRAM    (les deux -- le chemin de Bomberman)
+ *      OV1 / OV2   ROM -> VRAM    (les deux -- le chemin du copieur HiColor)
  *
  * Chaque paire est 64 puis 128 iterations : la difference donne le cout par iteration
  * **sans aucune hypothese** sur le reste (chargement de XHL/XDE/BC identique des deux
@@ -40,7 +40,7 @@
  * ⇒ Quatre nombres qui se lisent d'un coup :
  *      RV - RR   ce que coute la DESTINATION VRAM
  *      OR - RR   ce que coute la SOURCE ROM (bus 8 bits de la cartouche)
- *      OV - RR   le chemin de Bomberman
+ *      OV - RR   le chemin du copieur HiColor
  *   et surtout : **(OV - RR) est-il la SOMME des deux autres ?** Si oui, les deux effets
  *   sont independants et le modele n'a qu'a les additionner. Sinon il y a un troisieme
  *   terme, et on saura qu'il existe au lieu de le deviner.

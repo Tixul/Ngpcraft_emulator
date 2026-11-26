@@ -8,7 +8,7 @@ Current source references:
 - `CPU_STATE.md`
 - `DECODE.md`
 - `STEP.md`
-- `../../NgpCraft_toolchain/T900_DENSE_REF.md`
+- `T900_DENSE_REF.md`
 
 Current behavior:
 - execute-next starts from one explicit address, or from the current bootstrap `PC`

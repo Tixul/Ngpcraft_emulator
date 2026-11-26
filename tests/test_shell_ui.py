@@ -2960,7 +2960,7 @@ def test_every_panel_is_reachable_and_refreshes(app):
 
     dbg = dbg_mod.DebugWindow(None, cfg.make_settings())
     try:
-        assert dbg._tabs.count() == len(dbg._tab_refresh) == 27
+        assert dbg._tabs.count() == len(dbg._tab_refresh) == 28
         for i in range(dbg._tabs.count()):
             dbg._tabs.setCurrentIndex(i)
             assert dbg._tabs.currentIndex() == i, dbg._tabs.tabText(i)
@@ -2982,7 +2982,7 @@ def test_no_panel_was_lost_when_the_tabs_were_regrouped(app):
               "Breakpoints", "RAM Search", "Audio", "Palette", "Tiles", "Sprites",
               "Layers", "Load", "Text", "Crack", "Pointers", "Compare", "Link"]
     added = ["HW Regs", "Tilemap", "Sound CPU", "Coverage", "Profiler", "Movie",
-             "Console", "Cheats"]
+             "Console", "Cheats", "Source"]
 
     dbg = dbg_mod.DebugWindow(None, cfg.make_settings())
     try:

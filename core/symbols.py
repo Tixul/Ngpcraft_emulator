@@ -20,8 +20,9 @@ fabricates symbols that are not in it.
 
 from __future__ import annotations
 
+import json
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -89,6 +90,8 @@ class SymbolTable:
     _at_address: Dict[int, List[Symbol]] = field(default_factory=dict)
     _sorted_addresses: List[int] = field(default_factory=list)
     sections: List[str] = field(default_factory=list)
+    # C source lines, only when the table came from a `.ngdbg` (`ngpcraft build -g`).
+    lines: Optional["SourceLines"] = None
 
     def __len__(self) -> int:
         return len(self._by_name)
@@ -246,3 +249,168 @@ def load_map(path: str) -> SymbolTable:
 
     table._sorted_addresses = sorted(table._at_address.keys())
     return table
+
+
+# --- NgpCraft debug file (`ngpcraft build -g` -> <rom>.ngdbg) -----------------
+# JSON written by the NgpCraft toolchain's linker (t900ld `_ecrire_ngdbg`):
+#
+#     {"format": "ngpcraft-debug", "version": 1,
+#      "fichiers": ["src/main.c", ...],
+#      "lignes":   [[address, file_index, c_line], ...]   # sorted by address
+#      "symboles": [{"nom", "adresse", "fichier", "section", "public"}, ...]}
+#
+# It carries EVERY named symbol (static functions too -- the .map lists only the
+# public ones) and the address -> C line table the source-level debugger runs on.
+
+NGDBG_FORMAT = "ngpcraft-debug"
+
+
+@dataclass(frozen=True)
+class SourcePos:
+    """Where an address sits in the C source."""
+    file: str          # project-relative path, as the makefile names it
+    line: int
+    start: int         # first address of this line's block of code
+    end: int           # first address past it
+
+
+class SourceLines:
+    """Address <-> C line table.
+
+    An address belongs to the last entry at or below it, up to the next entry --
+    and never past the next SYMBOL either: code with no line info (hand-written
+    asm, a library) that follows a C function must read as "unknown", not as the
+    last line of that function.
+    """
+
+    def __init__(self, files: List[str], entries: List[Tuple[int, int, int]],
+                 symbol_addresses: List[int]) -> None:
+        self.files = list(files)
+        ent = sorted((int(a), int(f), int(n)) for a, f, n in entries
+                     if 0 <= int(f) < len(files))
+        self._addr = [e[0] for e in ent]
+        self._file = [e[1] for e in ent]
+        self._line = [e[2] for e in ent]
+        self._syms = sorted(set(int(a) for a in symbol_addresses))
+        self._roots: Dict[str, Optional[Path]] = {}
+
+    def __len__(self) -> int:
+        return len(self._addr)
+
+    def _end_of(self, i: int) -> int:
+        end = self._addr[i + 1] if i + 1 < len(self._addr) else self._addr[i] + DEFAULT_MAX_SPAN
+        k = bisect_right(self._syms, self._addr[i])
+        if k < len(self._syms) and self._syms[k] < end:
+            end = self._syms[k]
+        return end
+
+    def at(self, address: int) -> Optional[SourcePos]:
+        """The C line `address` belongs to, or None (no line info there)."""
+        i = bisect_right(self._addr, address) - 1
+        if i < 0:
+            return None
+        end = self._end_of(i)
+        if address >= end:
+            return None
+        return SourcePos(self.files[self._file[i]], self._line[i], self._addr[i], end)
+
+    def is_line_start(self, address: int) -> bool:
+        i = bisect_left(self._addr, address)
+        return i < len(self._addr) and self._addr[i] == address
+
+    def lines_in(self, file: str) -> Dict[int, List[int]]:
+        """line -> [start addresses] for one file (a line may own several blocks:
+        a `for` header, a loop body unrolled, an inlined copy...)."""
+        if file not in self.files:
+            return {}
+        fi = self.files.index(file)
+        out: Dict[int, List[int]] = {}
+        for a, f, n in zip(self._addr, self._file, self._line):
+            if f == fi:
+                out.setdefault(n, []).append(a)
+        return out
+
+    def addresses_for(self, file: str, line: int) -> Tuple[int, List[int]]:
+        """Addresses to break on for `file:line`. A line with no code of its own
+        (comment, declaration, `{`) moves to the next line that has some, exactly
+        as other debuggers do; returns (line actually used, addresses)."""
+        table = self.lines_in(file)
+        if not table:
+            return (line, [])
+        if line in table:
+            return (line, table[line])
+        after = [n for n in table if n > line]
+        if not after:
+            return (line, [])
+        n = min(after)
+        return (n, table[n])
+
+    def resolve_file(self, file: str, near: Optional[Path]) -> Optional[Path]:
+        """Find `file` (project-relative) on disk. The ROM usually sits in the
+        project's `bin/`, so the source is found by walking up from it. The paths
+        in the debug file are relative on purpose: no personal folder names in it."""
+        p = Path(file)
+        if p.is_absolute():
+            return p if p.is_file() else None
+        if near is None:
+            return None
+        key = f"{near}|{file}"
+        if key in self._roots:
+            return self._roots[key]
+        found = None
+        base = Path(near)
+        for _ in range(5):
+            cand = base / p
+            if cand.is_file():
+                found = cand
+                break
+            if base.parent == base:
+                break
+            base = base.parent
+        self._roots[key] = found
+        return found
+
+
+def load_ngdbg(path: str) -> SymbolTable:
+    """Parse a `.ngdbg` debug file: symbols (statics included) + C line table."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"debug file not found: {path}")
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    if doc.get("format") != NGDBG_FORMAT:
+        raise ValueError(f"{p.name}: not an NgpCraft debug file")
+    table = SymbolTable(source_path=str(p))
+    files = [str(f) for f in doc.get("fichiers", [])]
+    code_addrs = []
+    for s in doc.get("symboles", []):
+        name = str(s.get("nom", ""))
+        if not name:
+            continue
+        addr = int(s.get("adresse", 0))
+        section = str(s.get("section", "")) or "symbols"
+        _add(table, name, addr, section)
+        if "code" in section:
+            code_addrs.append(addr)
+    table._sorted_addresses = sorted(table._at_address.keys())
+    table.lines = SourceLines(files, doc.get("lignes", []), code_addrs)
+    return table
+
+
+def load_symbols(path: str) -> SymbolTable:
+    """`.ngdbg` or `.map`, chosen by content (both are produced next to a ROM)."""
+    p = Path(path)
+    if p.suffix.lower() == ".ngdbg":
+        return load_ngdbg(path)
+    return load_map(path)
+
+
+def symbol_files_for_rom(rom: Path) -> List[Path]:
+    """Candidate symbol files beside a ROM, best first: the debug file carries
+    everything the map does, plus static functions and the C lines."""
+    rom = Path(rom)
+    out = []
+    for suffix in (".ngdbg", ".map"):
+        for cand in (rom.with_suffix(suffix), Path(str(rom) + suffix)):
+            if cand.is_file() and cand not in out:
+                out.append(cand)
+    return out

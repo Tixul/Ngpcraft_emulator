@@ -11,7 +11,7 @@ and `0x008010` exposes the BLNK bit driven by `in_vblank`. Phase 3.2
 adds IRQ delivery at VBlank/HBlank boundaries.
 
 Source for the scanline budget:
-- `01_SDK/docs/K2GETechRef.txt` § 4-7 Frame Rate Register + § 4-8
+- `K2GETechRef.txt` § 4-7 Frame Rate Register + § 4-8
   Raster Position Register
 - Hardware quote: "signal generation for the 0th line occurs at the
   beginning of line 198" → scanlines cycle 0..197 (198 total per
@@ -119,13 +119,13 @@ def advance_frame_state_by_cycles(
 
 # --- IRQ controller state model (Phase 3.2.2a) ---
 #
-# NGPC IRQ source → level mapping per `01_SDK/docs/NGPC_HW_QUICKREF.md`
+# NGPC IRQ source → level mapping per `NGPC_HW_QUICKREF.md`
 # § 4 "VECTEURS D'INTERRUPTION UTILISATEUR" and § 8 "MICRO DMA".
 
 # VBlank interrupt LEVEL.
 #
 # CORRECTED 2026-07-10 back to 4, on two authoritative sources that agree:
-#   * The official SNK SDK (`01_SDK/docs/SysPro.txt`, "USER PROGRAM INTERRUPT
+#   * The official SNK SDK (`SysPro.txt`, "USER PROGRAM INTERRUPT
 #     OPERATION VECTOR"): "It is forbidden to prohibit Vertical Blanking
 #     Interrupt (**Interrupt level 4**) because the operation has system
 #     involvement."
@@ -151,7 +151,7 @@ K2GE_VBLANK_IRQ_ENABLE_BIT = 0x80
 
 # --- USER PROGRAM INTERRUPT VECTOR TABLE (RAM), per the official SNK SDK ------
 #
-# `01_SDK/docs/SysPro.txt`: the BIOS chains every interrupt to a user handler
+# `SysPro.txt`: the BIOS chains every interrupt to a user handler
 # pointer stored in RAM at `0x6FB8 + index * 4`. This is where the long-standing
 # magic address 0x006FCC actually comes from: it is simply slot 5 (VBlank).
 #

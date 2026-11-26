@@ -338,13 +338,13 @@ static bool exec_source(Machine& m, ngpc_record_t* rec, uint32_t pc,
          * COMPTER DEUX FOIS, ET CA CASSE UN SPLIT RASTER.
          *
          * `ldir_cost` (14) et `ldirw_cost` (18) ne viennent PAS d'une table : ils ont ete
-         * MESURES par iteration, contre la tranche de 8 lignes du copieur de Bomberman
+         * MESURES par iteration, contre la tranche de 8 lignes du copieur HiColor de reference
          * (8 x 515 = 4120 cycles) et contre Cool Boarders. Ils contiennent donc deja le
          * prix du trafic memoire. Or la boucle ci-dessous passe par `load_sized` et
          * `store`, qui accumulent le cout d'acces : chaque mot payait 8 cycles de plus,
          * soit **1792 cycles** sur les 4120 d'un bloc de 224 mots -- +43 %. Le copieur
          * derivait d'une bande, le HUD de Cool Boarders partait en morceaux, et
-         * `test_bomberman_hicolor_phase` est passe au rouge le jour ou le cout d'acces a
+         * `test_hicolor_copier_phase` est passe au rouge le jour ou le cout d'acces a
          * ete arme. On sauve donc l'accumulateur et on le restaure a la sortie.
          *
          * ⚡ La regle generale : un cout mesure PAR INSTRUCTION contient deja tout ce qui
@@ -450,7 +450,7 @@ static bool exec_source(Machine& m, ngpc_record_t* rec, uint32_t pc,
          *
          * ⚡ THE COST IS PER ITERATION, AND AN ITERATION OF THE WORD FORM MOVES TWO BYTES.
          * Charging LDIRW the byte number bills a word copy at half price per byte, which is
-         * what left BOMBERMAN's open-loop HiColor copier running 21% fast and shearing its
+         * what left the reference open-loop HiColor copier running 21% fast and shearing its
          * title screen. `ldirw_cost` (0 = follow ldir_cost, so nothing moves until a caller
          * asks) carries the word answer; see Machine::ldirw_cost for the measurement. */
         const uint16_t per = is_compare        ? 6
@@ -459,7 +459,7 @@ static bool exec_source(Machine& m, ngpc_record_t* rec, uint32_t pc,
         /* ⛔ DEJA EN CYCLES quand la boucle se REPETE -- voir Machine::cycles_already_measured.
          *
          * `ldir_cost` / `ldirw_cost` ne sortent pas d'une table d'etats : 14 vient de Cool
-         * Boarders ramene a ses 30 fps reels, 18 du copieur en boucle ouverte de Bomberman
+         * Boarders ramene a ses 30 fps reels, 18 du copieur en boucle ouverte HiColor de reference
          * (a 17 comme a 19 l'image se dechire -- une fenetre d'UN cycle). Laisser le modele
          * les doubler facturait chaque copie de bloc au double, et un HUD en split raster
          * vit de ces copies : le HUD de Cool Boarders dechirait, manette en main.

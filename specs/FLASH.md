@@ -68,7 +68,7 @@ vector numbers are SNK's own `SYSTEM.INC`):
 
 Return: `RA3` = 0 (`SYS_SUCCESS`) or an error. `VECT_FLASHWRITE` destroys RBC3/XHL3/XDE3.
 
-⚠️ **The SDK's own `ngpc.h` in this RAG has `#define VECT_FLASHWRITE` with NO VALUE**
+⚠️ **The SDK's own `ngpc.h` has `#define VECT_FLASHWRITE` with NO VALUE**
 (the numbers were lost from that copy). Trusting it would have called vector 0 —
 `VECT_SHUTDOWN`. The authority is `SYSTEM.INC`: SHUTDOWN 0 … SYSFONTSET 5,
 **FLASHWRITE 6, FLASHALLERS 7, FLASHERS 8**, FLASHPROTECT **0x0D**.
@@ -358,7 +358,7 @@ accepted it.
 ## 7. Not modelled (documented, not faked)
 
 * ~~**DQ7/DQ5 status polling / erase timing.**~~ **MODELLED and MEASURED, 2026-09-10** —
-  see § 3. `04_MY_PROJECTS/hw_test_flash_timing` is the ROM: it reports the poll turns the
+  see § 3. `hw_test_flash_timing` (a hardware probe ROM, not in this repository) is the ROM: it reports the poll turns the
   shipped AMD stubs actually spend, calibrated against 60 frames of that same loop on the
   same silicon. `ngpc_set_flash_timing` is the dial; all three zero restores the
   synchronous chip, for bisecting a corpus change.

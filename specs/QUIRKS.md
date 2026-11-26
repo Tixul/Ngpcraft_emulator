@@ -7,10 +7,10 @@ Purpose:
 - avoid scattering hardware-policy guesses across the execution helpers
 
 Current source references:
-- `../../NgpCraft_toolchain/USER_MANUAL_EN.md`
-- `../../NgpCraft_toolchain/DECISIONS.md`
-- `../../NgpCraft_toolchain/DEVLOG.md`
-- `../../NgpCraft_toolchain/DISASM_CROSSCHECK.md`
+- `USER_MANUAL_EN.md`
+- `DECISIONS.md`
+- `DEVLOG.md`
+- `DISASM_CROSSCHECK.md`
 
 Current implementation:
 - `core/quirks.py`
@@ -140,7 +140,7 @@ reconciled rule. This section captures the reasoning so future quirk
 additions do not re-read three docs from scratch.
 
 Sources consulted:
-- `../NgpCraft_toolchain/USER_MANUAL_EN.md`
+- `USER_MANUAL_EN.md`
   - §12.1 Bug #1 (lines 1170-1189) states crisply:
     > "Register-to-register 16-bit (D0..D7) and 32-bit (D8..DF) operations
     > with sub-opcodes 0x80..0xFF hang the CPU on real NGPC hardware.
@@ -151,13 +151,13 @@ Sources consulted:
     - `ld XWA, XDE` (`D8 82`) = BROKEN
     - `cp XWA, XHL` (`D8 F3`) = OK (CP exception)
     - `add WA, 1` (`D0 C8 01 00`) = OK (immediate)
-- `../NgpCraft_toolchain/DISASM_CROSSCHECK.md`
+- `DISASM_CROSSCHECK.md`
   - §2 (lines 66-74) says "D8..DF (bank working courant) : OK" — but the only
     concrete hardware evidence is `d8 61` (`inc 0x1, WA`, sub-op `0x61 < 0x80`),
     which sits inside the USER_MANUAL safe zone anyway
   - §3 (lines 78-91) confirms `E8..EF` is not broken, with direct evidence
     on `inc` forms (sub-ops `0x61..0x64`, all `< 0x80`)
-- `../NgpCraft_toolchain/T900_DENSE_REF.md`
+- `T900_DENSE_REF.md`
   - aligned with USER_MANUAL on the broken `r+r` family
 
 Reconciled reading:

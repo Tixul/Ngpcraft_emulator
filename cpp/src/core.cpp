@@ -842,7 +842,7 @@ NGPC_API int ngpc_run(ngpc_t* h, uint32_t max_instrs,
             if (bc16 > 0) m->q_sixteenths += (base * 256) / bc16;
             if (m->q_sixteenths > cap16) m->q_sixteenths = cap16;
             /* Un transfert bloc tient le bus tout du long : rien n'a ete prefetche
-             * derriere lui, il laisse la file VIDE (mesure : Bomberman, 4120 cy). */
+             * derriere lui, il laisse la file VIDE (mesure : copieur HiColor de reference, 4120 cy). */
             if (m->block_drains_queue && m->block_transfer_ran) m->q_sixteenths = 0;
             /* Un transfert de controle pris jette ce que la file contenait. */
             if (m->flush_queue_on_branch && branch_taken) m->q_sixteenths = 0;
@@ -1703,7 +1703,7 @@ static constexpr uint32_t kSiliconFetchWaitQ4 = 33;
  *
  * ⚠️ The built-in defaults are DOCUMENTED, NOT MEASURED, and our documentation
  * disagrees with itself about the erase by a factor of a hundred -- see the constants in
- * machine.hpp. hw_test_flash_timing (04_MY_PROJECTS) measures all three on the cartridge;
+ * machine.hpp. hw_test_flash_timing (a hardware probe ROM) measures all three on the cartridge;
  * this setter is where its answer goes. */
 NGPC_API void ngpc_set_flash_timing(ngpc_t* h, uint32_t program, uint32_t erase_per_8k,
                                     uint32_t fail) {
@@ -1855,9 +1855,9 @@ NGPC_API void ngpc_set_timing_silicon(ngpc_t* h, uint32_t word_wait, uint32_t bi
      * au compte pres, MEM inchange a 471. Balayage monotone, valeur unique.
      *
      * ⛔ NE SE PAIE PAS PENDANT UN TRANSFERT BLOC -- voir `in_block_copy`. `ldirw_cost`
-     * = 18 a ete mesure contre le copieur HiColor de Bomberman, qui ecrit justement en
+     * = 18 a ete mesure contre le copieur HiColor de reference, qui ecrit justement en
      * VRAM, avec une fenetre d'UN cycle : ce cout contient deja l'etranglement. Sans
-     * cette garde, `test_bomberman_hicolor_phase` tombe -- le copieur derive de sa
+     * cette garde, `test_hicolor_copier_phase` tombe -- le copieur derive de sa
      * tranche de 4120 cycles et corrompt une ligne par bande. */
     /* ⚡ ET IL SE PAIE PAR ACCES, PAS PAR OCTET (ROM v20 page 3, tir silicium) : une
      * ecriture MOT en VRAM coute **2,95 cy** de plus qu'en RAM, et une ecriture OCTET
@@ -1891,13 +1891,13 @@ NGPC_API void ngpc_set_timing_silicon(ngpc_t* h, uint32_t word_wait, uint32_t bi
      *
      * ⛔ IL NE S'ARME PAS SEUL. Arme au-dessus des couts MOT de `mul`/`div` herites du
      * fetch a 10 cy/mot, il laissait MUL a -9 %, DIV a -6 % et cassait l'ancrage
-     * Bomberman -- ce qui ressemblait a une refutation du modele alors que c'etaient les
+     * HiColor -- ce qui ressemblait a une refutation du modele alors que c'etaient les
      * deux constantes qui etaient fausses. La ROM v17 les a mesurees (47 et 15).
      *
      * ⛔ ET MEME AVEC ELLES, IL RESTE DESARME (0). Avec le triplet complet le corpus
      * tombe a 1,5 % et MUL/DIV rentrent (+2 %), mais TOUTES les cases restent a -1 a
      * -2,3 % : la machine entiere est ~1,5 % trop lente, et ca suffit a decaler la
-     * phase du copieur de Bomberman (dont la marge est d'UNE ligne) et a casser le HUD
+     * phase du copieur HiColor de reference (dont la marge est d'UNE ligne) et a casser le HUD
      * de Cool Boarders. Il manque encore une piece que le modele ne facture pas.
      * ⇒ Ne PAS armer avant que ce biais uniforme soit explique -- pas compense, explique.
      *   `ngpc_set_queue_bytes(4)` l'arme pour la mesure. */
@@ -1915,7 +1915,7 @@ NGPC_API void ngpc_set_timing_silicon(ngpc_t* h, uint32_t word_wait, uint32_t bi
      * Le reste du modele double les chiffres de Toshiba parce que ce sont des ETATS.
      * Ceux-ci n'en sont pas : ils ont ete MESURES en cycles d'emulateur, contre du
      * materiel. 14 vient de Cool Boarders ramene a ses 30 fps reels ; 18 vient du
-     * copieur en boucle ouverte de l'ecran-titre de Bomberman, qui doit depenser
+     * copieur en boucle ouverte de l'ecran-titre HiColor de reference, qui doit depenser
      * exactement 8 lignes par bloc -- a 17 comme a 19 l'image se dechire. Une fenetre
      * d'UN cycle.
      *
@@ -1927,7 +1927,7 @@ NGPC_API void ngpc_set_timing_silicon(ngpc_t* h, uint32_t word_wait, uint32_t bi
     /* ⚠️ 18, ET LE SILICIUM DIT 14 -- CONFLIT OUVERT, PAS UN OUBLI (ROM v20 page 0).
      * Un `ldirw` RAM->RAM coute **14,16 cy/iteration** sur console, exactement comme un
      * `ldirb` (14,12) et exactement l'annexe B (3), `7n+1` etats. Mais le copieur
-     * HiColor de Bomberman -- qui ecrit en **VRAM** -- exige 18 : a 14 il tourne 21 %
+     * HiColor de reference -- qui ecrit en **VRAM** -- exige 18 : a 14 il tourne 21 %
      * trop vite (6476 cycles pour deux blocs contre 8240 mesures sur console).
      * ⛔ Et l'hypothese evidente est REFUTEE : « 18 = 14 + l'etranglement VRAM » ne tient
      * pas. Arme (`block_pays_vram`), le throttle ne change **rien** au copieur -- il
@@ -1953,7 +1953,7 @@ NGPC_API void ngpc_set_timing_silicon(ngpc_t* h, uint32_t word_wait, uint32_t bi
      * de fois qu'il y avait de blocs.
      *
      * ⚖️ MESURE, sur l'instrument le plus fin que ce projet possede : le copieur raster
-     * en BOUCLE OUVERTE de BOMBERMAN (Thor, 2004). Il se synchronise UNE fois sur la
+     * en BOUCLE OUVERTE HiColor de reference (ecran-titre d'un homebrew de 2004). Il se synchronise UNE fois sur la
      * ligne 0 puis enchaine 19 blocs de 224 mots sans jamais repoller, donc chaque bloc
      * doit couter exactement une tranche de 8 lignes -- 8 x 515 = 4120 cycles :
      *
@@ -2254,7 +2254,7 @@ NGPC_API void ngpc_set_ldir_cost(ngpc_t* h, uint32_t cycles_per_byte) {
 
 /* Cost per ITERATION of the WORD block copies (LDIRW/LDDRW). 0 = follow ldir_cost, which
  * is what every existing caller gets, so nothing moves until someone asks for it.
- * Measured at 18 on Bomberman's open-loop HiColor copier -- see Machine::ldirw_cost. */
+ * Measured at 18 on the reference open-loop HiColor copier -- see Machine::ldirw_cost. */
 NGPC_API void ngpc_set_ldirw_cost(ngpc_t* h, uint32_t cycles_per_iteration) {
     if (!h) return;
     reinterpret_cast<Machine*>(h)->ldirw_cost = uint16_t(cycles_per_iteration);

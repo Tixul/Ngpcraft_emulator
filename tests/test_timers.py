@@ -1,7 +1,7 @@
 """TMP95C061 8-bit timers 0..3.
 
 Expectations come from the Toshiba datasheet + the official SNK SDK
-(`01_SDK/docs/8Bit.txt`) -- see core/timers.py.
+(`8Bit.txt`) -- see core/timers.py.
 """
 
 from __future__ import annotations
