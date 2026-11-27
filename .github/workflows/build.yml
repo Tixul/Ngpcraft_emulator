@@ -8,8 +8,13 @@
 # Triggers:
 #   * push of a tag like v2.1  -> builds AND attaches the three artefacts to a
 #     GitHub Release
+#   * push to main             -> the same build and tests, NO release. A breakage
+#     shows up on the push, not on release day: tag only a commit whose build is green.
 #   * the "Run workflow" button -> builds and uploads artefacts you can download
 #     from the run page (no release). Use this to try a build without tagging.
+#
+# Python packages are installed at the exact versions of .github/constraints.txt,
+# so a new upload on PyPI cannot change a build behind our back.
 #
 # PyInstaller applies ad-hoc signing on macOS. Developer ID signing and
 # notarization are not configured here.
@@ -19,6 +24,8 @@ name: build
 on:
   workflow_dispatch:        # the manual "Run workflow" button
   push:
+    branches:
+      - main                # every push: build + tests, no release
     tags:
       - 'v*'                # v2.1, v2.1.0, ...
 
@@ -87,7 +94,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest pyinstaller
+          pip install -c .github/constraints.txt -r requirements.txt pytest pyinstaller
 
       # The suite runs headless everywhere (QT_QPA_PLATFORM=offscreen is set by the
       # tests themselves). A red suite must stop the build -- shipping a broken
@@ -178,6 +185,7 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
           if-no-files-found: error
+          retention-days: 14      # every push to main uploads too; keep the storage small
 
   # On a tag, gather the three archives into one GitHub Release. `merge-multiple`
   # drops them all straight into artifacts/ (no per-artifact subfolders), so the

@@ -1,0 +1,18 @@
+# Exact versions the CI builds with -- the ones the last good release was built from.
+#
+# requirements.txt only gives minimums (PyQt6>=6.5 ...), so without this file every build
+# took whatever PyPI had that day. A new upload then broke a release on the day it was
+# tagged (2026-11-26: PyQt6-Qt6 6.12.1, out two days before, needed libva on Linux).
+#
+# To move to newer versions: change them HERE, push, and let the build on main go green
+# before tagging.
+PyQt6==6.12.1
+PyQt6-Qt6==6.12.1
+PyQt6-sip==13.13.1
+numpy==2.4.6
+pygame==2.6.1
+py7zr==1.1.4
+Pillow==13.0.0
+pytest==9.2.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10
